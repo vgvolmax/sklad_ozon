@@ -76,24 +76,40 @@ A shipment `Казань → Москва` is Moscow demand fulfilled from Kazan
 
 # 2. Runtime and development constraints
 
-The distributed application must run without Node.js, Python, a local web server, installation, accounts or network access.
-
-User flow:
+Canonical user flow:
 
 ```text
-unpack/download release
-→ open index.html
+repository ZIP
+→ extract
+→ open app/index.html in browser
 → load local XLSX/CSV files
-→ calculate locally in the browser
+→ calculate locally
 ```
 
-Development tooling may use Node.js.
+`app/index.html` is the canonical entry point and must work after a normal
+double-click as `file:///.../app/index.html`. There is no launcher, `start.bat`,
+localhost, HTTP server, backend, Python, runtime Node, service process, runtime
+bootstrap, installation, download, or open port. The user does not build the
+application.
 
-The release is a static offline bundle using classic browser scripts/assets and must work from `file://`.
+Production uses vanilla HTML, CSS and JavaScript, Browser File API, and
+`FileReader`/`ArrayBuffer`. All production and vendor assets are committed and
+referenced relatively (`./assets/...`, `./vendor/...`). Runtime CDNs, network
+requests, root `/assets/...` paths, service workers, and backend APIs are
+forbidden. Do not fetch application files/configuration when that would restrict
+`file://`. Prefer classic ordered scripts and `globalThis.SkladOzon`; do not add
+a bundler merely for modularity or use browser modules where file-origin rules
+would break them.
 
-No runtime CDN dependency is allowed. XLSX/CSV parsing libraries must be bundled or vendored into the release.
+Development/CI may use standard Node solely for dependency-free plain-JavaScript
+tests through `node --test`. Node is not an end-user requirement. The active MVP
+has no package manager, compilation, bundling, frontend build, or mandatory
+browser-automation dependency.
 
-Raw user files and personal data must never be sent anywhere.
+**TypeScript-style contract snippets are specification notation only. They do
+not require TypeScript, compilation, npm or a build system.**
+
+Raw user files and personal data never leave the user's computer.
 
 ---
 
@@ -104,89 +120,47 @@ Use functional core / imperative shell:
 - import adapters know Ozon report peculiarities;
 - canonical domain models do not know Excel/CSV column names;
 - analytics, economics, feasibility and optimizer are pure functions where practical;
-- persistence stores only normalized business data and configuration;
+- explicit project JSON stores only normalized business data and configuration;
 - UI contains no business formulas.
 
-Report column names, sheet names, CSV quirks and malformed workbook metadata terminate at the importer boundary.
+Report column names, sheet names, CSV quirks and malformed workbook metadata
+terminate at the importer boundary. Apply YAGNI: introduce each file, directory,
+or vendored browser library only when current behavior needs it.
 
 ---
 
 # 4. Source modules
 
+The target evolves incrementally; empty future directories are not committed.
+
 ```text
-src/
-  app/
-    bootstrap.ts
-    state.ts
-    selectors.ts
-
-  domain/
-    models.ts
-    result.ts
-    invariants.ts
-    report-meta.ts
-
-  importers/
-    workbook.ts
-    csv.ts
-    availability.ts
-    restrictions.ts
-    orders.ts
-    tariffs.ts
-    products.ts
-    import-diagnostics.ts
-
-  normalization/
-    clusters.ts
-    sku.ts
-    numbers.ts
-    dates.ts
-    order-status.ts
-
-  analytics/
-    order-populations.ts
-    demand-matrix.ts
-    fulfillment-matrix.ts
-    weekly-series.ts
-    stockout-detector.ts
-    recommendation-distortion.ts
-    route-profile.ts
-
-  economics/
-    tariff-index.ts
-    tariff-lookup.ts
-    expected-logistics.ts
-    unit-economics.ts
-
-  supply/
-    feasibility.ts
-    placement-assessment.ts
-    cluster-candidate.ts
-    optimizer.ts
-
-  persistence/
-    store.ts
-    indexeddb-store.ts
-    memory-store.ts
-
-  ui/
-    shell.ts
-    upload-view.ts
-    dashboard-view.ts
-    sku-view.ts
-    plan-view.ts
-    diagnostics-view.ts
-    components/
+app/
+  index.html
+  assets/
+    css/
+      app.css
+    js/
+      app.js
+      domain/
+      importers/
+      normalization/
+      analytics/
+      economics/
+      supply/
+      ui/
+  vendor/
+    [browser libraries introduced only when actually needed]
 
 tests/
   fixtures/
-  importers/
-  analytics/
-  economics/
-  supply/
-  integration/
-  browser/
+  *.test.mjs
+
+docs/
 ```
+
+Browser parser assets are vendored directly when their importer is implemented,
+with provenance/license recorded. A CSV library is added only when genuinely
+needed.
 
 ---
 
@@ -297,7 +271,7 @@ export interface TariffRow {
 }
 ```
 
-No buyer name, address, INN/KPP, legal-entity name, payment details or other unnecessary personal/customer fields may enter canonical state or IndexedDB.
+No buyer name, address, INN/KPP, legal-entity name, payment details or other unnecessary personal/customer fields may enter canonical state or exported project data.
 
 The orders importer extracts only fields required by the product and discards the rest immediately after decoding each raw row.
 
@@ -811,17 +785,26 @@ No opaque score is allowed as the sole explanation.
 
 # 24. Local persistence
 
-Persist slowly changing inputs only by default:
+MVP persistence is explicit and portable:
+
+```text
+Export project → browser downloads JSON
+Import project → user selects saved JSON
+```
+
+Project JSON may contain:
 
 - tariff dataset + metadata;
-- product economics inputs;
+- product economics and available stock;
 - manual cluster mappings;
 - economics settings;
-- optimizer thresholds.
+- optimizer thresholds;
+- normalized operational snapshots only when needed, with explicit report dates.
 
-Operational datasets may be restored only if their source/report dates remain visibly labelled as stale/current.
-
-No raw CSV/XLSX row and no customer PII is persisted.
+Operational snapshots restored from a project must remain visibly labelled as
+stale/current. Never persist raw CSV/XLSX reports or customer PII. Browser storage
+may be added later only as an optional convenience; the application must not
+depend on it. Persistence is not a reason to create a server.
 
 ---
 
@@ -1010,7 +993,7 @@ real-schema fixture files
 
 ## Browser smoke test
 
-Open the built release from `file://`, import fixtures without network access and produce an explainable plan.
+Open the checked-in `app/index.html` from `file://`, import fixtures without network access and produce an explainable plan. Static checks verify relative CSS/JS/vendor paths and reject runtime HTTP/HTTPS dependencies, root `/assets` paths, localhost/server requirements, launcher files, and runtime bootstrap. Browser automation is optional; it is not a required acceptance dependency.
 
 ---
 

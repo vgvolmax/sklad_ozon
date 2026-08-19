@@ -1,51 +1,51 @@
 # sklad_ozon
 
-Локальное HTML-приложение для экономической проверки рекомендаций Ozon FBO и оптимального распределения ограниченного товарного запаса между кластерами.
+Локальное статическое browser-приложение для экономической проверки рекомендаций
+Ozon FBO и оптимального распределения ограниченного запаса между кластерами.
 
-## Ключевой принцип
+## Как открыть приложение
+
+1. Download repository ZIP.
+2. Extract it.
+3. Open `app/index.html` двойным кликом.
+
+Это полный пользовательский процесс. Установка, `start.bat`, launcher, сервер,
+Python и интернет не требуются. Node также не нужен конечному пользователю: он
+используется только разработчиками и CI для команды `node --test`.
+
+Все production assets находятся непосредственно в repository ZIP. Приложение
+работает через `file://`, читает выбранные XLSX/CSV с помощью Browser File API и
+обрабатывает их внутри браузера. Данные продавца остаются на компьютере
+пользователя и никуда не передаются.
+
+## Ключевой аналитический принцип
 
 Приложение строго разделяет:
 
 1. **где возник спрос** — кластер доставки;
 2. **откуда Ozon физически закрыл спрос** — кластер отгрузки;
-3. **куда выгоднее положить следующий доступный товар** — результат юнит-экономики, ограничений и оптимизации.
+3. **куда выгоднее положить следующий товар** — результат юнит-экономики,
+   ограничений и оптимизации.
 
-Историческая отгрузка `Казань → Москва` считается московским спросом, закрытым Казанью. Это позволяет ловить ситуации вероятного stockout локального кластера и не принимать аварийное межкластерное исполнение за нормальный локальный спрос кластера-донора.
+Отгрузка `Казань → Москва` является московским спросом, закрытым Казанью.
+Вероятный stockout, искажение рекомендации, clean-route profiles, тарифы,
+налоги/VAT/co-invest, feasibility и ограничения оптимизатора остаются частью
+архитектуры MVP.
 
-## MVP
+## Разработка
 
-- FBO only;
-- без Ozon API;
-- без backend и аккаунтов;
-- локальный импорт XLSX/CSV;
-- работает офлайн из `file://`;
-- тарифная матрица загружается пользователем и хранится локально;
-- анализ спроса и маршрутов `кластер отгрузки → кластер доставки`;
-- статус `Вероятный stockout` с объяснением;
-- прогнозная юнит-экономика `SKU × кластер`;
-- учёт ограничений складов;
-- распределение ограниченного запаса с целью максимизации ожидаемой абсолютной прибыли.
+Приложение написано на vanilla HTML, CSS и JavaScript без package manager,
+компиляции и frontend build. Зависимые от браузера библиотеки добавляются в
+`app/vendor/` только тогда, когда они действительно нужны, вместе с provenance и
+лицензией. Тесты чистой бизнес-логики используют встроенные `node:test` и
+`node:assert`:
+
+```bash
+node --test
+```
 
 ## Документы
 
 - [Архитектурная спецификация](docs/superpowers/specs/2026-08-19-ozon-fbo-unit-economics-optimizer-design.md)
-- [План реализации по PR](docs/superpowers/plans/2026-08-19-mvp-implementation.md)
-
-## Разработка с Codex Cloud
-
-Особенности среды описаны в [документе по Codex Cloud](docs/superpowers/codex-cloud-environment.md).
-Проект не требует постоянного Agent Internet Access. Ограничения Cloud
-environment не являются основанием для изменения согласованной архитектуры.
-
-## План PR
-
-1. Static offline foundation + canonical domain contracts.
-2. Ozon operational imports + normalization + diagnostics.
-3. Tariff/product imports + local persistence.
-4. Demand, fulfillment and weekly route analytics.
-5. Probable stockout detector + clean route profiles.
-6. Tariff engine + expected logistics + spreadsheet-parity unit economics.
-7. Warehouse feasibility + candidate scoring + limited-stock optimizer.
-8. Complete UI workflow + explainability + offline release hardening.
-
-Каждый PR имеет отдельный тестовый merge-gate; полные исходные отчёты продавца в репозиторий не коммитятся.
+- [План реализации PR1–PR8](docs/superpowers/plans/2026-08-19-mvp-implementation.md)
+- [Среда Codex Cloud](docs/superpowers/codex-cloud-environment.md)
