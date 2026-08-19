@@ -2,55 +2,81 @@
 
 ## Status
 
-Approved product design for MVP, based on the working unit-economics spreadsheet and the provided Ozon reports.
+Reviewed MVP product design based on the working unit-economics spreadsheet and the provided Ozon reports.
+
+This document is the architectural source of truth for implementation.
 
 ## Product goal
 
-Build a fully local browser application that evaluates Ozon FBO supply recommendations economically and allocates limited available stock across clusters to maximize expected absolute profit.
+Build a fully local browser application that:
 
-The product does **not** replace Ozon's demand forecast. It separates three questions:
+1. accepts Ozon's own FBO supply recommendations;
+2. reconstructs where customer demand actually arose;
+3. separates customer demand from the cluster that happened to fulfill it;
+4. detects probable stockout-driven substitution between clusters;
+5. evaluates the economics of placing a SKU in each relevant cluster;
+6. respects current warehouse restrictions;
+7. allocates limited seller stock across Ozon-recommended clusters to maximize expected absolute profit;
+8. exposes counterfactual placement comparisons when Ozon's recommendation may be distorted by historical substitution.
+
+The product does **not** replace Ozon's demand forecast.
+
+It separates four questions:
 
 1. **Where did customer demand arise?** — delivery cluster.
 2. **From where did Ozon physically fulfill that demand?** — origin/dispatch cluster.
-3. **Where should the next available unit be placed economically?** — result of our analysis and optimizer.
+3. **Is an Ozon recommendation potentially distorted by a cluster acting as a donor during another cluster's probable stockout?**
+4. **Where is the next available unit economically preferable to place?** — unit-economics assessment and optimizer output.
 
-This separation is a hard domain invariant. A sale shipped from Kazan to a buyer in Moscow is Moscow demand, not Kazan demand.
+A shipment `Казань → Москва` is Moscow demand fulfilled from Kazan. It is never Kazan demand merely because Kazan dispatched it.
 
-## MVP scope
+---
 
-### In scope
+# 1. MVP scope
+
+## In scope
 
 - FBO only.
-- Local browser execution; no backend, accounts, cloud storage, or Ozon API.
+- Fully local browser execution.
 - Import of:
   - `Доступность товаров` XLSX;
   - `Ограничение складов по товарам` XLSX;
   - `orders.csv`;
-  - Ozon logistics tariff XLSX;
-  - seller product parameters/cost/available stock from XLSX/CSV and manual editing.
+  - Ozon logistics tariff XLSX or a workbook containing the tariff sheet;
+  - seller product economics / cost / available stock XLSX or CSV;
+  - manual corrections to product economics and cluster mappings.
 - Historical demand-by-destination analysis.
-- Origin-to-destination fulfillment matrix and reverse donor matrix.
-- Probable stockout detection from route substitution patterns.
+- Fulfillment source matrix and reverse donor matrix.
+- Order lifecycle filtering for demand and actual fulfillment analytics.
+- Exclusion of incomplete/current periods from stockout baselines.
+- Probable stockout detection.
+- Corroboration of stockout signals with current Ozon availability evidence where available, including `daysWithoutStock`.
+- Detection of recommendation distortion when a recommended origin historically acted as a replacement origin for another cluster's probable stockout.
+- Observed and stockout-cleaned route profiles.
 - Forecast unit economics for `SKU × placement cluster`.
+- Counterfactual placement assessment for relevant clusters, including clusters with zero Ozon recommendation.
 - Warehouse feasibility filter.
-- Limited-stock allocation optimizer.
-- Explainable recommendation statuses and reasons.
+- Limited-stock optimizer bounded by Ozon recommendation quantities in MVP.
+- Explainable recommendation statuses and evidence.
 - Local persistence for slowly changing inputs.
 
-### Explicitly out of scope
+## Explicitly out of scope
 
-- FBS.
+- FBS optimization.
 - Ozon API.
 - Automatic report download.
 - Automatic creation of supply orders.
-- Own demand forecasting/ML.
-- Historical daily stock balance import in MVP.
-- Automatic override of Ozon recommendations solely because of `Вероятный stockout`.
+- Own demand forecasting or ML.
+- Historical daily stock balance import.
+- Claiming a stockout as confirmed without direct stock history.
+- Automatically increasing an allocation above the Ozon recommended quantity because of a probable stockout.
 - Cloud/backend/multi-user features.
 
-## Runtime and development constraints
+---
 
-The distributed application must run without Node.js, Python, a local web server, or installation.
+# 2. Runtime and development constraints
+
+The distributed application must run without Node.js, Python, a local web server, installation, accounts or network access.
 
 User flow:
 
@@ -61,22 +87,31 @@ unpack/download release
 → calculate locally in the browser
 ```
 
-Development tooling may use Node.js. The release build must be a static offline bundle using classic browser scripts/assets so it remains usable from `file://`.
+Development tooling may use Node.js.
 
-No runtime CDN dependencies are allowed. XLSX parsing code must be vendored or bundled into the release.
+The release is a static offline bundle using classic browser scripts/assets and must work from `file://`.
 
-## Architectural style
+No runtime CDN dependency is allowed. XLSX/CSV parsing libraries must be bundled or vendored into the release.
 
-Use a functional-core / imperative-shell structure:
+Raw user files and personal data must never be sent anywhere.
 
-- **Import adapters** know Ozon file formats.
-- **Domain modules** know normalized business concepts only.
-- **Analytics/economics/optimizer modules** are pure functions where practical.
-- **UI/persistence** orchestrate domain modules but do not contain business formulas.
+---
 
-The primary design rule is that report column names, sheet names and CSV quirks must not leak beyond import adapters.
+# 3. Architectural style
 
-## Proposed source tree
+Use functional core / imperative shell:
+
+- import adapters know Ozon report peculiarities;
+- canonical domain models do not know Excel/CSV column names;
+- analytics, economics, feasibility and optimizer are pure functions where practical;
+- persistence stores only normalized business data and configuration;
+- UI contains no business formulas.
+
+Report column names, sheet names, CSV quirks and malformed workbook metadata terminate at the importer boundary.
+
+---
+
+# 4. Source modules
 
 ```text
 src/
@@ -84,41 +119,56 @@ src/
     bootstrap.ts
     state.ts
     selectors.ts
+
   domain/
     models.ts
     result.ts
     invariants.ts
+    report-meta.ts
+
   importers/
     workbook.ts
+    csv.ts
     availability.ts
     restrictions.ts
     orders.ts
     tariffs.ts
     products.ts
     import-diagnostics.ts
+
   normalization/
     clusters.ts
     sku.ts
     numbers.ts
     dates.ts
+    order-status.ts
+
   analytics/
+    order-populations.ts
     demand-matrix.ts
     fulfillment-matrix.ts
     weekly-series.ts
     stockout-detector.ts
+    recommendation-distortion.ts
     route-profile.ts
+
   economics/
     tariff-index.ts
     tariff-lookup.ts
-    unit-economics.ts
     expected-logistics.ts
+    unit-economics.ts
+
   supply/
     feasibility.ts
-    cluster-score.ts
+    placement-assessment.ts
+    cluster-candidate.ts
     optimizer.ts
+
   persistence/
     store.ts
     indexeddb-store.ts
+    memory-store.ts
+
   ui/
     shell.ts
     upload-view.ts
@@ -127,11 +177,6 @@ src/
     plan-view.ts
     diagnostics-view.ts
     components/
-      table.ts
-      metric-card.ts
-      status-badge.ts
-      file-card.ts
-      editable-number.ts
 
 tests/
   fixtures/
@@ -140,33 +185,40 @@ tests/
   economics/
   supply/
   integration/
-
-public/
-  vendor/
-
-scripts/
-  build.mjs
-  copy-release-assets.mjs
-
-dist/
-  index.html
-  app.js
-  styles.css
-  vendor/
+  browser/
 ```
 
-`dist/` is the distributable artifact. Source modules may use ES modules/TypeScript, but the final browser runtime must not require module loading across `file://` boundaries.
+---
 
-## Canonical domain contracts
+# 5. Canonical report metadata
 
-All importers produce canonical models. Exact Ozon headings remain private to the importers.
+All imported datasets carry explicit metadata.
+
+```ts
+export interface ReportMeta {
+  sourceName: string;
+  importedAt: string;
+  reportGeneratedAt: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  recommendationHorizonDays: number | null;
+}
+```
+
+Operational reports from materially different dates must be surfaced as a warning.
+
+The UI must never silently present a restored old report as current.
+
+---
+
+# 6. Canonical domain contracts
 
 ```ts
 export type Sku = string;
 export type SellerArticle = string;
 export type ClusterId = string;
 export type WarehouseId = string;
-export type IsoDate = string;
+export type IsoDateTime = string;
 
 export interface ProductRef {
   sku: Sku;
@@ -186,7 +238,7 @@ export interface AvailabilityRecommendation {
   daysOfCover: number | null;
   ozonLocalShare: number | null;
   ozonStatus: string | null;
-  reportDate: IsoDate | null;
+  reportDate: string | null;
 }
 
 export interface WarehouseRestriction {
@@ -200,8 +252,19 @@ export interface WarehouseRestriction {
   reasonCodes: string[];
 }
 
+export type OrderLifecycle =
+  | 'fulfilled'
+  | 'in_progress'
+  | 'cancelled'
+  | 'unknown';
+
 export interface OrderRecord {
-  orderedAt: IsoDate;
+  acceptedAt: IsoDateTime;
+  plannedShipAt: IsoDateTime | null;
+  handedToDeliveryAt: IsoDateTime | null;
+  deliveredAt: IsoDateTime | null;
+  lifecycle: OrderLifecycle;
+  rawStatus: string;
   sku: Sku;
   article: SellerArticle;
   name: string;
@@ -234,22 +297,13 @@ export interface TariffRow {
 }
 ```
 
-## Import pipeline
+No buyer name, address, INN/KPP, legal-entity name, payment details or other unnecessary personal/customer fields may enter canonical state or IndexedDB.
 
-Each file passes through:
+The orders importer extracts only fields required by the product and discards the rest immediately after decoding each raw row.
 
-```text
-raw file
-→ parser
-→ format detector
-→ column mapper
-→ row decoder
-→ normalization
-→ validation
-→ canonical records + diagnostics
-```
+---
 
-No malformed row may crash the whole import. Import results must contain both accepted records and diagnostics.
+# 7. Import result contract
 
 ```ts
 export interface ImportDiagnostic {
@@ -263,29 +317,81 @@ export interface ImportDiagnostic {
 export interface ImportResult<T> {
   records: T[];
   diagnostics: ImportDiagnostic[];
-  sourceName: string;
-  importedAt: string;
+  meta: ReportMeta;
 }
 ```
 
-Missing mandatory columns are file-level errors. Invalid individual rows are row-level errors and are skipped unless doing so would make the dataset unusable.
+Malformed individual rows do not crash the full import.
 
-## Cluster normalization
+Missing mandatory columns are file-level errors.
 
-There is no hard-coded master list of clusters.
+---
 
-Cluster IDs are generated from normalized names found in the input datasets. Normalization handles whitespace, case, punctuation and known harmless textual variants.
+# 8. Ozon XLSX robustness requirement
 
-Ambiguous or materially different names must not be silently merged. They appear in diagnostics and may be manually mapped by the user. Manual mappings are persisted locally.
+The provided real Ozon workbooks contain worksheets whose XML `dimension` may incorrectly declare `A1` while the sheet actually contains hundreds or thousands of rows.
 
-## Demand model
+The workbook reader must not trust worksheet `dimension` as the authoritative used range.
 
-Historical demand is attributed exclusively by `destinationClusterId`.
+Required behavior:
 
-Canonical aggregation:
+1. parse populated worksheet cells/rows even if `dimension=A1` is wrong;
+2. detect suspicious workbook metadata;
+3. emit an importer diagnostic such as `WORKSHEET_DIMENSION_REPAIRED`;
+4. prove behavior with a sanitized regression fixture reproducing the malformed dimension pattern.
+
+A normal synthetic XLSX fixture alone is insufficient acceptance evidence.
+
+---
+
+# 9. Cluster normalization
+
+There is no hard-coded master cluster list.
+
+Cluster IDs are derived from imported data.
+
+Automatic normalization may handle only harmless formatting differences: whitespace, case, punctuation and explicitly known aliases.
+
+Semantically ambiguous names are never silently merged. They require a visible manual mapping, persisted locally.
+
+---
+
+# 10. Order lifecycle populations
+
+Orders are used for two different analytical purposes and therefore require two explicit populations.
+
+## 10.1 Net demand observations
+
+Used to estimate where non-cancelled customer demand arose.
+
+```text
+fulfilled + in_progress
+```
+
+Cancelled orders are excluded from net demand by default.
+
+## 10.2 Fulfilled route observations
+
+Used to learn actual origin → destination fulfillment behavior and stockout substitution.
+
+Only orders classified as `fulfilled` are included.
+
+`in_progress`, `cancelled` and `unknown` statuses are excluded from actual-route shares.
+
+## 10.3 Incomplete periods
+
+The current ISO week and any week without sufficient completed fulfillment must not be used as an ordinary baseline/comparison period in stockout detection.
+
+The UI may display current-week demand separately, but stockout inference must be based on completed historical periods.
+
+---
+
+# 11. Demand model
+
+Demand is attributed exclusively by `destinationClusterId`.
 
 ```ts
-interface DemandCell {
+export interface DemandCell {
   sku: Sku;
   destinationClusterId: ClusterId;
   quantity: number;
@@ -293,14 +399,22 @@ interface DemandCell {
 }
 ```
 
-This answers: **where did buyers request the product?**
+The demand matrix answers:
 
-## Fulfillment matrix
+> Where did buyers request the product?
 
-For each `SKU × destination cluster`, aggregate where fulfillment originated:
+It must never infer demand from origin shipments.
+
+---
+
+# 12. Fulfillment matrix and donor matrix
+
+Actual-route analytics use fulfilled route observations only.
+
+For each `SKU × destination cluster`:
 
 ```ts
-interface FulfillmentShare {
+export interface FulfillmentShare {
   sku: Sku;
   destinationClusterId: ClusterId;
   originClusterId: ClusterId;
@@ -309,61 +423,69 @@ interface FulfillmentShare {
 }
 ```
 
-Also build the reverse donor view for `SKU × origin cluster → destination clusters`.
-
-Two distinct metrics must remain separate:
-
-- **Destination local fulfillment share**: demand of cluster D fulfilled from D / all demand of D.
-- **Origin local share**: units shipped from O to O / all units shipped from O.
-
-## Weekly series
-
-Route behavior is analyzed in fixed ISO-week buckets.
-
-For each `SKU × destination cluster × week` calculate:
-
-- total demand quantity;
-- locally fulfilled quantity/share;
-- quantities/shares by external origin;
-- total order count.
-
-Weekly aggregation is the input to probable-stockout detection.
-
-## Probable stockout detector
-
-Historical daily stock is not available in MVP. The detector therefore produces a diagnostic hypothesis, never a confirmed fact.
-
-Allowed status wording:
+Also build the reverse view:
 
 ```text
-Вероятный stockout <cluster>
+SKU × origin cluster → destination clusters
 ```
 
-A strong signal is:
+Two metrics remain distinct:
+
+- **Destination local fulfillment share** = demand in D fulfilled from D / all fulfilled demand in D.
+- **Origin local share** = units shipped O → O / all fulfilled units shipped from O.
+
+---
+
+# 13. Weekly route series
+
+For each completed ISO week and `SKU × destination cluster` calculate:
+
+- fulfilled demand quantity;
+- local fulfilled quantity/share;
+- quantities/shares by external origin;
+- fulfilled order count.
+
+Keep net-demand volume separately when useful for demand stability checks.
+
+---
+
+# 14. Probable stockout detector
+
+Historical daily stocks are not available in MVP; the detector produces a hypothesis, not a confirmed fact.
+
+Allowed wording:
+
+```text
+Вероятный stockout Москвы
+```
+
+Strong route evidence:
 
 1. destination demand remains broadly stable;
-2. local fulfillment share drops materially;
-3. one or more external origin shares rise materially;
-4. sample size is sufficient.
+2. local fulfillment share falls materially;
+3. one or more external origins rise materially;
+4. the sample is sufficient;
+5. the comparison uses completed periods.
 
 Initial configurable thresholds:
 
-- local share drop: 30 percentage points;
-- external replacement rise: 20 percentage points;
-- minimum weekly demand: 10 units;
-- minimum prior local share: 60%;
-- demand-retention floor: current week demand >= 60% of baseline demand.
-
-The implementation must return evidence, not only a boolean:
+- prior local share >= 60%;
+- local share drop >= 30 percentage points;
+- external replacement rise >= 20 percentage points;
+- minimum fulfilled weekly quantity = 10;
+- demand retention >= 60% of baseline.
 
 ```ts
 export interface StockoutSignal {
   sku: Sku;
   destinationClusterId: ClusterId;
   confidence: 'low' | 'medium' | 'high';
+  baselineWeek: string;
+  observedWeek: string;
   baselineLocalShare: number;
   observedLocalShare: number;
   demandRetention: number;
+  availabilityCorroboration: 'supports' | 'neutral' | 'contradicts';
   replacementOrigins: Array<{
     originClusterId: ClusterId;
     shareBefore: number;
@@ -373,33 +495,91 @@ export interface StockoutSignal {
 }
 ```
 
-Initial confidence rules are deterministic and testable. The thresholds are configuration, not magic constants hidden in UI code.
+## Availability corroboration
 
-The signal does **not** automatically rewrite an Ozon recommendation in MVP. It reduces trust and triggers a sanity-check warning.
+If the current `Доступность товаров` record for the same `SKU × destination cluster` shows evidence such as `daysWithoutStock > 0`, the detector may raise confidence or append corroborating evidence.
 
-## Route profile for expected logistics
+Because availability is a current snapshot, it must not be used to fabricate a historical stock fact for a specific past date.
 
-For a candidate placement cluster, estimate which destination clusters it historically served.
+A contradictory current snapshot may reduce confidence but cannot erase strong historical route evidence automatically.
 
-Store two route profiles where data permits:
+---
 
-- `observed`: all historical routes;
-- `clean`: excludes weeks classified as high-confidence stockout substitution for the affected destination.
+# 15. Recommendation distortion signal
 
-Fallback hierarchy when SKU-level data are sparse:
+A stockout belongs to the **destination that lost local fulfillment**.
+
+A potentially distorted recommendation may belong to a **different origin cluster that acted as donor**.
+
+These must be separate contracts.
+
+Example:
+
+```text
+Probable stockout: Moscow
+Replacement origin: Kazan
+Ozon recommendation: Kazan +150
+```
+
+The application must be able to flag the Kazan recommendation because Kazan historically fulfilled Moscow's substituted demand.
+
+```ts
+export interface RecommendationDistortionSignal {
+  sku: Sku;
+  recommendedClusterId: ClusterId;
+  confidence: 'low' | 'medium' | 'high';
+  affectedDestinations: Array<{
+    destinationClusterId: ClusterId;
+    stockoutConfidence: 'low' | 'medium' | 'high';
+    donorShareAfter: number;
+    donorShareIncrease: number;
+  }>;
+  explanationCodes: string[];
+}
+```
+
+A distortion signal does **not** change Ozon's quantity automatically in MVP.
+
+It changes trust/explainability and enables counterfactual comparison.
+
+---
+
+# 16. Route profiles for expected logistics
+
+For each candidate placement origin estimate destination probabilities.
+
+Maintain:
+
+- `observed` profile — all eligible fulfilled historical routes;
+- `clean` profile — excludes fulfilled routes from high-confidence stockout-substitution weeks for affected destinations.
+
+Fallback hierarchy:
 
 1. `SKU × origin cluster` clean profile;
 2. `SKU × origin cluster` observed profile;
-3. origin-cluster profile across all SKUs;
-4. global route profile.
+3. origin cluster across all SKUs;
+4. global fulfilled route profile.
 
-Every profile carries a confidence/source label so the UI can explain the estimate.
+Each profile carries source, sample size and confidence.
 
-## Tariff engine
+No cancelled or in-progress order may enter route probabilities.
 
-The tariff workbook is user-supplied and locally persisted. It is not compiled into application source.
+---
 
-On import, tariff rows are normalized and indexed by:
+# 17. Tariff import and tariff engine
+
+Tariffs are user-loaded and persisted locally, not compiled into source.
+
+The importer must accept:
+
+1. a tariff-only workbook;
+2. the existing unit-economics workbook containing a tariff sheet such as `Логистика с 28 августа 2026г.`.
+
+The importer detects the tariff sheet by required column signatures, not only by exact sheet name.
+
+The existing workbook may optionally provide initial product parameters such as commission, volume, price and cost where recognizable. These imports are convenience only and remain editable.
+
+Tariff rows are indexed by:
 
 ```text
 origin cluster
@@ -408,41 +588,78 @@ origin cluster
 × optional price interval
 ```
 
-Lookup API:
+Missing tariff coverage is a calculation blocker, never zero cost.
 
-```ts
-export interface TariffLookupInput {
-  originClusterId: ClusterId;
-  destinationClusterId: ClusterId;
-  volumeLiters: number;
-  price: number;
-}
+---
 
-export interface TariffLookupResult {
-  fee: number | null;
-  matchedRow: TariffRow | null;
-  diagnosticCode: string | null;
-}
-```
+# 18. Expected logistics
 
-Missing route/volume matches are explicit calculation blockers for that candidate cluster, never silently treated as zero.
-
-## Expected logistics
-
-For a candidate placement origin `O`:
+For candidate origin O:
 
 ```text
 E(logistics | SKU, O)
-= Σ P(destination_i | SKU, O) × tariff(SKU volume, O, destination_i, price)
+= Σ P(destination_i | SKU, O)
+  × tariff(volume, O, destination_i, price)
 ```
 
-The result includes the route profile source and coverage percentage.
+Result includes:
 
-If tariff coverage is incomplete, the result is marked incomplete and cannot receive a green recommendation.
+- expected fee;
+- tariff coverage;
+- route profile source;
+- route confidence;
+- missing destinations.
 
-## Unit-economics engine
+Partial tariff coverage is visible and prevents a green recommendation.
 
-The first implementation must reproduce the working spreadsheet's formulas for equivalent inputs. The spreadsheet is the regression oracle.
+---
+
+# 19. Spreadsheet-parity unit economics
+
+The working spreadsheet is the regression oracle.
+
+The engine must represent all material spreadsheet inputs explicitly rather than hiding them in UI or constants.
+
+```ts
+export type TaxSystem =
+  | 'usn_income'
+  | 'usn_income_minus_expenses'
+  | 'osno'
+  | 'manual';
+
+export interface EconomicsSettings {
+  acquiringRate: number;
+  advertisingRate: number;
+  buyoutRate: number;
+  fixedFboFee: number;
+  taxSystem: TaxSystem;
+  incomeTaxRate: number;
+  vatRate: number;
+  coInvestRate: number;
+}
+
+export interface UnitEconomicsInput {
+  sku: Sku;
+  placementClusterId: ClusterId;
+  price: number;
+  cost: number;
+  commissionRate: number;
+  expectedLogistics: number;
+  settings: EconomicsSettings;
+}
+```
+
+If the spreadsheet represents one of these concepts with different exact semantics, the golden fixture is authoritative and the engine must reproduce the spreadsheet's order of operations.
+
+Optimizer thresholds are **not** part of `EconomicsSettings`.
+
+```ts
+export interface OptimizerThresholds {
+  minProfitPerUnit: number;
+  minMarginRate: number;
+  minRoi: number;
+}
+```
 
 Canonical result:
 
@@ -455,6 +672,9 @@ export interface UnitEconomicsResult {
   acquiring: number;
   expectedLogistics: number;
   advertisingAndServices: number;
+  coInvest: number;
+  vat: number;
+  incomeTax: number;
   tax: number;
   cost: number;
   profitPerUnit: number;
@@ -465,11 +685,11 @@ export interface UnitEconomicsResult {
 }
 ```
 
-All rates/settings are explicit calculation inputs. Formula code must not read values directly from DOM or persistence.
+---
 
-## Supply feasibility
+# 20. Supply feasibility
 
-For each `SKU × cluster`, derive:
+For each `SKU × cluster` derive:
 
 ```ts
 export interface SupplyFeasibility {
@@ -482,227 +702,347 @@ export interface SupplyFeasibility {
 }
 ```
 
-If every warehouse in a cluster rejects the SKU, the cluster is infeasible.
+If all warehouses reject the SKU, the cluster is infeasible.
 
-When warehouse caps are present, cluster capacity is the safe aggregate capacity defined by the report semantics. If the report's cap semantics are ambiguous, the implementation must use the conservative interpretation and surface a diagnostic rather than summing blindly.
+Ambiguous per-warehouse maximum semantics must be interpreted conservatively and surfaced with a reason code instead of blindly summed.
 
-## Candidate cluster score
+---
 
-A candidate combines:
+# 21. Placement assessment vs optimization candidate
 
-- Ozon recommended quantity;
-- feasibility;
-- unit economics;
-- stockout-risk diagnostic;
-- route-profile confidence.
+These are deliberately separate.
+
+## Placement assessment
+
+The application may economically assess a relevant cluster even when Ozon recommends zero units there.
+
+This enables the user to compare:
+
+```text
+Kazan +100 vs Moscow +100
+```
+
+when Kazan may be a donor for Moscow stockout.
 
 ```ts
-export interface ClusterCandidate {
+export interface PlacementAssessment {
   sku: Sku;
   clusterId: ClusterId;
   ozonRecommendedQty: number;
-  feasibleQty: number;
+  feasibility: SupplyFeasibility;
   economics: UnitEconomicsResult;
-  stockoutSignal: StockoutSignal | null;
+  distortionSignal: RecommendationDistortionSignal | null;
   routeConfidence: 'low' | 'medium' | 'high';
   statusCodes: string[];
 }
 ```
 
-Stockout warning remains explanatory in MVP; it does not change the optimizer's recommendation ceiling automatically.
+Relevant clusters include at minimum:
 
-## Optimizer
+- clusters with Ozon recommendation > 0;
+- the SKU's demand destinations;
+- replacement origins implicated by stockout signals;
+- stockout-affected destinations needed for counterfactual comparison.
 
-For each SKU, the user provides available stock.
+## Optimization candidate
 
-Constraints:
+Automatic allocation in MVP is narrower:
+
+```text
+Ozon recommendation > 0
+AND feasible
+AND economics complete
+AND above user thresholds
+```
+
+A counterfactual cluster with zero Ozon recommendation can be shown but automatic allocation remains capped at zero in MVP.
+
+---
+
+# 22. Optimizer
+
+For each SKU:
 
 ```text
 0 <= allocation(cluster)
 allocation(cluster) <= Ozon recommended quantity
 allocation(cluster) <= feasible cluster quantity
-Σ allocation(cluster) <= available stock
+Σ allocation(cluster) <= seller available stock
 ```
 
-Optional user thresholds:
-
-- minimum profit per unit;
-- minimum margin;
-- minimum ROI.
-
-Candidates below thresholds are excluded.
-
-MVP objective:
+Objective:
 
 ```text
 maximize Σ allocation(cluster) × expected profit per unit(cluster)
 ```
 
-Because the objective is linear and units are homogeneous within a candidate, the MVP can use a deterministic greedy allocation sorted by expected profit per unit after all constraints/thresholds are applied. No LP solver dependency is needed unless future constraints make the problem non-linear or cross-SKU.
+With linear homogeneous units, deterministic greedy allocation by expected profit/unit is sufficient for MVP after filters and constraints.
 
-Tie-breaking order must be deterministic:
+Tie breaks:
 
 1. higher profit/unit;
 2. higher route confidence;
-3. lower stockout risk;
+3. lower recommendation-distortion risk;
 4. higher Ozon recommended quantity;
-5. stable cluster ID order.
+5. stable cluster ID.
 
-## Recommendation statuses
+---
 
-Statuses are derived from codes, not hard-coded presentation strings.
+# 23. Recommendation statuses
 
-Minimum set:
+Minimum machine-readable codes:
 
-- `OK` — economically acceptable and feasible;
-- `LOW_ECONOMICS` — below configured threshold;
-- `PROBABLE_STOCKOUT_DISTORTION` — historical substitution risk;
-- `NEGATIVE_ECONOMICS` — expected profit < 0;
-- `SUPPLY_BLOCKED` — physical placement unavailable;
-- `INCOMPLETE_DATA` — required calculation input missing.
+- `OK`;
+- `LOW_ECONOMICS`;
+- `NEGATIVE_ECONOMICS`;
+- `PROBABLE_STOCKOUT`;
+- `PROBABLE_RECOMMENDATION_DISTORTION`;
+- `SUPPLY_BLOCKED`;
+- `INCOMPLETE_DATA`;
+- `INCOMPLETE_TARIFF_COVERAGE`;
+- `LOW_ROUTE_CONFIDENCE`;
+- `COUNTERFACTUAL_ONLY`.
 
-UI renders Russian labels and explanations from these codes.
+UI renders Russian labels and evidence from codes.
 
-## Local persistence
+No opaque score is allowed as the sole explanation.
 
-Persist slowly changing data:
+---
 
-- tariff dataset + import metadata;
+# 24. Local persistence
+
+Persist slowly changing inputs only by default:
+
+- tariff dataset + metadata;
 - product economics inputs;
 - manual cluster mappings;
-- global economics settings;
+- economics settings;
 - optimizer thresholds.
 
-Do not silently treat old operational reports as current. Availability, restrictions and orders must display file name, report period/date and import timestamp.
+Operational datasets may be restored only if their source/report dates remain visibly labelled as stale/current.
 
-Persistence interface:
+No raw CSV/XLSX row and no customer PII is persisted.
 
-```ts
-export interface LocalStore {
-  get<T>(key: string): Promise<T | null>;
-  set<T>(key: string, value: T): Promise<void>;
-  remove(key: string): Promise<void>;
-}
-```
+---
 
-Use IndexedDB in production with an in-memory implementation for tests.
+# 25. UI information architecture
 
-## UI information architecture
+## Data/import screen
 
-### 1. Data / import screen
+Operational Ozon data:
 
-Two groups:
-
-**Operational Ozon data**
 - Availability;
 - Warehouse restrictions;
 - Orders history.
 
-**Economics**
-- Tariffs;
-- product parameters/cost/available stock;
-- global settings.
+Economics:
 
-Each file card shows source name, period/date, row count, SKU count and validation status.
+- Tariffs / source workbook;
+- product parameters / cost / available stock;
+- global economics settings;
+- optimizer thresholds.
 
-### 2. Dashboard / supply plan
+Each file card shows:
 
-Top metrics:
+- source file;
+- report period/date;
+- import timestamp;
+- rows accepted/rejected;
+- SKU count;
+- validation status.
 
-- analyzed SKUs;
-- total Ozon recommended units;
-- seller available units;
-- units allocated;
-- expected profit;
-- negative-economics recommendations;
-- probable-stockout warnings;
-- blocked routes;
-- incomplete SKUs.
+Warn when operational report dates do not align.
 
-Main table shows the optimized supply plan.
-
-### 3. SKU detail
+## Dashboard / supply plan
 
 Show:
 
-- product/economics inputs;
-- Ozon recommendation by cluster;
-- economics by candidate cluster;
-- demand-by-destination;
-- fulfillment sources of selected destination;
-- reverse donor view for selected origin;
-- weekly local/non-local fulfillment history;
-- probable-stockout evidence;
-- reasoned allocation result.
+- analyzed SKUs;
+- Ozon recommended units;
+- seller available units;
+- allocated units;
+- expected profit;
+- negative-economics recommendations;
+- probable stockout destinations;
+- recommendations with probable distortion;
+- blocked routes;
+- incomplete SKUs.
 
-### 4. Diagnostics
+## SKU detail
 
-Show import and calculation blockers with direct navigation to the affected SKU/cluster/input.
+Show four distinct views:
 
-## Explainability requirement
+1. **Demand view** — where buyers were located.
+2. **Destination fulfillment view** — who fulfilled a selected destination's demand.
+3. **Origin donor view** — where stock from a selected origin actually went.
+4. **Placement comparison** — economics of relevant candidate/counterfactual clusters.
 
-Every allocation and exclusion must have machine-readable reason codes and human-readable evidence.
+Stockout detail shows:
 
-Example:
+- baseline vs observed local share;
+- replacement origins;
+- demand retention;
+- availability corroboration;
+- confidence.
+
+If Kazan is implicated in Moscow's stockout and Ozon recommends Kazan, Kazan's row must explicitly show the link to Moscow.
+
+---
+
+# 26. Testing strategy
+
+## Import tests
+
+- Cyrillic headers and locale numbers.
+- CSV BOM and delimiter handling.
+- Exact orders status mapping.
+- PII does not appear in canonical output.
+- Malformed Ozon `dimension=A1` workbook fixture imports all actual rows.
+- Tariff sheet auto-detection inside a multi-sheet workbook.
+
+## Lifecycle tests
+
+Given statuses:
 
 ```text
-Moscow
-Ozon: 120
-Profit/unit: +181 ₽
-ROI: 61%
-Feasible: yes
-Stockout risk: low
-Allocated: 120
-Reason: highest remaining expected contribution, within Ozon recommendation and warehouse capacity.
+Доставлен
+Отменён
+Доставляется
+Ожидает отгрузки
+Ожидает сборки
 ```
 
-No opaque score may be the sole basis of a recommendation.
+verify:
 
-## Testing strategy
+- cancelled is excluded from net demand and route analytics;
+- fulfilled contributes to demand and route analytics;
+- in-progress may contribute to current net demand but not historical fulfilled-route shares;
+- current incomplete week is excluded from stockout baseline/comparison.
 
-### Unit tests
+## Demand/route invariant test
 
-Pure domain modules:
-
-- cluster normalization;
-- import row decoding;
-- demand aggregation;
-- fulfillment shares;
-- weekly series;
-- stockout detector;
-- tariff lookup boundaries;
-- expected logistics;
-- spreadsheet-parity formulas;
-- feasibility;
-- optimizer constraints and tie-breaks.
-
-### Fixture tests
-
-Store sanitized/minimal fixtures derived from the provided report schemas. Do not commit seller-sensitive full raw reports unless explicitly approved.
-
-### Spreadsheet regression tests
-
-Create a compact golden fixture from several rows of the working unit-economics spreadsheet with inputs and expected outputs. The TypeScript engine must match these values within defined rounding tolerance.
-
-### Integration tests
-
-Exercise:
+Synthetic fulfilled data:
 
 ```text
-fixture files
+800 Moscow → Moscow
+200 Kazan → Moscow
+100 Kazan → Kazan
+```
+
+Expected:
+
+```text
+Moscow demand = 1000
+Kazan demand = 100
+Moscow local fulfillment share = 80%
+Kazan origin local share = 100 / 300 = 33.33%
+```
+
+## Stockout test
+
+```text
+week 1: Moscow demand 100, Moscow local 90%, Kazan donor 5%
+week 2: Moscow demand 95, Moscow local 20%, Kazan donor 65%
+```
+
+Expected:
+
+- `Вероятный stockout Москвы`;
+- Kazan listed as replacement origin;
+- a Kazan recommendation can receive `PROBABLE_RECOMMENDATION_DISTORTION`;
+- Moscow and Kazan both appear in placement comparison.
+
+Negative controls:
+
+- demand collapse;
+- insufficient sample;
+- low prior local share;
+- no replacement-origin increase;
+- incomplete current week.
+
+## Spreadsheet regression
+
+Create 5–10 sanitized golden cases from the working workbook covering:
+
+- local and intercluster logistics;
+- commission;
+- acquiring;
+- advertising/services;
+- buyout treatment;
+- tax system;
+- VAT where applicable;
+- co-invest where applicable;
+- cost;
+- profit;
+- margin;
+- ROI.
+
+Application results must match spreadsheet outputs within explicit rounding tolerance.
+
+## Optimizer tests
+
+Assert:
+
+- allocation never exceeds Ozon recommendation;
+- allocation never exceeds feasible capacity;
+- total never exceeds seller available stock;
+- blocked/incomplete/below-threshold candidates receive zero;
+- counterfactual-only clusters are not silently allocated above Ozon zero recommendation;
+- expected plan profit equals line contributions;
+- result is deterministic.
+
+## Integration tests
+
+```text
+real-schema fixture files
 → import
-→ normalize
-→ analytics
-→ economics
+→ lifecycle populations
+→ demand/routes
+→ stockout
+→ recommendation distortion
+→ route profiles
+→ tariffs/economics
+→ placement assessments
 → feasibility
 → optimizer
-→ plan result
+→ explainable plan
 ```
 
-### Browser smoke test
+## Browser smoke test
 
-Verify the release can be opened from `file://`, import local fixture files and produce a plan without network access.
+Open the built release from `file://`, import fixtures without network access and produce an explainable plan.
 
-## Definition of MVP done
+---
 
-MVP is complete when a user can open the release locally, load the supported real Ozon reports without preprocessing, supply cost/available stock, load tariffs, inspect demand and fulfillment routes, see probable-stockout warnings, calculate forecast cluster economics, respect warehouse restrictions, allocate limited stock, and understand why every unit was or was not allocated.
+# 27. Manual validation checkpoints
+
+After route analytics, manually check several SKUs against the real reports.
+
+After stockout detection, manually validate 5–10 `Вероятный stockout` signals against historical evidence available in Ozon. Record confirmed/not-confirmed results outside the automatic decision path.
+
+If the heuristic proves reliable, it can be trusted as a high-value diagnostic while still remaining formally probabilistic until historical stock data are added.
+
+Before optimizer merge, verify spreadsheet parity on real golden examples.
+
+---
+
+# 28. Definition of MVP done
+
+MVP is complete when the user can:
+
+1. open the release locally;
+2. load the real Ozon reports without preprocessing;
+3. load the existing tariff/unit-economics workbook or a tariff workbook;
+4. see exact report dates and diagnostics;
+5. inspect demand by delivery cluster;
+6. inspect fulfillment sources by destination;
+7. inspect where each origin's stock actually went;
+8. see probable stockout signals based only on completed/eligible order history;
+9. see when an Ozon recommendation may be distorted because the recommended cluster acted as donor for another cluster's stockout;
+10. compare the economics of recommended and relevant counterfactual placements;
+11. respect warehouse restrictions;
+12. enter/edit cost and available stock;
+13. reproduce the spreadsheet's unit economics;
+14. allocate limited stock within Ozon recommendation ceilings to maximize expected absolute profit;
+15. understand every allocation, exclusion and warning;
+16. perform all of the above without transmitting seller or customer data externally.
