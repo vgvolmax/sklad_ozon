@@ -2,96 +2,110 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a fully local FBO planning application that imports Ozon reports, reconstructs demand and fulfillment routes, detects probable stockout substitution, reproduces the spreadsheet unit economics, and allocates limited stock to maximize expected absolute profit.
+**Goal:** Build a fully local FBO planning application that imports real Ozon reports, separates demand from fulfillment, detects probable stockout substitution and recommendation distortion, reproduces the spreadsheet unit economics, compares relevant placements, and allocates limited stock within Ozon recommendation ceilings to maximize expected absolute profit.
 
-**Architecture:** Functional core / imperative shell. Ozon-specific file formats terminate at import adapters; all downstream modules consume canonical TypeScript domain contracts. Development uses TypeScript and Node-based build/test tooling, while the release is a static offline bundle that runs from `file://` without Node, Python, backend, API, or CDN.
+**Architecture:** Functional core / imperative shell. Ozon-specific file quirks terminate at import adapters; downstream modules consume canonical TypeScript contracts. Development uses TypeScript and Node-based build/test tooling, while the release is a static offline bundle that runs from `file://` without Node, Python, backend, API, CDN, accounts, or network access.
 
-**Tech Stack:** TypeScript, esbuild, Vitest, SheetJS (`xlsx`), Papa Parse, IndexedDB, vanilla DOM/CSS, optional Playwright only for final offline browser smoke tests.
+**Tech Stack:** TypeScript, esbuild, Vitest, SheetJS (`xlsx`) with a malformed-dimension recovery path, Papa Parse, IndexedDB, vanilla DOM/CSS, Playwright for the final offline smoke test if practical in CI.
 
 **Spec:** `docs/superpowers/specs/2026-08-19-ozon-fbo-unit-economics-optimizer-design.md`
 
 ## Global Constraints
 
 - FBO only in MVP.
-- No Ozon API, backend, cloud storage, user accounts, or runtime server.
+- No Ozon API, backend, cloud storage, accounts, or runtime server.
 - Release must open from `file://` and must not require Node.js or Python.
 - No runtime CDN dependencies.
 - Demand is always attributed to the **delivery cluster**, never the dispatch cluster.
-- `Вероятный stockout` is diagnostic evidence only and must not silently override an Ozon recommendation in MVP.
-- Tariff matrix is user-loaded and locally persisted, not hard-coded into application source.
-- Cluster master data are derived from imported sources; ambiguous mappings require explicit diagnostics/manual mapping.
-- Business formulas must not read from DOM or IndexedDB directly.
-- Missing tariff/economics inputs are blockers, never silently replaced with zero.
-- Full seller-sensitive raw reports are not committed to the repository; tests use minimal sanitized fixtures.
+- Fulfillment route analytics use only fulfilled orders; cancelled and in-progress orders cannot enter actual-route shares.
+- The current/incomplete week cannot be used as an ordinary stockout baseline/comparison week.
+- `Вероятный stockout` is diagnostic evidence only and must not silently override Ozon recommendation quantities.
+- A recommendation-distortion signal belongs to a recommended donor origin and is distinct from the stockout signal of the affected destination.
+- Counterfactual placement may be calculated for zero-Ozon-recommendation clusters, but automatic MVP allocation remains capped by Ozon recommendation.
+- Tariff matrix is user-loaded and locally persisted, not hard-coded.
+- Cluster master data are derived from imported sources; ambiguous mappings require explicit manual mapping.
+- Business formulas do not read directly from DOM or IndexedDB.
+- Missing tariff/economics inputs are blockers, never zero.
+- Buyer PII and irrelevant raw CSV fields never enter canonical state or IndexedDB.
+- Full seller-sensitive raw reports are not committed; tests use sanitized fixtures.
 
 ---
 
-## File map locked for MVP
+# File map locked for MVP
 
 ```text
-index.html                         release entry template
-styles.css                         application styles
-package.json                       development-only scripts/dependencies
-tsconfig.json                      TypeScript configuration
-vitest.config.ts                   test configuration
-scripts/build.mjs                  bundles TypeScript to dist/app.js IIFE
-scripts/copy-release-assets.mjs    writes static release files
+index.html
+styles.css
+package.json
+tsconfig.json
+vitest.config.ts
+scripts/build.mjs
+scripts/copy-release-assets.mjs
 
-src/app/bootstrap.ts               application composition root
-src/app/state.ts                   AppState and reducer-like state transitions
-src/app/selectors.ts               derived UI data only
+src/app/bootstrap.ts
+src/app/state.ts
+src/app/selectors.ts
 
-src/domain/models.ts               canonical business models
-src/domain/result.ts               Result/diagnostic primitives
-src/domain/invariants.ts           runtime domain assertions
+src/domain/models.ts
+src/domain/result.ts
+src/domain/invariants.ts
+src/domain/report-meta.ts
 
-src/importers/workbook.ts          shared XLSX workbook access helpers
-src/importers/csv.ts               robust CSV decoding
-src/importers/availability.ts      Ozon availability adapter
-src/importers/restrictions.ts      warehouse restriction adapter
-src/importers/orders.ts            orders.csv adapter
-src/importers/tariffs.ts           tariff workbook adapter
-src/importers/products.ts          seller economics/stock input adapter
-src/importers/import-diagnostics.ts diagnostic aggregation
+src/importers/workbook.ts
+src/importers/csv.ts
+src/importers/availability.ts
+src/importers/restrictions.ts
+src/importers/orders.ts
+src/importers/tariffs.ts
+src/importers/products.ts
+src/importers/import-diagnostics.ts
 
-src/normalization/clusters.ts      cluster canonicalization/manual mappings
-src/normalization/sku.ts           SKU/article normalization
-src/normalization/numbers.ts       locale-safe numeric parsing
-src/normalization/dates.ts         report date parsing/week bucketing
+src/normalization/clusters.ts
+src/normalization/sku.ts
+src/normalization/numbers.ts
+src/normalization/dates.ts
+src/normalization/order-status.ts
 
-src/analytics/demand-matrix.ts     destination demand aggregation
-src/analytics/fulfillment-matrix.ts origin↔destination shares
-src/analytics/weekly-series.ts     weekly route history
-src/analytics/stockout-detector.ts probable-stockout heuristic
-src/analytics/route-profile.ts     observed/clean route profiles + fallback
+src/analytics/order-populations.ts
+src/analytics/demand-matrix.ts
+src/analytics/fulfillment-matrix.ts
+src/analytics/weekly-series.ts
+src/analytics/stockout-detector.ts
+src/analytics/recommendation-distortion.ts
+src/analytics/route-profile.ts
 
-src/economics/tariff-index.ts      indexed tariff representation
-src/economics/tariff-lookup.ts     exact tariff lookup
-src/economics/expected-logistics.ts expected route-weighted logistics
-src/economics/unit-economics.ts    spreadsheet-parity economics engine
+src/economics/tariff-index.ts
+src/economics/tariff-lookup.ts
+src/economics/expected-logistics.ts
+src/economics/unit-economics.ts
 
-src/supply/feasibility.ts          SKU×cluster warehouse feasibility
-src/supply/cluster-score.ts        candidate composition/status codes
-src/supply/optimizer.ts            deterministic constrained allocation
+src/supply/feasibility.ts
+src/supply/placement-assessment.ts
+src/supply/cluster-candidate.ts
+src/supply/optimizer.ts
 
-src/persistence/store.ts           LocalStore interface + keys/versioning
-src/persistence/indexeddb-store.ts IndexedDB implementation
-src/persistence/memory-store.ts    deterministic test implementation
+src/persistence/store.ts
+src/persistence/indexeddb-store.ts
+src/persistence/memory-store.ts
 
-src/ui/shell.ts                    navigation/layout
-src/ui/upload-view.ts              report and economics import UI
-src/ui/dashboard-view.ts           KPI + optimized plan
-src/ui/sku-view.ts                 SKU detail + route/stockout evidence
-src/ui/plan-view.ts                allocation table + explanations
-src/ui/diagnostics-view.ts         import/calculation blockers
-src/ui/components/*.ts             small reusable DOM components
+src/ui/shell.ts
+src/ui/upload-view.ts
+src/ui/dashboard-view.ts
+src/ui/sku-view.ts
+src/ui/plan-view.ts
+src/ui/diagnostics-view.ts
+src/ui/components/*.ts
 
-tests/fixtures/*                   sanitized/minimal fixtures
-tests/importers/*                  adapter contract tests
-tests/analytics/*                  demand/route/stockout tests
-tests/economics/*                  tariff + spreadsheet parity tests
-tests/supply/*                     feasibility/optimizer tests
-tests/integration/*                end-to-end domain pipeline tests
+tests/fixtures/*
+tests/domain/*
+tests/normalization/*
+tests/importers/*
+tests/analytics/*
+tests/economics/*
+tests/supply/*
+tests/persistence/*
+tests/integration/*
+tests/browser/*
 ```
 
 ---
@@ -100,22 +114,22 @@ tests/integration/*                end-to-end domain pipeline tests
 
 | PR | Deliverable | Merge gate |
 |---|---|---|
-| PR1 | Static offline foundation + canonical domain contracts | `dist/index.html` opens from `file://`; tests green |
-| PR2 | Ozon operational imports + normalization + diagnostics | real-schema fixtures import without preprocessing |
-| PR3 | Tariff/product imports + local persistence | tariff lookup dataset and product economics survive reload |
-| PR4 | Demand, fulfillment, weekly route analytics | destination/origin shares match hand-calculated fixtures |
-| PR5 | Probable stockout detector + clean route profiles | synthetic Moscow/Kazan substitution cases classified correctly |
-| PR6 | Tariff engine + expected logistics + spreadsheet-parity unit economics | golden Excel fixture matches within tolerance |
-| PR7 | Warehouse feasibility + candidate scoring + optimizer | all constraints hold; limited stock maximizes expected profit |
-| PR8 | Complete user workflow, explainability, release hardening | real reports → optimized plan from offline release |
+| PR1 | Offline foundation + canonical contracts | static release shell; lifecycle/report contracts compile |
+| PR2 | Robust Ozon operational imports + lifecycle classification | real-schema fixtures, malformed-dimension XLSX and PII boundary pass |
+| PR3 | Tariff/product imports + persistence | existing multi-sheet unit workbook imports tariff sheet; settings survive reload |
+| PR4 | Demand, fulfilled-route and weekly analytics | cancelled/in-progress exclusion + hand-calculated route shares pass |
+| PR5 | Probable stockout + recommendation distortion + clean profiles | Moscow stockout correctly flags Kazan donor recommendation without rewriting Ozon qty |
+| PR6 | Tariff engine + expected logistics + spreadsheet parity | golden Excel cases match including taxes/VAT/co-invest |
+| PR7 | Feasibility + placement assessments + limited-stock optimizer | counterfactual comparison works; optimizer respects all ceilings |
+| PR8 | Complete UI + explainability + offline release hardening | real reports → explainable optimized plan from `file://` |
 
-Each PR is intended to be merged before the next one begins. Do not stack multiple unreviewed architectural PRs unless explicitly requested.
+Each PR is merged and reviewed before the next begins.
 
 ---
 
-## PR1 — Static offline foundation and domain contracts
+# PR1 — Offline foundation and canonical contracts
 
-### Task 1: Create development and release skeleton
+## Task 1: Static offline application skeleton
 
 **Files:**
 - Create: `package.json`
@@ -128,34 +142,31 @@ Each PR is intended to be merged before the next one begins. Do not stack multip
 - Create: `src/app/bootstrap.ts`
 - Test: `tests/integration/offline-shell.test.ts`
 
-**Interfaces:**
-- Produces: `npm run build` → `dist/index.html`, `dist/app.js`, `dist/styles.css`.
-- Runtime contract: opening `dist/index.html` must execute `dist/app.js` as a classic script, not require a dev server.
+**Produces:** `npm run build` → `dist/index.html`, `dist/app.js`, `dist/styles.css`.
 
-- [ ] **Step 1: Write the failing build/shell test**
+- [ ] **Step 1: Write failing offline-shell test**
 
 ```ts
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 
-it('builds a file:// compatible static release shell', async () => {
+it('builds a classic-script offline shell', () => {
   expect(existsSync('dist/index.html')).toBe(true);
   expect(existsSync('dist/app.js')).toBe(true);
   const html = readFileSync('dist/index.html', 'utf8');
   expect(html).toContain('<script src="./app.js"></script>');
   expect(html).not.toContain('type="module"');
-  expect(html).not.toContain('http://');
-  expect(html).not.toContain('https://');
+  expect(html).not.toMatch(/https?:\/\//);
 });
 ```
 
-- [ ] **Step 2: Run the test before implementation**
+- [ ] **Step 2: Verify red state**
 
 Run: `npm test -- tests/integration/offline-shell.test.ts`
 
-Expected: FAIL because build files/scripts do not exist.
+Expected: FAIL because build artifacts do not exist.
 
-- [ ] **Step 3: Add minimal package/build configuration**
+- [ ] **Step 3: Implement build as browser IIFE**
 
 `package.json` scripts:
 
@@ -163,15 +174,16 @@ Expected: FAIL because build files/scripts do not exist.
 {
   "scripts": {
     "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   }
 }
 ```
 
-`build.mjs` must bundle `src/app/bootstrap.ts` as browser IIFE, target modern Chromium/Edge, emit `dist/app.js`, and copy `index.html`/`styles.css` into `dist/`.
+`build.mjs` bundles `src/app/bootstrap.ts` as an IIFE and copies local assets only.
 
-- [ ] **Step 4: Add minimal bootstrap behavior**
+- [ ] **Step 4: Add minimal bootstrap**
 
 ```ts
 const root = document.querySelector<HTMLElement>('#app');
@@ -179,16 +191,17 @@ if (!root) throw new Error('APP_ROOT_MISSING');
 root.textContent = 'Ozon FBO Supply Optimizer';
 ```
 
-- [ ] **Step 5: Build and test**
+- [ ] **Step 5: Verify**
 
 Run:
 
 ```bash
+npm run typecheck
 npm run build
 npm test
 ```
 
-Expected: PASS.
+Expected: all exit 0.
 
 - [ ] **Step 6: Commit**
 
@@ -197,42 +210,68 @@ git add package.json tsconfig.json vitest.config.ts index.html styles.css script
 git commit -m "build: add offline static application foundation"
 ```
 
-### Task 2: Define canonical domain and diagnostic contracts
+## Task 2: Canonical models, report metadata and invariants
 
 **Files:**
 - Create: `src/domain/models.ts`
+- Create: `src/domain/report-meta.ts`
 - Create: `src/domain/result.ts`
 - Create: `src/domain/invariants.ts`
 - Test: `tests/domain/models.test.ts`
 
-**Interfaces:**
-- Produces the exact canonical contracts defined by the design spec: `ProductRef`, `AvailabilityRecommendation`, `WarehouseRestriction`, `OrderRecord`, `ProductEconomicsInput`, `TariffRow`, `ImportDiagnostic`, `ImportResult<T>`.
-- All downstream PRs import domain types from `src/domain/models.ts`; they do not redefine report-shaped interfaces.
+**Produces:** exact canonical contracts used by every later PR.
 
-- [ ] **Step 1: Write compile/runtime invariant tests**
+- [ ] **Step 1: Write failing invariant tests**
 
 ```ts
 import { expect, it } from 'vitest';
 import { assertNonNegative, assertRate } from '../../src/domain/invariants';
 
-it('rejects negative quantities', () => {
+it('rejects negative quantity', () => {
   expect(() => assertNonNegative(-1, 'quantity')).toThrow('quantity');
 });
 
-it('accepts normalized decimal rates', () => {
+it('accepts decimal rates', () => {
   expect(assertRate(0.25, 'commissionRate')).toBe(0.25);
 });
 ```
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [ ] **Step 2: Define canonical lifecycle/report contracts**
 
-Run: `npm test -- tests/domain/models.test.ts`
+```ts
+export type OrderLifecycle = 'fulfilled' | 'in_progress' | 'cancelled' | 'unknown';
 
-Expected: FAIL because invariant helpers are missing.
+export interface ReportMeta {
+  sourceName: string;
+  importedAt: string;
+  reportGeneratedAt: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  recommendationHorizonDays: number | null;
+}
 
-- [ ] **Step 3: Implement types and invariants**
+export interface OrderRecord {
+  acceptedAt: string;
+  plannedShipAt: string | null;
+  handedToDeliveryAt: string | null;
+  deliveredAt: string | null;
+  lifecycle: OrderLifecycle;
+  rawStatus: string;
+  sku: string;
+  article: string;
+  name: string;
+  quantity: number;
+  sellerPrice: number;
+  originClusterId: string;
+  destinationClusterId: string;
+  originWarehouse: string | null;
+  volumetricWeightKg: number | null;
+}
+```
 
-Required signatures:
+Also define `ProductRef`, `AvailabilityRecommendation`, `WarehouseRestriction`, `ProductEconomicsInput`, `TariffRow`, `ImportDiagnostic`, `ImportResult<T>` exactly as the spec.
+
+- [ ] **Step 3: Implement invariants**
 
 ```ts
 export function assertNonNegative(value: number, field: string): number;
@@ -240,83 +279,83 @@ export function assertRate(value: number, field: string): number;
 export function assertNonEmpty(value: string, field: string): string;
 ```
 
-Rates are normalized decimals in domain code (`0.25`, not `25`).
+- [ ] **Step 4: Verify**
 
-- [ ] **Step 4: Run full test suite**
-
-Run: `npm test`
-
-Expected: PASS.
+Run: `npm run typecheck && npm test`
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/domain tests/domain
-git commit -m "feat: define canonical optimizer domain contracts"
+git commit -m "feat: define canonical optimizer contracts"
 ```
 
-**PR1 acceptance:** release shell works offline; domain contracts compile; no Ozon column names appear outside importers because importers do not exist yet.
+**PR1 acceptance:** offline shell builds; canonical contracts include report metadata and order lifecycle; no report-shaped fields leak into domain interfaces.
 
 ---
 
-## PR2 — Operational Ozon imports, normalization, diagnostics
+# PR2 — Robust Ozon operational imports and lifecycle classification
 
-### Task 3: Implement normalization primitives
+## Task 3: Normalization primitives and order status mapping
 
 **Files:**
 - Create: `src/normalization/numbers.ts`
 - Create: `src/normalization/dates.ts`
 - Create: `src/normalization/sku.ts`
 - Create: `src/normalization/clusters.ts`
+- Create: `src/normalization/order-status.ts`
 - Test: `tests/normalization/*.test.ts`
 
 **Interfaces:**
 
 ```ts
 export function parseRuNumber(value: unknown): number | null;
-export function parseIsoDate(value: unknown): string | null;
-export function toIsoWeek(date: string): string;
+export function parseIsoDateTime(value: unknown): string | null;
+export function toIsoWeek(dateTime: string): string;
 export function normalizeSku(value: unknown): string | null;
 export function normalizeArticle(value: unknown): string | null;
-
-export interface ClusterMapping {
-  rawName: string;
-  clusterId: string;
-}
-
 export function normalizeClusterName(rawName: string): string;
 export function resolveClusterId(rawName: string, manual: ReadonlyMap<string, string>): string;
+export function classifyOrderStatus(rawStatus: string): OrderLifecycle;
 ```
 
-- [ ] **Step 1: Add table-driven failing tests**
+- [ ] **Step 1: Write table-driven tests**
 
-Include Russian decimal commas, non-breaking spaces, `1 234,50`, empty values, mixed case cluster names, repeated whitespace, and punctuation-only differences.
+Required order status cases:
 
-- [ ] **Step 2: Run tests and verify failures**
+```ts
+expect(classifyOrderStatus('Доставлен')).toBe('fulfilled');
+expect(classifyOrderStatus('Отменён')).toBe('cancelled');
+expect(classifyOrderStatus('Доставляется')).toBe('in_progress');
+expect(classifyOrderStatus('Ожидает отгрузки')).toBe('in_progress');
+expect(classifyOrderStatus('Ожидает сборки')).toBe('in_progress');
+```
+
+Also cover Russian decimal commas, NBSP, BOM-adjacent text, empty values and harmless cluster formatting variants.
+
+- [ ] **Step 2: Verify red state**
 
 Run: `npm test -- tests/normalization`
 
-- [ ] **Step 3: Implement minimal deterministic normalizers**
+- [ ] **Step 3: Implement deterministic normalizers**
 
-Do not fuzzy-merge semantically different cluster strings. Only normalize harmless formatting differences automatically.
+Unknown statuses map to `unknown` and emit an importer warning later; never guess them into fulfilled.
 
-- [ ] **Step 4: Run tests**
-
-Run: `npm test`
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Verify and commit**
 
 ```bash
+npm test
 git add src/normalization tests/normalization
-git commit -m "feat: add deterministic report normalization"
+git commit -m "feat: normalize Ozon values and order lifecycle"
 ```
 
-### Task 4: Implement shared XLSX/CSV decoding and diagnostics
+## Task 4: XLSX/CSV readers with malformed-dimension recovery
 
 **Files:**
 - Create: `src/importers/workbook.ts`
 - Create: `src/importers/csv.ts`
 - Create: `src/importers/import-diagnostics.ts`
+- Create: `tests/fixtures/malformed-dimension.xlsx`
 - Test: `tests/importers/workbook.test.ts`
 - Test: `tests/importers/csv.test.ts`
 
@@ -326,38 +365,44 @@ git commit -m "feat: add deterministic report normalization"
 export interface TabularSheet {
   name: string;
   rows: Record<string, unknown>[];
+  diagnostics: ImportDiagnostic[];
 }
 
 export async function readWorkbook(file: File): Promise<TabularSheet[]>;
 export async function readCsv(file: File): Promise<Record<string, unknown>[]>;
-export function requireColumns(rows: Record<string, unknown>[], required: string[]): ImportDiagnostic[];
 ```
 
-- [ ] **Step 1: Add minimal sanitized XLSX/CSV fixtures**
+- [ ] **Step 1: Create regression fixture**
 
-Fixtures contain only synthetic rows matching known report headers; no full production seller reports.
+The XLSX fixture must contain multiple populated rows while worksheet XML declares `dimension=A1`.
 
-- [ ] **Step 2: Write tests for Cyrillic headers and quoted CSV**
+- [ ] **Step 2: Write failing test proving all rows are read**
 
-Test semicolon/comma delimiter detection and UTF-8 BOM handling.
+```ts
+it('recovers populated rows when worksheet dimension incorrectly says A1', async () => {
+  const sheets = await readWorkbook(fixtureFile('malformed-dimension.xlsx'));
+  expect(sheets[0].rows).toHaveLength(3);
+  expect(sheets[0].diagnostics.some(d => d.code === 'WORKSHEET_DIMENSION_REPAIRED')).toBe(true);
+});
+```
 
-- [ ] **Step 3: Run tests and verify failure**
+- [ ] **Step 3: Add CSV tests**
 
-Run: `npm test -- tests/importers/workbook.test.ts tests/importers/csv.test.ts`
+Cover UTF-8 BOM, quoted commas/semicolons and Cyrillic headers.
 
-- [ ] **Step 4: Implement SheetJS/Papa Parse adapters**
+- [ ] **Step 4: Implement readers**
 
-Keep dependency calls isolated in these files.
+Do not trust the worksheet declared range when it conflicts with populated cells. Recompute the effective range from actual populated cell addresses before row conversion.
 
-- [ ] **Step 5: Run tests and commit**
+- [ ] **Step 5: Verify and commit**
 
 ```bash
-npm test
-git add src/importers tests/importers package.json package-lock.json
-git commit -m "feat: add local xlsx and csv decoding"
+npm test -- tests/importers/workbook.test.ts tests/importers/csv.test.ts
+git add src/importers tests/importers tests/fixtures/malformed-dimension.xlsx package.json package-lock.json
+git commit -m "feat: read real Ozon xlsx and csv exports robustly"
 ```
 
-### Task 5: Implement Availability, Restrictions and Orders adapters
+## Task 5: Availability, restrictions and orders adapters with PII boundary
 
 **Files:**
 - Create: `src/importers/availability.ts`
@@ -378,50 +423,64 @@ export async function importRestrictions(file: File, mappings: ReadonlyMap<strin
 export async function importOrders(file: File, mappings: ReadonlyMap<string, string>): Promise<ImportResult<OrderRecord>>;
 ```
 
-- [ ] **Step 1: Encode exact fixture expectations**
+- [ ] **Step 1: Guard central demand invariant**
 
-Orders test must explicitly assert:
+For synthetic `Казань → Москва`:
 
 ```ts
-expect(record.destinationClusterId).toBe('moscow');
 expect(record.originClusterId).toBe('kazan');
+expect(record.destinationClusterId).toBe('moscow');
 ```
 
-for a synthetic `Казань → Москва` row. This guards the central demand-attribution invariant.
+- [ ] **Step 2: Guard lifecycle fields**
 
-- [ ] **Step 2: Verify tests fail**
+```ts
+expect(delivered.lifecycle).toBe('fulfilled');
+expect(cancelled.lifecycle).toBe('cancelled');
+expect(inProgress.lifecycle).toBe('in_progress');
+```
+
+- [ ] **Step 3: Guard PII exclusion**
+
+Input fixture contains `Имя покупателя`, `Адрес покупателя`, `ИНН`.
+
+```ts
+const serialized = JSON.stringify(result.records);
+expect(serialized).not.toContain('Имя покупателя');
+expect(serialized).not.toContain('Адрес покупателя');
+expect(serialized).not.toContain('ИНН');
+expect(serialized).not.toContain('Иван Иванов');
+```
+
+- [ ] **Step 4: Implement source-specific aliases and metadata extraction**
+
+Availability importer extracts `daysWithoutStock`; orders importer extracts accepted/planned/handover/delivery dates and status; all adapters populate `ReportMeta`.
+
+- [ ] **Step 5: Verify with sanitized fixtures and current real files outside git**
 
 Run: `npm test -- tests/importers`
 
-- [ ] **Step 3: Implement column alias maps inside each adapter**
+Manual gate: load the three provided files without preprocessing and record accepted rows/SKUs/diagnostics.
 
-Each adapter owns its source header aliases. Domain modules must never reference Russian report headings.
-
-- [ ] **Step 4: Add partial-row error behavior**
-
-Malformed rows produce diagnostics and are skipped; missing mandatory file columns produce file-level errors and zero accepted records.
-
-- [ ] **Step 5: Run full suite and commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-npm test
 git add src/importers tests/importers tests/fixtures
-git commit -m "feat: import Ozon operational reports"
+git commit -m "feat: import Ozon operational reports safely"
 ```
 
-**PR2 acceptance:** minimal fixtures for all three operational reports import into canonical records; diagnostics are explicit; Kazan→Moscow is represented as Moscow demand fulfilled from Kazan.
+**PR2 acceptance:** real-format Ozon files import without preprocessing; malformed worksheet ranges are recovered; statuses are classified; PII is discarded; report dates are explicit.
 
 ---
 
-## PR3 — Tariffs, seller economics input, local persistence
+# PR3 — Tariffs, product economics and local persistence
 
-### Task 6: Import tariffs and seller product inputs
+## Task 6: Multi-sheet tariff/workbook importer
 
 **Files:**
 - Create: `src/importers/tariffs.ts`
 - Create: `src/importers/products.ts`
-- Create: `tests/fixtures/tariffs-minimal.xlsx`
-- Create: `tests/fixtures/products-minimal.xlsx`
+- Create: `tests/fixtures/unit-workbook-minimal.xlsx`
 - Test: `tests/importers/tariffs.test.ts`
 - Test: `tests/importers/products.test.ts`
 
@@ -432,7 +491,13 @@ export async function importTariffs(file: File, mappings: ReadonlyMap<string, st
 export async function importProductInputs(file: File): Promise<ImportResult<ProductEconomicsInput>>;
 ```
 
-Product input aliases must support at least:
+- [ ] **Step 1: Write failing tariff-sheet detection test**
+
+Fixture has three sheets and the tariff sheet is not first. Detect by required header signature rather than exact sheet index.
+
+- [ ] **Step 2: Test product aliases**
+
+Support:
 
 ```text
 Артикул / article
@@ -444,18 +509,21 @@ SKU
 Объём / volumeLiters
 ```
 
-- [ ] **Step 1: Write failing fixture tests including interval boundaries**
-- [ ] **Step 2: Run tests and confirm failure**
-- [ ] **Step 3: Implement adapters with diagnostics**
-- [ ] **Step 4: Run full tests**
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Test interval boundaries and cluster normalization**
+
+- [ ] **Step 4: Implement importer**
+
+The existing unit-economics workbook must be accepted as a tariff source. Recognizable product parameters from its calculation sheet may be imported as editable initial values.
+
+- [ ] **Step 5: Verify and commit**
 
 ```bash
-git add src/importers tests/importers tests/fixtures
-git commit -m "feat: import tariffs and seller economics inputs"
+npm test -- tests/importers/tariffs.test.ts tests/importers/products.test.ts
+git add src/importers tests/importers tests/fixtures/unit-workbook-minimal.xlsx
+git commit -m "feat: import tariffs and product economics from workbooks"
 ```
 
-### Task 7: Add versioned local persistence
+## Task 7: Versioned local persistence
 
 **Files:**
 - Create: `src/persistence/store.ts`
@@ -478,28 +546,67 @@ export const STORE_KEYS = {
   products: 'v1:products',
   clusterMappings: 'v1:cluster-mappings',
   economicsSettings: 'v1:economics-settings',
-  optimizerSettings: 'v1:optimizer-settings'
+  optimizerThresholds: 'v1:optimizer-thresholds'
 } as const;
 ```
 
-- [ ] **Step 1: Write contract tests against `MemoryStore`**
-- [ ] **Step 2: Verify failure**
-- [ ] **Step 3: Implement `MemoryStore` and IndexedDB adapter with the same contract**
-- [ ] **Step 4: Add test ensuring old key versions are not silently interpreted as current**
-- [ ] **Step 5: Commit**
+- [ ] **Step 1: Write MemoryStore contract tests**
+- [ ] **Step 2: Add version-isolation test**
+- [ ] **Step 3: Add test that raw order rows/PII are never persisted**
+- [ ] **Step 4: Implement IndexedDB adapter**
+- [ ] **Step 5: Verify and commit**
 
 ```bash
+npm test -- tests/persistence
 git add src/persistence tests/persistence
-git commit -m "feat: persist slowly changing optimizer inputs locally"
+git commit -m "feat: persist slowly changing optimizer inputs"
 ```
 
-**PR3 acceptance:** tariffs/product parameters can be imported and stored locally without embedding tariff data in source.
+**PR3 acceptance:** tariffs/product inputs/settings survive reload; no tariff matrix is hard-coded; raw customer rows are not persisted.
 
 ---
 
-## PR4 — Demand, fulfillment and route analytics
+# PR4 — Demand, fulfillment and completed-week route analytics
 
-### Task 8: Build destination-demand and fulfillment matrices
+## Task 8: Build explicit order populations
+
+**Files:**
+- Create: `src/analytics/order-populations.ts`
+- Test: `tests/analytics/order-populations.test.ts`
+
+**Interfaces:**
+
+```ts
+export interface OrderPopulations {
+  netDemand: OrderRecord[];
+  fulfilledRoutes: OrderRecord[];
+}
+
+export function buildOrderPopulations(orders: readonly OrderRecord[]): OrderPopulations;
+```
+
+- [ ] **Step 1: Write lifecycle population test**
+
+Fixture contains fulfilled, cancelled and in-progress orders.
+
+Expected:
+
+```ts
+expect(pop.netDemand.map(x => x.lifecycle)).toEqual(['fulfilled', 'in_progress']);
+expect(pop.fulfilledRoutes.every(x => x.lifecycle === 'fulfilled')).toBe(true);
+```
+
+- [ ] **Step 2: Verify red state**
+- [ ] **Step 3: Implement explicit filters**
+- [ ] **Step 4: Verify and commit**
+
+```bash
+npm test -- tests/analytics/order-populations.test.ts
+git add src/analytics/order-populations.ts tests/analytics/order-populations.test.ts
+git commit -m "feat: separate demand from fulfilled route observations"
+```
+
+## Task 9: Demand and fulfillment matrices
 
 **Files:**
 - Create: `src/analytics/demand-matrix.ts`
@@ -510,56 +617,40 @@ git commit -m "feat: persist slowly changing optimizer inputs locally"
 **Interfaces:**
 
 ```ts
-export interface DemandCell {
-  sku: Sku;
-  destinationClusterId: ClusterId;
-  quantity: number;
-  orderCount: number;
-}
-
-export interface FulfillmentShare {
-  sku: Sku;
-  destinationClusterId: ClusterId;
-  originClusterId: ClusterId;
-  quantity: number;
-  share: number;
-}
-
-export function buildDemandMatrix(orders: readonly OrderRecord[]): DemandCell[];
-export function buildFulfillmentMatrix(orders: readonly OrderRecord[]): FulfillmentShare[];
-export function buildOriginDonorMatrix(orders: readonly OrderRecord[]): FulfillmentShare[];
+export function buildDemandMatrix(netDemand: readonly OrderRecord[]): DemandCell[];
+export function buildFulfillmentMatrix(fulfilledRoutes: readonly OrderRecord[]): FulfillmentShare[];
+export function buildOriginDonorMatrix(fulfilledRoutes: readonly OrderRecord[]): FulfillmentShare[];
 ```
 
-- [ ] **Step 1: Write hand-calculated Moscow/Kazan fixture test**
-
-Synthetic orders:
+- [ ] **Step 1: Write Moscow/Kazan fixture**
 
 ```text
-800 Moscow→Moscow
-200 Kazan→Moscow
-100 Kazan→Kazan
+800 fulfilled Moscow→Moscow
+200 fulfilled Kazan→Moscow
+100 fulfilled Kazan→Kazan
+100 cancelled Kazan→Moscow
 ```
 
-Expected:
+Expected fulfilled-route analytics:
 
 ```text
-Moscow demand = 1000
-Kazan demand = 100
-Moscow local fulfillment share = 80%
-Kazan origin local share = 100 / 300 = 33.33%
+Moscow fulfilled demand = 1000, not 1100
+Kazan fulfilled demand = 100
+Moscow local share = 80%
+Kazan origin local share = 33.33%
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [ ] **Step 2: Verify red state**
 - [ ] **Step 3: Implement pure aggregators**
-- [ ] **Step 4: Run tests**
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Verify and commit**
 
 ```bash
+npm test -- tests/analytics/demand-matrix.test.ts tests/analytics/fulfillment-matrix.test.ts
 git add src/analytics tests/analytics
-git commit -m "feat: reconstruct demand and fulfillment matrices"
+git commit -m "feat: reconstruct destination demand and fulfillment routes"
 ```
 
-### Task 9: Add ISO-week route series
+## Task 10: Completed-week route series
 
 **Files:**
 - Create: `src/analytics/weekly-series.ts`
@@ -570,35 +661,42 @@ git commit -m "feat: reconstruct demand and fulfillment matrices"
 ```ts
 export interface WeeklyRoutePoint {
   week: string;
-  sku: Sku;
-  destinationClusterId: ClusterId;
-  demandQty: number;
+  sku: string;
+  destinationClusterId: string;
+  fulfilledQty: number;
   localQty: number;
   localShare: number;
-  originShares: Readonly<Record<ClusterId, number>>;
+  originShares: Readonly<Record<string, number>>;
+  completed: boolean;
 }
 
-export function buildWeeklyRouteSeries(orders: readonly OrderRecord[]): WeeklyRoutePoint[];
+export function buildWeeklyRouteSeries(input: {
+  fulfilledRoutes: readonly OrderRecord[];
+  now: string;
+}): WeeklyRoutePoint[];
 ```
 
-- [ ] **Step 1: Write week-boundary and share tests**
-- [ ] **Step 2: Verify failure**
-- [ ] **Step 3: Implement deterministic weekly aggregation**
-- [ ] **Step 4: Run tests**
-- [ ] **Step 5: Commit**
+- [ ] **Step 1: Write ISO-week boundary test**
+- [ ] **Step 2: Write current-week exclusion marker test**
+
+Current ISO week must return `completed: false` and stockout code later must ignore it.
+
+- [ ] **Step 3: Implement**
+- [ ] **Step 4: Verify and commit**
 
 ```bash
+npm test -- tests/analytics/weekly-series.test.ts
 git add src/analytics/weekly-series.ts tests/analytics/weekly-series.test.ts
-git commit -m "feat: add weekly fulfillment route history"
+git commit -m "feat: build completed weekly fulfillment history"
 ```
 
-**PR4 acceptance:** the application can answer both “where was demand?” and “from where was that demand fulfilled?” without economics or stockout heuristics.
+**PR4 acceptance:** the app answers where demand arose and where fulfilled stock came from; cancelled/in-progress orders cannot contaminate actual-route shares; current week is visibly incomplete.
 
 ---
 
-## PR5 — Probable stockout detector and clean route profiles
+# PR5 — Probable stockout, recommendation distortion and clean route profiles
 
-### Task 10: Implement deterministic stockout evidence detection
+## Task 11: Probable stockout evidence detector
 
 **Files:**
 - Create: `src/analytics/stockout-detector.ts`
@@ -623,44 +721,94 @@ export const DEFAULT_STOCKOUT_CONFIG: StockoutConfig = {
   demandRetentionFloor: 0.60
 };
 
-export function detectProbableStockouts(
-  series: readonly WeeklyRoutePoint[],
-  config?: StockoutConfig
-): StockoutSignal[];
+export function detectProbableStockouts(input: {
+  series: readonly WeeklyRoutePoint[];
+  availability: readonly AvailabilityRecommendation[];
+  config?: StockoutConfig;
+}): StockoutSignal[];
 ```
 
-- [ ] **Step 1: Write positive Moscow stockout fixture**
+- [ ] **Step 1: Positive Moscow/Kazan fixture**
 
 ```text
-week 1: Moscow demand 100, Moscow→Moscow 90%, Kazan→Moscow 5%
-week 2: Moscow demand 95, Moscow→Moscow 20%, Kazan→Moscow 65%
+week 1 completed: Moscow demand 100, local 90%, Kazan 5%
+week 2 completed: Moscow demand 95, local 20%, Kazan 65%
+availability: Moscow daysWithoutStock > 0
 ```
 
-Expected: a Moscow signal with at least `medium` confidence and Kazan listed as replacement origin.
+Expected: Moscow stockout signal, Kazan replacement origin, corroboration=`supports`.
 
-- [ ] **Step 2: Write negative controls**
+- [ ] **Step 2: Negative controls**
 
 No signal when:
 
-- demand collapses together with local fulfillment;
-- sample is below `minWeeklyDemand`;
-- local share was already low in baseline;
-- external share does not materially rise.
+- demand collapses;
+- sample is insufficient;
+- local baseline was already low;
+- no donor rises;
+- only the current incomplete week changes.
 
-- [ ] **Step 3: Run tests and verify failure**
-- [ ] **Step 4: Implement evidence and confidence rules**
+- [ ] **Step 3: Verify red state**
+- [ ] **Step 4: Implement deterministic evidence/confidence rules**
 
-Confidence must be based on explicit evidence counts/magnitudes; no random or ML component.
+Current availability may corroborate confidence but must not fabricate a historical zero-stock date.
 
-- [ ] **Step 5: Run full suite**
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Verify and commit**
 
 ```bash
+npm test -- tests/analytics/stockout-detector.test.ts
 git add src/analytics/stockout-detector.ts tests/analytics/stockout-detector.test.ts
-git commit -m "feat: detect probable cluster stockouts from route substitution"
+git commit -m "feat: detect probable destination stockouts"
 ```
 
-### Task 11: Build observed and clean route profiles with fallback
+## Task 12: Recommendation distortion from donor behavior
+
+**Files:**
+- Create: `src/analytics/recommendation-distortion.ts`
+- Test: `tests/analytics/recommendation-distortion.test.ts`
+
+**Interfaces:**
+
+```ts
+export interface RecommendationDistortionSignal {
+  sku: string;
+  recommendedClusterId: string;
+  confidence: 'low' | 'medium' | 'high';
+  affectedDestinations: Array<{
+    destinationClusterId: string;
+    stockoutConfidence: 'low' | 'medium' | 'high';
+    donorShareAfter: number;
+    donorShareIncrease: number;
+  }>;
+  explanationCodes: string[];
+}
+
+export function detectRecommendationDistortion(input: {
+  recommendations: readonly AvailabilityRecommendation[];
+  stockouts: readonly StockoutSignal[];
+}): RecommendationDistortionSignal[];
+```
+
+- [ ] **Step 1: Write core cross-cluster test**
+
+Given Moscow stockout with Kazan replacement share rising 5%→65% and Ozon recommending Kazan +150, expect a distortion signal whose `recommendedClusterId === 'kazan'` and affected destination includes Moscow.
+
+- [ ] **Step 2: Add negative control**
+
+No Kazan distortion when Kazan was not a material replacement origin.
+
+- [ ] **Step 3: Implement and verify**
+
+Run: `npm test -- tests/analytics/recommendation-distortion.test.ts`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/analytics/recommendation-distortion.ts tests/analytics/recommendation-distortion.test.ts
+git commit -m "feat: flag donor-driven recommendation distortion"
+```
+
+## Task 13: Observed and clean route profiles
 
 **Files:**
 - Create: `src/analytics/route-profile.ts`
@@ -676,41 +824,41 @@ export type RouteProfileSource =
   | 'global';
 
 export interface RouteProfile {
-  sku: Sku;
-  originClusterId: ClusterId;
-  destinationShares: Readonly<Record<ClusterId, number>>;
+  sku: string;
+  originClusterId: string;
+  destinationShares: Readonly<Record<string, number>>;
   source: RouteProfileSource;
   confidence: 'low' | 'medium' | 'high';
   sampleQty: number;
 }
 
 export function buildRouteProfile(input: {
-  sku: Sku;
-  originClusterId: ClusterId;
-  orders: readonly OrderRecord[];
+  sku: string;
+  originClusterId: string;
+  fulfilledRoutes: readonly OrderRecord[];
   stockoutSignals: readonly StockoutSignal[];
   minSkuOriginSample?: number;
 }): RouteProfile;
 ```
 
-- [ ] **Step 1: Test exclusion of high-confidence substitution weeks from clean SKU-origin profile**
-- [ ] **Step 2: Test fallback order exactly as specified**
-- [ ] **Step 3: Verify failure**
-- [ ] **Step 4: Implement route profile selection**
-- [ ] **Step 5: Run tests and commit**
+- [ ] **Step 1: Test high-confidence substitution weeks are excluded from clean profile**
+- [ ] **Step 2: Test exact fallback order**
+- [ ] **Step 3: Test cancelled/in-progress orders cannot enter any profile**
+- [ ] **Step 4: Implement, verify and commit**
 
 ```bash
+npm test -- tests/analytics/route-profile.test.ts
 git add src/analytics/route-profile.ts tests/analytics/route-profile.test.ts
 git commit -m "feat: build stockout-aware route profiles"
 ```
 
-**PR5 acceptance:** the Moscow/Kazan failure mode is surfaced as `Вероятный stockout`, with evidence; the warning does not mutate Ozon recommendation quantities.
+**PR5 acceptance:** Moscow stockout is a destination signal; Kazan donor recommendation gets a separate distortion signal; no Ozon quantity is mutated; clean logistics profiles remove high-confidence substitution noise.
 
 ---
 
-## PR6 — Tariff engine, expected logistics, spreadsheet-parity unit economics
+# PR6 — Tariff engine, expected logistics and spreadsheet-parity economics
 
-### Task 12: Build indexed tariff lookup
+## Task 14: Indexed tariff lookup
 
 **Files:**
 - Create: `src/economics/tariff-index.ts`
@@ -728,18 +876,18 @@ export function buildTariffIndex(rows: readonly TariffRow[]): TariffIndex;
 export function lookupTariff(index: TariffIndex, input: TariffLookupInput): TariffLookupResult;
 ```
 
-- [ ] **Step 1: Write boundary tests for volume and optional price intervals**
-- [ ] **Step 2: Test missing route returns `fee: null` with diagnostic code**
-- [ ] **Step 3: Verify failure**
-- [ ] **Step 4: Implement sorted route interval index and deterministic matching**
-- [ ] **Step 5: Run tests and commit**
+- [ ] **Step 1: Test volume and price interval boundaries**
+- [ ] **Step 2: Test missing route returns `fee:null` with diagnostic**
+- [ ] **Step 3: Implement deterministic sorted lookup**
+- [ ] **Step 4: Verify and commit**
 
 ```bash
-git add src/economics tests/economics
+npm test -- tests/economics/tariff-lookup.test.ts
+git add src/economics/tariff-index.ts src/economics/tariff-lookup.ts tests/economics/tariff-lookup.test.ts
 git commit -m "feat: add indexed Ozon tariff lookup"
 ```
 
-### Task 13: Calculate expected route-weighted logistics
+## Task 15: Expected route-weighted logistics
 
 **Files:**
 - Create: `src/economics/expected-logistics.ts`
@@ -753,7 +901,7 @@ export interface ExpectedLogisticsResult {
   tariffCoverage: number;
   routeProfileSource: RouteProfileSource;
   confidence: 'low' | 'medium' | 'high';
-  missingDestinations: ClusterId[];
+  missingDestinations: string[];
 }
 
 export function calculateExpectedLogistics(input: {
@@ -764,24 +912,23 @@ export function calculateExpectedLogistics(input: {
 }): ExpectedLogisticsResult;
 ```
 
-- [ ] **Step 1: Write weighted-average test**
+- [ ] **Step 1: Weighted average test**
 
-Example: 80% local tariff 50 ₽ + 20% Moscow tariff 100 ₽ => 60 ₽ expected logistics.
+80% × 50 ₽ + 20% × 100 ₽ = 60 ₽.
 
-- [ ] **Step 2: Test partial tariff coverage**
-- [ ] **Step 3: Verify failure**
-- [ ] **Step 4: Implement weighted calculation without renormalizing missing tariff share**
+- [ ] **Step 2: Partial coverage test**
 
-If any destination share lacks a tariff, coverage is below 1 and result is incomplete; do not pretend the known routes represent 100%.
+Missing 20% route must produce coverage 0.8 and incomplete result; known routes are not renormalized to 100%.
 
-- [ ] **Step 5: Run tests and commit**
+- [ ] **Step 3: Implement, verify and commit**
 
 ```bash
+npm test -- tests/economics/expected-logistics.test.ts
 git add src/economics/expected-logistics.ts tests/economics/expected-logistics.test.ts
 git commit -m "feat: calculate expected intercluster logistics"
 ```
 
-### Task 14: Reproduce spreadsheet unit economics
+## Task 16: Spreadsheet-parity unit economics
 
 **Files:**
 - Create: `src/economics/unit-economics.ts`
@@ -791,20 +938,22 @@ git commit -m "feat: calculate expected intercluster logistics"
 **Interfaces:**
 
 ```ts
+export type TaxSystem = 'usn_income' | 'usn_income_minus_expenses' | 'osno' | 'manual';
+
 export interface EconomicsSettings {
   acquiringRate: number;
   advertisingRate: number;
-  taxRate: number;
   buyoutRate: number;
   fixedFboFee: number;
-  minProfitPerUnit: number;
-  minMarginRate: number;
-  minRoi: number;
+  taxSystem: TaxSystem;
+  incomeTaxRate: number;
+  vatRate: number;
+  coInvestRate: number;
 }
 
 export interface UnitEconomicsInput {
-  sku: Sku;
-  placementClusterId: ClusterId;
+  sku: string;
+  placementClusterId: string;
   price: number;
   cost: number;
   commissionRate: number;
@@ -815,11 +964,11 @@ export interface UnitEconomicsInput {
 export function calculateUnitEconomics(input: UnitEconomicsInput): UnitEconomicsResult;
 ```
 
-- [ ] **Step 1: Extract 5–10 sanitized golden rows from the working spreadsheet**
+- [ ] **Step 1: Extract 5–10 sanitized golden cases from the working spreadsheet**
 
-Store only calculation inputs/expected outputs necessary for regression; do not commit the original workbook unless explicitly approved.
+Cases must collectively cover local/intercluster logistics, commission, acquiring, advertising/services, buyout, tax system, VAT if active, co-invest if active, cost, profit, margin and ROI.
 
-- [ ] **Step 2: Write parity test with explicit tolerance**
+- [ ] **Step 2: Encode failing parity assertions**
 
 ```ts
 expect(actual.profitPerUnit).toBeCloseTo(expected.profitPerUnit, 2);
@@ -827,23 +976,29 @@ expect(actual.marginRate).toBeCloseTo(expected.marginRate, 4);
 expect(actual.roi).toBeCloseTo(expected.roi, 4);
 ```
 
-- [ ] **Step 3: Run and verify failure**
-- [ ] **Step 4: Implement formulas exactly as the spreadsheet, documenting order of operations and buyout treatment**
-- [ ] **Step 5: Run golden tests plus full suite**
-- [ ] **Step 6: Commit**
+Also assert component amounts (`commission`, `tax`, `vat`, `coInvest`) when present in the golden row.
+
+- [ ] **Step 3: Verify red state**
+- [ ] **Step 4: Implement spreadsheet order of operations exactly**
+
+Golden values are authoritative. Do not simplify the tax base or buyout/co-invest treatment merely because another formula seems more conventional.
+
+- [ ] **Step 5: Verify full suite and commit**
 
 ```bash
+npm test -- tests/economics
+npm test
 git add src/economics/unit-economics.ts tests/economics/unit-economics.test.ts tests/fixtures/unit-economics-golden.json
 git commit -m "feat: reproduce spreadsheet unit economics"
 ```
 
-**PR6 acceptance:** exact tariff matching is test-covered and golden spreadsheet rows match within stated tolerance.
+**PR6 acceptance:** tariff matching and expected logistics are explicit; spreadsheet economics match golden cases within tolerance; optimizer thresholds are not embedded in economics settings.
 
 ---
 
-## PR7 — Feasibility, candidate scoring and limited-stock optimizer
+# PR7 — Feasibility, placement assessment and limited-stock optimization
 
-### Task 15: Derive cluster feasibility from warehouse restrictions
+## Task 17: Cluster feasibility from warehouse restrictions
 
 **Files:**
 - Create: `src/supply/feasibility.ts`
@@ -853,31 +1008,74 @@ git commit -m "feat: reproduce spreadsheet unit economics"
 
 ```ts
 export function deriveSupplyFeasibility(
-  sku: Sku,
-  clusterId: ClusterId,
+  sku: string,
+  clusterId: string,
   restrictions: readonly WarehouseRestriction[]
 ): SupplyFeasibility;
 ```
 
-- [ ] **Step 1: Test all warehouses blocked => cluster blocked**
-- [ ] **Step 2: Test at least one eligible warehouse => cluster allowed**
-- [ ] **Step 3: Test cap handling conservatively**
-
-Until report semantics are proven, never sum ambiguous per-warehouse maxima as if independently additive. Expose a reason code when a conservative cap is used.
-
-- [ ] **Step 4: Implement and run tests**
-- [ ] **Step 5: Commit**
+- [ ] **Step 1: Test all warehouses blocked → cluster blocked**
+- [ ] **Step 2: Test one eligible warehouse → allowed**
+- [ ] **Step 3: Test ambiguous per-warehouse caps use conservative interpretation and reason code**
+- [ ] **Step 4: Implement, verify and commit**
 
 ```bash
+npm test -- tests/supply/feasibility.test.ts
 git add src/supply/feasibility.ts tests/supply/feasibility.test.ts
-git commit -m "feat: derive FBO cluster supply feasibility"
+git commit -m "feat: derive FBO cluster feasibility"
 ```
 
-### Task 16: Compose explainable cluster candidates
+## Task 18: Placement assessments including counterfactual clusters
 
 **Files:**
-- Create: `src/supply/cluster-score.ts`
-- Test: `tests/supply/cluster-score.test.ts`
+- Create: `src/supply/placement-assessment.ts`
+- Test: `tests/supply/placement-assessment.test.ts`
+
+**Interfaces:**
+
+```ts
+export interface PlacementAssessment {
+  sku: string;
+  clusterId: string;
+  ozonRecommendedQty: number;
+  feasibility: SupplyFeasibility;
+  economics: UnitEconomicsResult;
+  distortionSignal: RecommendationDistortionSignal | null;
+  routeConfidence: 'low' | 'medium' | 'high';
+  statusCodes: string[];
+}
+
+export function buildPlacementAssessments(input: {
+  sku: string;
+  recommendations: readonly AvailabilityRecommendation[];
+  demandClusters: readonly string[];
+  stockoutSignals: readonly StockoutSignal[];
+  distortionSignals: readonly RecommendationDistortionSignal[];
+  evaluateCluster: (clusterId: string) => Omit<PlacementAssessment, 'sku' | 'clusterId' | 'ozonRecommendedQty' | 'distortionSignal'>;
+}): PlacementAssessment[];
+```
+
+- [ ] **Step 1: Write core counterfactual test**
+
+Ozon recommends Kazan +150 and Moscow 0. Moscow has probable stockout and Kazan is donor. Expected assessments include both Kazan and Moscow; Moscow row has `ozonRecommendedQty:0` and `COUNTERFACTUAL_ONLY`.
+
+- [ ] **Step 2: Verify assessment does not allocate anything**
+
+This module only evaluates; it does not change Ozon ceilings.
+
+- [ ] **Step 3: Implement, verify and commit**
+
+```bash
+npm test -- tests/supply/placement-assessment.test.ts
+git add src/supply/placement-assessment.ts tests/supply/placement-assessment.test.ts
+git commit -m "feat: compare recommended and counterfactual placements"
+```
+
+## Task 19: Optimization candidates and thresholds
+
+**Files:**
+- Create: `src/supply/cluster-candidate.ts`
+- Test: `tests/supply/cluster-candidate.test.ts`
 
 **Interfaces:**
 
@@ -888,30 +1086,31 @@ export interface OptimizerThresholds {
   minRoi: number;
 }
 
-export function buildClusterCandidate(input: {
-  recommendation: AvailabilityRecommendation;
-  feasibility: SupplyFeasibility;
-  economics: UnitEconomicsResult;
-  stockoutSignal: StockoutSignal | null;
-  routeConfidence: 'low' | 'medium' | 'high';
-  thresholds: OptimizerThresholds;
-}): ClusterCandidate;
+export interface ClusterCandidate extends PlacementAssessment {
+  feasibleQty: number;
+  optimizationEligible: boolean;
+}
+
+export function buildClusterCandidate(
+  assessment: PlacementAssessment,
+  thresholds: OptimizerThresholds
+): ClusterCandidate;
 ```
 
-- [ ] **Step 1: Test status-code composition**
+- [ ] **Step 1: Test status composition**
 
-Cover `SUPPLY_BLOCKED`, `NEGATIVE_ECONOMICS`, `LOW_ECONOMICS`, `PROBABLE_STOCKOUT_DISTORTION`, `INCOMPLETE_DATA`, and `OK`.
+Cover `SUPPLY_BLOCKED`, `NEGATIVE_ECONOMICS`, `LOW_ECONOMICS`, `PROBABLE_RECOMMENDATION_DISTORTION`, `INCOMPLETE_DATA`, `INCOMPLETE_TARIFF_COVERAGE`, `LOW_ROUTE_CONFIDENCE`, `COUNTERFACTUAL_ONLY`, `OK`.
 
-- [ ] **Step 2: Verify failure**
-- [ ] **Step 3: Implement status derivation without UI strings**
-- [ ] **Step 4: Run tests and commit**
+- [ ] **Step 2: Assert zero Ozon recommendation is never optimization-eligible**
+- [ ] **Step 3: Implement and verify**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add src/supply/cluster-score.ts tests/supply/cluster-score.test.ts
-git commit -m "feat: compose explainable cluster candidates"
+git add src/supply/cluster-candidate.ts tests/supply/cluster-candidate.test.ts
+git commit -m "feat: compose explainable optimization candidates"
 ```
 
-### Task 17: Implement deterministic limited-stock allocation
+## Task 20: Deterministic limited-stock allocator
 
 **Files:**
 - Create: `src/supply/optimizer.ts`
@@ -921,8 +1120,8 @@ git commit -m "feat: compose explainable cluster candidates"
 
 ```ts
 export interface AllocationLine {
-  sku: Sku;
-  clusterId: ClusterId;
+  sku: string;
+  clusterId: string;
   ozonRecommendedQty: number;
   allocatedQty: number;
   expectedProfitPerUnit: number;
@@ -931,7 +1130,7 @@ export interface AllocationLine {
 }
 
 export interface AllocationPlan {
-  sku: Sku;
+  sku: string;
   availableQty: number;
   allocatedQty: number;
   unallocatedQty: number;
@@ -940,61 +1139,54 @@ export interface AllocationPlan {
 }
 
 export function optimizeSkuAllocation(input: {
-  sku: Sku;
+  sku: string;
   availableQty: number;
   candidates: readonly ClusterCandidate[];
 }): AllocationPlan;
 ```
 
-- [ ] **Step 1: Write main limited-stock test**
-
-Example:
+- [ ] **Step 1: Main max-profit case**
 
 ```text
-available = 200
-Moscow: Ozon 120, profit 181
-Kazan: Ozon 80, profit 149
-Krasnodar: Ozon 100, profit 117
+available 200
+Moscow Ozon 120 profit 181
+Kazan Ozon 80 profit 149
+Krasnodar Ozon 100 profit 117
 ```
 
-Expected allocation:
+Expected: Moscow 120, Kazan 80, Krasnodar 0.
 
-```text
-Moscow 120
-Kazan 80
-Krasnodar 0
-Total 200
-```
+- [ ] **Step 2: Counterfactual ceiling test**
 
-- [ ] **Step 2: Add physical-cap and blocked-cluster tests**
-- [ ] **Step 3: Add deterministic tie-break test**
-- [ ] **Step 4: Add invariant/property tests**
+Moscow counterfactual with Ozon 0 and profit 300 must still allocate 0 in MVP.
 
-For every generated test case assert:
+- [ ] **Step 3: Physical cap / blocked / incomplete tests**
+- [ ] **Step 4: Deterministic tie-break test**
+- [ ] **Step 5: Property invariants**
 
 ```ts
 allocatedQty <= availableQty
 line.allocatedQty <= line.ozonRecommendedQty
-line.allocatedQty <= feasibleQty
-blocked candidates receive 0
-expectedProfit === Σ(line qty × line profit/unit)
+line.allocatedQty <= line.feasibleQty
+counterfactual-only receives 0
+expectedProfit === sum(line.allocatedQty * line.expectedProfitPerUnit)
 ```
 
-- [ ] **Step 5: Verify failure, implement greedy optimizer, rerun tests**
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Implement greedy allocator, verify and commit**
 
 ```bash
+npm test -- tests/supply/optimizer.test.ts
 git add src/supply/optimizer.ts tests/supply/optimizer.test.ts
 git commit -m "feat: optimize limited FBO stock allocation"
 ```
 
-**PR7 acceptance:** optimizer never violates Ozon ceiling, warehouse feasibility/caps, available stock, or configured economic thresholds; output is deterministic and explainable.
+**PR7 acceptance:** all relevant clusters can be assessed, including Moscow-vs-Kazan counterfactuals; automatic allocation remains strictly bounded by Ozon recommendations, feasibility and available stock.
 
 ---
 
-## PR8 — Full workflow, UI, diagnostics and release hardening
+# PR8 — End-to-end workflow, UI and offline release
 
-### Task 18: Implement application state and composition pipeline
+## Task 21: Compose application state and calculation pipeline
 
 **Files:**
 - Create: `src/app/state.ts`
@@ -1011,27 +1203,59 @@ export interface AppState {
   orders: OrderRecord[];
   tariffs: TariffRow[];
   productInputs: ProductEconomicsInput[];
+  reportMeta: Record<string, ReportMeta>;
   diagnostics: ImportDiagnostic[];
   clusterMappings: ReadonlyMap<string, string>;
   economicsSettings: EconomicsSettings;
   optimizerThresholds: OptimizerThresholds;
 }
 
-export function calculatePlans(state: AppState): AllocationPlan[];
+export interface SkuAnalysis {
+  sku: string;
+  stockouts: StockoutSignal[];
+  distortionSignals: RecommendationDistortionSignal[];
+  placements: PlacementAssessment[];
+  plan: AllocationPlan;
+}
+
+export function calculateAnalyses(state: AppState): SkuAnalysis[];
 ```
 
-- [ ] **Step 1: Write integration test from canonical fixtures through `calculatePlans`**
-- [ ] **Step 2: Verify failure**
-- [ ] **Step 3: Compose analytics → stockout → route profile → tariffs → economics → feasibility → optimizer**
-- [ ] **Step 4: Run integration and full suites**
-- [ ] **Step 5: Commit**
+- [ ] **Step 1: Write end-to-end canonical fixture test**
+
+Expected pipeline:
+
+```text
+orders
+→ lifecycle populations
+→ demand + fulfilled routes
+→ completed weeks
+→ probable stockout
+→ recommendation distortion
+→ clean route profiles
+→ expected logistics
+→ unit economics
+→ feasibility
+→ placement assessments
+→ optimization candidates
+→ allocation plan
+```
+
+- [ ] **Step 2: Assert Moscow/Kazan linkage survives entire pipeline**
+
+Kazan recommendation exposes Moscow as affected destination; Moscow counterfactual assessment exists; optimizer still respects Moscow Ozon ceiling 0.
+
+- [ ] **Step 3: Implement composition without business formulas in selectors/UI**
+- [ ] **Step 4: Verify full suite and commit**
 
 ```bash
-git add src/app tests/integration
-git commit -m "feat: compose end-to-end optimizer pipeline"
+npm test -- tests/integration/pipeline.test.ts
+npm test
+git add src/app tests/integration/pipeline.test.ts
+git commit -m "feat: compose end-to-end optimizer analysis"
 ```
 
-### Task 19: Build import/settings UI
+## Task 22: Import/settings UI and report freshness
 
 **Files:**
 - Create: `src/ui/shell.ts`
@@ -1042,26 +1266,21 @@ git commit -m "feat: compose end-to-end optimizer pipeline"
 - Modify: `styles.css`
 - Test: `tests/ui/upload-view.test.ts`
 
-**Required behavior:**
+- [ ] **Step 1: Write DOM test for input groups and metadata**
 
-- separate Operational Ozon Data and Economics groups;
-- file name/date/row count/SKU count/status after import;
-- manual product economics editing;
-- manual cluster mapping for unresolved names;
-- explicit stale operational-report metadata;
-- errors remain visible without crashing the app.
+UI must show file name, report period/date, import timestamp, rows accepted/rejected, SKU count and validation state.
 
-- [ ] **Step 1: Write DOM test for required cards/statuses**
-- [ ] **Step 2: Verify failure**
-- [ ] **Step 3: Implement small DOM components and upload view**
-- [ ] **Step 4: Test and commit**
+- [ ] **Step 2: Test mismatched operational dates warning**
+- [ ] **Step 3: Test manual cluster mapping and product input editing**
+- [ ] **Step 4: Implement, verify and commit**
 
 ```bash
-git add src/ui styles.css tests/ui
-git commit -m "feat: add local report import and diagnostics UI"
+npm test -- tests/ui/upload-view.test.ts
+git add src/ui styles.css tests/ui/upload-view.test.ts
+git commit -m "feat: add report import and diagnostics UI"
 ```
 
-### Task 20: Build dashboard, SKU diagnostics and optimized plan UI
+## Task 23: Dashboard, SKU diagnostics and placement comparison
 
 **Files:**
 - Create: `src/ui/dashboard-view.ts`
@@ -1073,9 +1292,9 @@ git commit -m "feat: add local report import and diagnostics UI"
 - Test: `tests/ui/dashboard-view.test.ts`
 - Test: `tests/ui/sku-view.test.ts`
 
-**Required visible information:**
+- [ ] **Step 1: Dashboard metrics test**
 
-Dashboard metrics:
+Required metrics:
 
 ```text
 analyzed SKU
@@ -1084,31 +1303,37 @@ seller available units
 allocated units
 expected profit
 negative-economics recommendations
-probable-stockout warnings
+probable stockout destinations
+probable recommendation distortions
 blocked routes
 incomplete SKU
 ```
 
-SKU detail must expose both projections:
+- [ ] **Step 2: SKU four-view test**
+
+Require:
 
 ```text
-Destination view: who fulfilled Moscow demand?
-Origin view: where did Kazan stock actually go?
+Demand view
+Destination fulfillment view
+Origin donor view
+Placement comparison
 ```
 
-Stockout warning must show evidence, e.g. local share before/after, replacement origins and demand retention.
+- [ ] **Step 3: Moscow/Kazan evidence test**
 
-- [ ] **Step 1: Write DOM tests for plan row explanation and stockout evidence**
-- [ ] **Step 2: Verify failure**
-- [ ] **Step 3: Implement views using selectors only; no formulas in UI**
-- [ ] **Step 4: Run tests and commit**
+Kazan recommendation row must visibly state that Kazan acted as donor for probable Moscow stockout and offer comparison to Moscow placement economics.
+
+- [ ] **Step 4: Implement views using selectors only**
+- [ ] **Step 5: Verify and commit**
 
 ```bash
+npm test -- tests/ui/dashboard-view.test.ts tests/ui/sku-view.test.ts
 git add src/ui tests/ui
-git commit -m "feat: add explainable supply plan and SKU diagnostics UI"
+git commit -m "feat: add explainable plan and stockout diagnostics UI"
 ```
 
-### Task 21: Wire persistence without hiding stale data
+## Task 24: Persistence wiring without hidden stale data
 
 **Files:**
 - Modify: `src/app/bootstrap.ts`
@@ -1116,53 +1341,48 @@ git commit -m "feat: add explainable supply plan and SKU diagnostics UI"
 - Modify: `src/ui/upload-view.ts`
 - Test: `tests/integration/persistence.test.ts`
 
-**Required behavior:**
-
-Persist tariffs, seller economics, settings and manual cluster mappings. Operational availability/restrictions/orders may be restored only if UI clearly labels their source and report/import date; the user must never mistake stale data for a fresh report.
-
-- [ ] **Step 1: Write reload test**
-- [ ] **Step 2: Verify failure**
-- [ ] **Step 3: Wire `LocalStore` through bootstrap**
-- [ ] **Step 4: Test and commit**
+- [ ] **Step 1: Write reload test for tariffs/settings/product inputs/mappings**
+- [ ] **Step 2: Assert no PII/raw order row persistence**
+- [ ] **Step 3: Assert restored operational reports retain visible stale metadata if restoration is supported**
+- [ ] **Step 4: Implement, verify and commit**
 
 ```bash
+npm test -- tests/integration/persistence.test.ts
 git add src/app src/ui tests/integration/persistence.test.ts
 git commit -m "feat: restore local optimizer configuration safely"
 ```
 
-### Task 22: Release hardening and offline smoke test
+## Task 25: CI and offline release smoke test
 
 **Files:**
-- Create: `tests/browser/offline-release.spec.ts`
 - Create: `.github/workflows/ci.yml`
+- Create: `tests/browser/offline-release.spec.ts`
 - Modify: `scripts/build.mjs`
 - Modify: `README.md`
+- Modify: `package.json`
 
-**Required behavior:**
+- [ ] **Step 1: Add failing `file://` smoke test**
 
-- CI runs typecheck, unit/integration tests and production build.
-- Browser smoke test opens built `dist/index.html` via a `file://` URL.
-- No network request is required for normal operation.
-- README documents exactly which reports to download and how to launch.
+Open built `dist/index.html`, import sanitized fixture files and verify a plan is rendered without a server.
 
-- [ ] **Step 1: Add failing offline browser smoke test**
+- [ ] **Step 2: Add network-request assertion**
 
-The test opens `file://${absolutePath}/dist/index.html`, verifies the title and imports sanitized fixtures through the browser file inputs.
+Normal flow must produce no required external requests.
 
-- [ ] **Step 2: Run and verify failure before final wiring**
-- [ ] **Step 3: Fix bundle/resource paths until test passes without server**
-- [ ] **Step 4: Add CI workflow**
+- [ ] **Step 3: Add CI**
 
-CI commands:
-
-```bash
-npm ci
-npm run typecheck
-npm test
-npm run build
+```yaml
+- run: npm ci
+- run: npm run typecheck
+- run: npm test
+- run: npm run build
 ```
 
-Run the browser smoke test on supported CI runners if Playwright is included; otherwise document it as a release gate executed locally and keep CI build/test mandatory.
+Include browser smoke test when environment support is reliable; otherwise keep it as mandatory local release gate and document the exact command.
+
+- [ ] **Step 4: README launch/report instructions**
+
+Document the three operational Ozon reports, tariff/unit workbook, product cost/available stock input and `index.html` launch.
 
 - [ ] **Step 5: Final verification**
 
@@ -1175,7 +1395,7 @@ npm test
 npm run build
 ```
 
-Then manually disconnect network and open `dist/index.html` from disk. Import the fixture reports and verify a plan is produced.
+Then disconnect network, open `dist/index.html` from disk, import fixtures and verify an explainable plan.
 
 - [ ] **Step 6: Commit**
 
@@ -1184,69 +1404,107 @@ git add .github README.md scripts tests/browser package.json package-lock.json
 git commit -m "chore: harden offline MVP release"
 ```
 
-**PR8 acceptance:** offline release completes the full user flow and every recommendation/exclusion can be explained from visible inputs and reason codes.
+**PR8 acceptance:** supported reports flow through the full offline pipeline; every allocation/exclusion/distortion warning is explainable; no runtime service or data transmission is required.
 
 ---
 
 # Manual validation checkpoints using real seller data
 
-These checks happen after automated tests; full raw reports remain outside git.
-
 ## Checkpoint A — after PR2
 
-Load the three provided operational reports and record:
+Load the current real files without preprocessing and record:
 
-- accepted row counts;
+- accepted/rejected rows;
 - SKU counts;
+- report dates/periods;
 - unknown cluster mappings;
-- malformed row count.
+- malformed worksheet recovery diagnostics;
+- order lifecycle counts.
 
-No manual file editing is allowed before import.
+Confirm that customer name/address/INN are absent from canonical serialized records.
 
 ## Checkpoint B — after PR4
 
-Pick 3 SKUs and manually verify:
+Pick three SKUs and manually verify:
 
-- demand quantity by delivery cluster;
-- top fulfillment origins for Moscow/Kazan/one other cluster;
-- reverse donor share for Kazan.
+- demand by delivery cluster;
+- fulfillment origins for Moscow, Kazan and one other destination;
+- reverse donor share for Kazan;
+- cancelled/in-progress orders do not influence fulfilled-route shares;
+- current week is excluded from stockout comparison.
 
 ## Checkpoint C — after PR5
 
-Manually inspect 5–10 `Вероятный stockout` signals against Ozon historical evidence where available. Record confirmed/not-confirmed outcomes outside the code path. Do not change the detector based on one anecdotal case; adjust thresholds only after a small validation set shows a consistent bias.
+Inspect 5–10 `Вероятный stockout` cases manually in Ozon where possible.
+
+For each case record:
+
+```text
+signal destination
+replacement donor origins
+manual confirmation yes/no/unclear
+availability daysWithoutStock evidence
+whether Ozon recommends a donor cluster
+```
+
+Do not tune thresholds from one anecdote; adjust only after a small validation set shows consistent bias.
 
 ## Checkpoint D — after PR6
 
-Compare 5–10 exact spreadsheet examples including local and intercluster routes. No optimizer work should merge until economics parity is accepted.
+Compare 5–10 exact workbook examples, covering local/intercluster routes and material tax/VAT/co-invest branches.
 
-## Checkpoint E — after PR8
+Optimizer PR7 must not merge until parity is accepted.
+
+## Checkpoint E — after PR7
+
+For at least one known donor scenario compare:
+
+```text
+Ozon recommendation for donor cluster
+counterfactual economics of affected destination
+optimizer allocation under Ozon ceiling
+```
+
+Confirm the app highlights the counterfactual without silently reallocating beyond Ozon recommendation.
+
+## Checkpoint F — after PR8
 
 Use current real reports and compare:
 
 1. Ozon recommendation totals;
-2. app feasibility exclusions;
-3. app economic exclusions;
-4. limited-stock allocation;
-5. expected profit;
-6. stockout warnings and their evidence.
+2. lifecycle counts;
+3. stockout warnings;
+4. donor recommendation-distortion warnings;
+5. feasibility exclusions;
+6. economic exclusions;
+7. limited-stock allocation;
+8. expected profit;
+9. counterfactual placement comparisons.
 
 ---
 
 # Self-review against specification
 
 - Offline/local-only runtime: PR1 + PR8.
-- All required imports: PR2 + PR3.
-- No hard-coded tariff matrix/master cluster list: PR3 + normalization.
-- Destination-demand invariant: PR2 fixture guard + PR4 analytics.
+- Report metadata/freshness: PR1 + PR2 + PR8.
+- Malformed `dimension=A1` Ozon XLSX: PR2.
+- Order lifecycle and incomplete-week protection: PR2 + PR4.
+- PII boundary: PR2 + PR3 + PR8.
+- No hard-coded tariff matrix/master cluster list: PR3.
+- Existing multi-sheet unit workbook as tariff source: PR3.
+- Destination-demand invariant: PR2 + PR4.
 - Bidirectional route analysis: PR4.
-- Probable stockout, evidence and non-override rule: PR5.
-- Stockout-aware route profile: PR5.
+- Probable destination stockout: PR5.
+- Availability corroboration via `daysWithoutStock`: PR5.
+- Donor-linked recommendation distortion: PR5.
+- Stockout-cleaned route profile: PR5.
 - Expected intercluster logistics: PR6.
-- Spreadsheet regression oracle: PR6.
+- Spreadsheet parity including tax/VAT/co-invest: PR6.
 - Warehouse restrictions: PR7.
-- Limited-stock max-profit optimization: PR7.
+- Counterfactual placement assessment: PR7.
+- Ozon-ceiling limited-stock optimization: PR7.
 - Explainability/status codes: PR7 + PR8.
 - Local persistence with stale-data visibility: PR3 + PR8.
 - End-to-end user workflow: PR8.
 
-No MVP requirement is intentionally deferred beyond PR8. Historical stock balances, API integration and automatic correction of Ozon recommendations remain explicitly post-MVP.
+Historical daily stock, API integration and automatic quantity correction above Ozon recommendations remain explicitly post-MVP.
