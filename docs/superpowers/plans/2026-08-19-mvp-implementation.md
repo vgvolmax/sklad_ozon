@@ -110,6 +110,13 @@ tests/browser/*
 
 ---
 
+## Codex Cloud preflight
+
+For dependency-dependent PRs, verify required registry access before starting
+the TDD cycle. Environment network failures are blockers to the task, not
+reasons to change the agreed architecture. See
+`docs/superpowers/codex-cloud-environment.md`.
+
 # PR sequence
 
 | PR | Deliverable | Merge gate |
