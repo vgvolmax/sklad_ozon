@@ -31,6 +31,13 @@
 - [Архитектурная спецификация](docs/superpowers/specs/2026-08-19-ozon-fbo-unit-economics-optimizer-design.md)
 - [План реализации по PR](docs/superpowers/plans/2026-08-19-mvp-implementation.md)
 
+## Разработка с Codex Cloud
+
+Особенности среды описаны в [документе по Codex Cloud](docs/superpowers/codex-cloud-environment.md).
+Для PR, требующих npm-зависимости, Codex Cloud environment должен иметь доступ к
+`registry.npmjs.org`. Ограничения Cloud environment не являются основанием для
+изменения согласованной архитектуры.
+
 ## План PR
 
 1. Static offline foundation + canonical domain contracts.
