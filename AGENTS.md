@@ -24,20 +24,25 @@ are already in the repository specification or plan, continue from those files.
 
 ## Network and dependencies
 
-For npm-based tasks, verify registry access before changing production code:
+Do not require Agent Internet Access or direct npm registry probes as a
+precondition for implementation. Use the standard Codex Cloud environment,
+automatic setup, available package facilities and caches first. Do not run
+`npm view` merely to test whether direct outbound network access is available.
 
-```bash
-npm view esbuild version
-npm view typescript version
-npm view vitest version
-```
+When the current PR actually requires adding or installing dependencies,
+perform the normal project operation required by the task. Treat dependency
+availability as an environment blocker only if the actual required
+installation, build or test workflow fails because the dependency cannot be
+obtained. If that happens:
 
-If dependency installation is required and `registry.npmjs.org` is blocked,
-treat this as an environment blocker. Stop before dependency-dependent work and
-report the exact failed command and status. Do not redesign the application,
-replace the agreed stack, or add ad-hoc vendored or hand-written substitutes.
-Internet availability is an execution-environment concern, not a product
-architecture requirement.
+- report the exact failing command and error;
+- do not redesign the agreed architecture;
+- do not replace the agreed stack with ad-hoc vendored or hand-written
+  substitutes merely to bypass the environment.
+
+Agent Internet Access is not a general project requirement. Internet
+availability in a particular Codex task is an execution-environment property,
+not a product architecture decision.
 
 ## Work preservation
 

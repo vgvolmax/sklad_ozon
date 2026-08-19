@@ -110,11 +110,13 @@ tests/browser/*
 
 ---
 
-## Codex Cloud preflight
+## Codex Cloud environment
 
-For dependency-dependent PRs, verify required registry access before starting
-the TDD cycle. Environment network failures are blockers to the task, not
-reasons to change the agreed architecture. See
+Codex Cloud tasks should not require direct Agent Internet Access or registry
+probes as a prerequisite. Use the normal environment and setup path first.
+Treat dependency access as a blocker only when an operation actually required
+by the current PR fails because a dependency cannot be obtained. Environment
+limitations are not reasons to change the agreed architecture. See
 `docs/superpowers/codex-cloud-environment.md`.
 
 # PR sequence

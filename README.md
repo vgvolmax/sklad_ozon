@@ -34,9 +34,8 @@
 ## Разработка с Codex Cloud
 
 Особенности среды описаны в [документе по Codex Cloud](docs/superpowers/codex-cloud-environment.md).
-Для PR, требующих npm-зависимости, Codex Cloud environment должен иметь доступ к
-`registry.npmjs.org`. Ограничения Cloud environment не являются основанием для
-изменения согласованной архитектуры.
+Проект не требует постоянного Agent Internet Access. Ограничения Cloud
+environment не являются основанием для изменения согласованной архитектуры.
 
 ## План PR
 
