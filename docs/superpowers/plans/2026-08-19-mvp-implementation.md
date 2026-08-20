@@ -248,7 +248,9 @@ Implement only these tasks in PR2; do not pull later scope forward.
 
 **Interfaces**
 - Consumes: source strings and locale-formatted cells.
-- Produces: `normalizeHeader`, `normalizeClusterId`, `parseLocaleNumber`, `parseIsoDate`.
+- Produces: `normalizeHeader`, `normalizeClusterLabel`, `resolveClusterId`, `parseLocaleNumber`, `parseIsoDate`.
+
+`normalizeClusterLabel(raw)` performs harmless text normalization only: normalize Unicode spaces, trim, collapse repeated whitespace, and optionally derive a deterministic comparison casing/key. It must not contain a cluster master list or translate a label into a semantic identifier. `resolveClusterId(rawLabel, aliasMap, manualMappings)` is the separate semantic boundary: it may return an identifier only from imported known aliases, explicit manual mappings, or an already confirmed canonical mapping. Ambiguous or unmatched labels remain unresolved. Downstream `clusterId` fields are populated only after this resolution step.
 
 - [ ] Step 1: Write failing test
 
@@ -258,9 +260,9 @@ import assert from 'node:assert/strict';
 
 test('Normalization primitives', async () => {
   assert.equal(api.normalizeHeader('  Артикул! '),'артикул');
-  assert.equal(api.normalizeClusterId('  МОСКВА '),'Moscow');
+  assert.equal(api.normalizeClusterLabel('  МОСКВА  '),'МОСКВА');
   assert.equal(api.parseLocaleNumber('1 234,50'),1234.5);
-  assert.equal(api.normalizeClusterId('Москва Север'), 'Москва Север');
+  assert.equal(api.resolveClusterId('Москва Север',new Map(),new Map()),undefined);
 });
 ```
 
@@ -276,8 +278,12 @@ Expected: FAIL because the named production function/file or the asserted behavi
 
 ```js
 function normalizeHeader(v){return String(v).trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu,'');}
+function normalizeClusterLabel(v){return String(v).replace(/[\s\u00a0]+/gu,' ').trim();}
+function resolveClusterId(v,aliasMap,manualMappings){const key=normalizeClusterLabel(v); return manualMappings.get(key)??aliasMap.get(key);}
 function parseLocaleNumber(v){return Number(String(v).replace(/\s/g,'').replace(',','.'));}
 ```
+
+The maps are data supplied at runtime from imported/confirmed mappings; do not seed either map with hard-coded Ozon cluster aliases.
 
 Expose the named functions on the relevant `globalThis.SkladOzon` namespace; keep source decoding/DOM effects outside pure calculations.
 
@@ -383,6 +389,7 @@ git commit -m "feat: order lifecycle classification"
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 test('Browser workbook adapter', async () => {
   const out=await api.readWorkbook(readFileSync('tests/fixtures/malformed-dimension-a1.xlsx'));
@@ -394,17 +401,33 @@ test('Browser workbook adapter', async () => {
 - [ ] Step 2: Run test and verify RED
 
 ```bash
-node --test tests/workbook-adapter.test.mjs tests/fixtures/malformed-dimension-a1.xlsx
+node --test tests/workbook-adapter.test.mjs
 ```
 
 Expected: FAIL because the named production function/file or the asserted behavior does not exist yet.
 
-- [ ] Step 3: Implement minimal behavior
+- [ ] Step 3: Determine parser behavior, then implement the minimal proven recovery
+
+Use the sanitized regression fixture whose worksheet XML declares `<dimension ref="A1"/>` while containing four actually populated rows/cells. Run it against the selected vendored parser and inspect whether its parser output/worksheet structures retain cells beyond the declared `A1` range. The acceptance contract is behavior-first: import every actually populated row without loss and emit `WORKSHEET_DIMENSION_REPAIRED`; it does not assume the parser's capabilities in advance.
+
+Choose the implementation from observed behavior:
+
+1. Add and run the malformed XLSX regression fixture with the actually selected vendored library.
+2. If the parsed workbook retains the populated cells, compute the effective range from those available cells, restore the rows, and emit `WORKSHEET_DIMENSION_REPAIRED`.
+3. If the parser discards cells beyond the declared range, do not attempt to repair the already lossy workbook object. Add the smallest fallback that reads the underlying worksheet XML from the XLSX ZIP and reconstructs the populated rows/cells, or use another proven low-level path covered by the same regression test.
+4. Implement the XML/ZIP fallback only when the regression test proves it is necessary. Do not replace the library or change the architecture based on an assumption.
+
+Conceptual control flow only (the capability predicates and recovery path must be backed by the regression test):
 
 ```js
-async function readWorkbook(bytes){
- const workbook=XLSX.read(bytes,{type:'array',dense:true});
- return extractPhysicalCellsAndRepairDimensions(workbook);
+async function readWorkbook(bytes) {
+  const parsed = readWithVendoredParser(bytes);
+
+  if (canRecoverPopulatedCellsFromParsedWorkbook(parsed)) {
+    return recoverEffectiveWorksheetRange(parsed);
+  }
+
+  return recoverMalformedWorksheetFromPackageXml(bytes);
 }
 ```
 
@@ -413,7 +436,7 @@ Expose the named functions on the relevant `globalThis.SkladOzon` namespace; kee
 - [ ] Step 4: Run test and verify GREEN
 
 ```bash
-node --test tests/workbook-adapter.test.mjs tests/fixtures/malformed-dimension-a1.xlsx
+node --test tests/workbook-adapter.test.mjs
 ```
 
 Expected: PASS for this task's assertions.
@@ -460,7 +483,7 @@ test('CSV reader', async () => {
 - [ ] Step 2: Run test and verify RED
 
 ```bash
-node --test tests/csv-reader.test.mjs tests/fixtures/orders-bom-semicolon.csv
+node --test tests/csv-reader.test.mjs
 ```
 
 Expected: FAIL because the named production function/file or the asserted behavior does not exist yet.
@@ -477,7 +500,7 @@ Expose the named functions on the relevant `globalThis.SkladOzon` namespace; kee
 - [ ] Step 4: Run test and verify GREEN
 
 ```bash
-node --test tests/csv-reader.test.mjs tests/fixtures/orders-bom-semicolon.csv
+node --test tests/csv-reader.test.mjs
 ```
 
 Expected: PASS for this task's assertions.
@@ -525,7 +548,7 @@ test('Availability importer', async () => {
 - [ ] Step 2: Run test and verify RED
 
 ```bash
-node --test tests/availability-importer.test.mjs tests/fixtures/availability.json
+node --test tests/availability-importer.test.mjs
 ```
 
 Expected: FAIL because the named production function/file or the asserted behavior does not exist yet.
@@ -541,7 +564,7 @@ Expose the named functions on the relevant `globalThis.SkladOzon` namespace; kee
 - [ ] Step 4: Run test and verify GREEN
 
 ```bash
-node --test tests/availability-importer.test.mjs tests/fixtures/availability.json
+node --test tests/availability-importer.test.mjs
 ```
 
 Expected: PASS for this task's assertions.
@@ -587,7 +610,7 @@ test('Restrictions importer', async () => {
 - [ ] Step 2: Run test and verify RED
 
 ```bash
-node --test tests/restrictions-importer.test.mjs tests/fixtures/restrictions.json
+node --test tests/restrictions-importer.test.mjs
 ```
 
 Expected: FAIL because the named production function/file or the asserted behavior does not exist yet.
@@ -603,7 +626,7 @@ Expose the named functions on the relevant `globalThis.SkladOzon` namespace; kee
 - [ ] Step 4: Run test and verify GREEN
 
 ```bash
-node --test tests/restrictions-importer.test.mjs tests/fixtures/restrictions.json
+node --test tests/restrictions-importer.test.mjs
 ```
 
 Expected: PASS for this task's assertions.
@@ -650,7 +673,7 @@ test('Orders importer', async () => {
 - [ ] Step 2: Run test and verify RED
 
 ```bash
-node --test tests/orders-importer.test.mjs tests/fixtures/orders-kazan-moscow.csv
+node --test tests/orders-importer.test.mjs
 ```
 
 Expected: FAIL because the named production function/file or the asserted behavior does not exist yet.
@@ -666,7 +689,7 @@ Expose the named functions on the relevant `globalThis.SkladOzon` namespace; kee
 - [ ] Step 4: Run test and verify GREEN
 
 ```bash
-node --test tests/orders-importer.test.mjs tests/fixtures/orders-kazan-moscow.csv
+node --test tests/orders-importer.test.mjs
 ```
 
 Expected: PASS for this task's assertions.
@@ -714,7 +737,7 @@ test('Diagnostics, metadata, and PII boundary', async () => {
 - [ ] Step 2: Run test and verify RED
 
 ```bash
-node --test tests/import-boundary.test.mjs tests/fixtures/orders-with-pii.csv
+node --test tests/import-boundary.test.mjs
 ```
 
 Expected: FAIL because the named production function/file or the asserted behavior does not exist yet.
@@ -730,7 +753,7 @@ Expose the named functions on the relevant `globalThis.SkladOzon` namespace; kee
 - [ ] Step 4: Run test and verify GREEN
 
 ```bash
-node --test tests/import-boundary.test.mjs tests/fixtures/orders-with-pii.csv
+node --test tests/import-boundary.test.mjs
 ```
 
 Expected: PASS for this task's assertions.
@@ -795,7 +818,7 @@ test('Tariff workbook detection', async () => {
 - [ ] Step 2: Run test and verify RED
 
 ```bash
-node --test tests/tariff-workbook.test.mjs tests/fixtures/unit-economics-multisheet.json
+node --test tests/tariff-workbook.test.mjs
 ```
 
 Expected: FAIL because the named production function/file or the asserted behavior does not exist yet.
@@ -811,7 +834,7 @@ Expose the named functions on the relevant `globalThis.SkladOzon` namespace; kee
 - [ ] Step 4: Run test and verify GREEN
 
 ```bash
-node --test tests/tariff-workbook.test.mjs tests/fixtures/unit-economics-multisheet.json
+node --test tests/tariff-workbook.test.mjs
 ```
 
 Expected: PASS for this task's assertions.
