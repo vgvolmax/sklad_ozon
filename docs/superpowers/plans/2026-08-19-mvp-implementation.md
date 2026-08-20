@@ -40,7 +40,7 @@ The product is a static browser app opened directly at `app/index.html`. A funct
 - Ozon quantities are immutable inputs: neither a distortion signal nor a counterfactual may raise an automatic allocation above the recommendation.
 - Create files only in the PR that needs them; do not pre-create future directories.
 
-Every task below is a separate RED → GREEN unit. Run commands from repository root. Imports in test snippets use `vm.runInNewContext` helpers established by the first domain test so classic scripts can be exercised in Node without changing browser delivery.
+Every task below is a separate RED → GREEN unit. Run commands from repository root. Task 2 creates the single dependency-free classic-script test harness used by every later test. A test must import `loadClassicScripts`, pass production scripts in browser execution order, and bind its return value to `api`; it must not invent an ES-module production entry point. Task-local inputs such as `fixture`, and assertion helpers such as `find`, `route`, `sum`, `sumShares`, `sumProducts`, and `pick`, must be declared in that test file (or loaded there from a fixture named in the task's **Files** list) before use. Node built-ins such as `readFileSync` and `existsSync` must likewise be imported explicitly. Thus the snippets describe assertions, while the committed test files are self-contained executables: they contain their imports, `loadClassicScripts(...)` call, fixtures, and small assertion helpers; no identifier is supplied by a test runner global.
 
 ---
 
@@ -65,6 +65,7 @@ Implement only these tasks in PR1; do not pull later scope forward.
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
 
 test('Static `file://` shell', async () => {
   const html = readFileSync('app/index.html','utf8');
@@ -119,6 +120,7 @@ git commit -m "test: static file:// shell"
 ### Task 2: Canonical contracts and runtime invariants
 
 **Files**
+- Create: `tests/helpers/load-classic-script.mjs`
 - Create: `app/assets/js/domain/contracts.js`
 - Create: `app/assets/js/domain/invariants.js`
 - Test: `tests/domain-contracts.test.mjs`
@@ -130,9 +132,45 @@ git commit -m "test: static file:// shell"
 
 - [ ] Step 1: Write failing test
 
+Create the reusable test infrastructure first (this is test plumbing, not the GREEN production implementation):
+
+```js
+// tests/helpers/load-classic-script.mjs
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+
+export function loadClassicScripts(paths, globals = {}) {
+  if (!Array.isArray(paths) || paths.length === 0) {
+    throw new TypeError('paths must be a non-empty array');
+  }
+
+  const context = { console, ...globals };
+  context.globalThis = context;
+  vm.createContext(context);
+
+  for (const path of paths) {
+    const source = readFileSync(path, 'utf8');
+    vm.runInContext(source, context, { filename: path });
+  }
+
+  if (!context.SkladOzon) {
+    throw new Error('SkladOzon namespace was not created');
+  }
+  return context.SkladOzon;
+}
+```
+
+The helper loads production classic scripts verbatim and deliberately does not read the DOM, discover files, inject fixtures, or provide analytical helpers. Browser APIs needed by a particular shell test are passed explicitly through `globals`. Production files initialize the shared namespace with `globalThis.SkladOzon = globalThis.SkladOzon || {}` and attach their public functions to it.
+
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { loadClassicScripts } from './helpers/load-classic-script.mjs';
+
+const api = loadClassicScripts([
+  'app/assets/js/domain/contracts.js',
+  'app/assets/js/domain/invariants.js',
+]);
 
 test('Canonical contracts and runtime invariants', async () => {
   assert.deepEqual(api.OrderLifecycle, ['fulfilled','in_progress','cancelled','unknown']);
@@ -140,7 +178,7 @@ test('Canonical contracts and runtime invariants', async () => {
   assert.equal(order.originClusterId,'Kazan'); assert.equal(order.destinationClusterId,'Moscow');
   assert.deepEqual(Object.keys(api.createReportMeta({})), ['sourceName','importedAt','reportGeneratedAt','periodStart','periodEnd','recommendationHorizonDays']);
   assert.deepEqual(Object.keys(api.createImportResult([],[],{})), ['records','diagnostics','meta']);
-  assert.throws(()=>inv.assertNonNegative(-1)); assert.throws(()=>inv.assertRate(1.1)); assert.throws(()=>inv.assertNonEmpty(''));
+  assert.throws(()=>api.assertNonNegative(-1)); assert.throws(()=>api.assertRate(1.1)); assert.throws(()=>api.assertNonEmpty(''));
 });
 ```
 
@@ -181,7 +219,7 @@ Expected: all tests through PR1 PASS.
 - [ ] Step 6: Commit
 
 ```bash
-git add app/assets/js/domain/contracts.js app/assets/js/domain/invariants.js tests/domain-contracts.test.mjs tests/invariants.test.mjs
+git add tests/helpers/load-classic-script.mjs app/assets/js/domain/contracts.js app/assets/js/domain/invariants.js tests/domain-contracts.test.mjs tests/invariants.test.mjs
 git commit -m "feat: canonical contracts and runtime invariants"
 ```
 
