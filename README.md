@@ -1,51 +1,78 @@
 # sklad_ozon
 
-Локальное статическое browser-приложение для экономической проверки рекомендаций
-Ozon FBO и оптимального распределения ограниченного запаса между кластерами.
+Локальное Windows-приложение для экономической проверки рекомендаций Ozon FBO
+и оптимального распределения ограниченного запаса между кластерами.
 
-## Как открыть приложение
+> **Статус:** SCOZ-lite runtime описан и утверждён архитектурно. До завершения
+> replacement PR1 текущий код остаётся исторической browser-only реализацией;
+> новая документация не притворяется уже выпущенным runtime.
+
+## Как будет запускаться приложение
 
 1. Download repository ZIP.
-2. Extract it.
-3. Open `app/index.html` двойным кликом.
+2. Extract it fully to a writable folder.
+3. Double-click `start.bat`.
+4. При первом запуске bootstrap может скачать официальный portable Python и
+   закреплённые зависимости.
+5. Браузер откроется автоматически только после готовности локального приложения.
 
-Это полный пользовательский процесс. Установка, `start.bat`, launcher, сервер,
-Python и интернет не требуются. Node также не нужен конечному пользователю: он
-используется только разработчиками и CI для команды `node --test`.
+Системный Python и Node/npm устанавливать не нужно, права администратора не
+нужны, PATH не изменяется. Последующие запуски повторно используют проверенный
+project-local `runtime/`. После его подготовки обычная работа не требует сети.
 
-Все production assets находятся непосредственно в repository ZIP. Приложение
-работает через `file://`, читает выбранные XLSX/CSV с помощью Browser File API и
-обрабатывает их внутри браузера. Данные продавца остаются на компьютере
-пользователя и никуда не передаются.
+FastAPI слушает только `127.0.0.1:17843`. Отчёты и данные продавца обрабатываются
+локально и не отправляются во внешние сервисы. `runtime/` можно пересоздать;
+локальные артефакты `data/` при repair/rebuild не удаляются.
+
+## Архитектура
+
+sklad_ozon следует проверенным portable-паттернам
+[SCOZ](https://github.com/vgvolmax/SCOZ), но намеренно проще:
+
+- project-local Python 3.13.14, launcher и локальный FastAPI;
+- Python/openpyxl ingestion для XLSX и stdlib `csv` для CSV;
+- committed vanilla HTML/CSS/JavaScript без npm, build и framework;
+- Project JSON вместо SQLite и generic persistence infrastructure;
+- pytest для domain, ingestion, analytics, economics, optimizer и API.
+
+Frontend является тонким presentation layer. Формулы, импорт и бизнес-правила
+живут в Python functional core, а API routes остаются transport shell.
 
 ## Ключевой аналитический принцип
 
 Приложение строго разделяет:
 
-1. **где возник спрос** — кластер доставки;
-2. **откуда Ozon физически закрыл спрос** — кластер отгрузки;
-3. **куда выгоднее положить следующий товар** — результат юнит-экономики,
+1. **где возник спрос** — delivery/destination cluster;
+2. **откуда Ozon физически закрыл спрос** — origin/dispatch cluster;
+3. **куда выгоднее положить следующий товар** — результат экономики,
    ограничений и оптимизации.
 
 Отгрузка `Казань → Москва` является московским спросом, закрытым Казанью.
-Вероятный stockout, искажение рекомендации, clean-route profiles, тарифы,
-налоги/VAT/co-invest, feasibility и ограничения оптимизатора остаются частью
-архитектуры MVP.
+Миграция runtime не меняет lifecycle, PII boundary, incomplete-week policy,
+stockout/distortion, clean routes, tariffs, tax/VAT/co-invest, feasibility,
+counterfactual placement, recommendation ceilings или optimizer objective.
 
 ## Разработка
 
-Приложение написано на vanilla HTML, CSS и JavaScript без package manager,
-компиляции и frontend build. Зависимые от браузера библиотеки добавляются в
-`app/vendor/` только тогда, когда они действительно нужны, вместе с provenance и
-лицензией. Тесты чистой бизнес-логики используют встроенные `node:test` и
-`node:assert`:
+Canonical automated test command целевой архитектуры:
 
 ```bash
-node --test
+python -m pytest -q
 ```
+
+Опциональная syntax-проверка committed frontend не делает Node пользовательской
+зависимостью:
+
+```bash
+node --check frontend/assets/js/app.js
+```
+
+Portable Windows bootstrap проверяется authoritative Windows GitHub Actions
+smoke. Workflow появится в replacement foundation PR, не в этом docs-only PR.
 
 ## Документы
 
-- [Архитектурная спецификация](docs/superpowers/specs/2026-08-19-ozon-fbo-unit-economics-optimizer-design.md)
-- [План реализации PR1–PR8](docs/superpowers/plans/2026-08-19-mvp-implementation.md)
-- [Среда Codex Cloud](docs/superpowers/codex-cloud-environment.md)
+- [Canonical SCOZ-lite architecture](docs/superpowers/specs/2026-08-20-scoz-lite-portable-architecture-design.md)
+- [Canonical implementation plan PR1–PR8](docs/superpowers/plans/2026-08-20-scoz-lite-mvp-implementation.md)
+- [Codex Cloud environment](docs/superpowers/codex-cloud-environment.md)
+- [Historical business/analytical design](docs/superpowers/specs/2026-08-19-ozon-fbo-unit-economics-optimizer-design.md)

@@ -1,3 +1,10 @@
+# ⚠️ SUPERSEDED FOR RUNTIME/TECHNICAL ARCHITECTURE
+
+> Canonical runtime and technical architecture are now defined by
+> [2026-08-20-scoz-lite-portable-architecture-design.md](2026-08-20-scoz-lite-portable-architecture-design.md).
+> The business and analytical requirements in this historical specification
+> continue to apply unless the new specification explicitly changes them.
+
 # Ozon FBO Unit Economics & Supply Optimizer — Design
 
 ## Status

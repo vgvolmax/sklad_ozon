@@ -1,3 +1,9 @@
+# ⚠️ SUPERSEDED
+
+> This historical browser-only plan is superseded by the canonical
+> [2026-08-20 SCOZ-lite MVP implementation plan](2026-08-20-scoz-lite-mvp-implementation.md).
+> It remains as implementation history and is not an executable active plan.
+
 # sklad_ozon MVP Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL:
