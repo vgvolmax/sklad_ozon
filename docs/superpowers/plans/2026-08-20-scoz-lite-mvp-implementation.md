@@ -172,9 +172,12 @@ isolated runtime/data sandbox, observes `/api/health`, verifies reuse on second
 launch, and proves the listener is loopback-only. CI runs Python 3.13 tests before
 portable smoke.
 
-- [ ] **Concrete failing test:** PowerShell smoke asserts missing-runtime bootstrap,
-  successful health, unchanged runtime marker on second launch, preserved sentinel
-  in `data/`, no listener on non-loopback addresses, and clean server shutdown.
+- [ ] **Concrete failing test:** PowerShell smoke asserts the first launch prepares
+  the runtime and reaches health; the second launch succeeds with that same
+  validated runtime without another Python download or pip/dependency
+  install/rebuild; the sentinel in `data/` remains intact; no listener exists on
+  non-loopback addresses; and the test server shuts down cleanly. Do not introduce
+  a test-only metadata artifact solely to prove reuse.
 - [ ] **RED command:** `powershell -File tests/windows/portable-smoke.ps1`
 - [ ] **Expected RED reason:** smoke/workflow and complete portable behavior are
   absent; on non-Windows development hosts this RED is recorded and executed by
@@ -201,20 +204,35 @@ portable smoke pass.
 `backend/ingestion/normalization.py`, `backend/ingestion/lifecycle.py`,
 `tests/ingestion/test_normalization.py`, `tests/ingestion/test_lifecycle.py`.
 
-**Interfaces:** `normalize_header`, `normalize_text`, `normalize_cluster_label`,
-`map_cluster_semantics`, and `classify_order_lifecycle` return normalized values
-plus diagnostics. Harmless whitespace/case normalization is separate from
-explicit semantic alias mapping.
+**Interfaces:** `normalize_header(value)`, `normalize_text(value)`,
+`normalize_cluster_label(raw)`,
+`resolve_cluster_id(raw_label, alias_map, manual_mappings)`, and
+`classify_order_lifecycle(raw_status)` return normalized/classified values plus
+diagnostics where applicable. `normalize_cluster_label` is harmless text cleanup
+only: Unicode and NBSP/whitespace normalization, trim, and whitespace collapse;
+case normalization is allowed only when it cannot change semantic identity. It
+must not translate, shorten, geographically guess, or otherwise change cluster
+identity. Semantic resolution occurs only in `resolve_cluster_id` from explicit
+caller-supplied maps: manual mappings take precedence over imported/confirmed
+aliases, and a missing mapping returns `None`/unresolved with a diagnostic.
 
 - [ ] **Concrete failing test:** cover BOM headers, nonbreaking spaces, composed
-  Unicode, blank values, explicit `Москва` aliases, unmapped clusters, and Ozon
-  statuses mapping to all four lifecycle values without silently treating unknown
-  as cancelled.
+  Unicode, blank values, and Ozon statuses mapping to all four lifecycle values
+  without silently treating unknown as cancelled. Assert
+  `normalize_cluster_label("  МОСКВА  ") == "МОСКВА"`. Assert `Москва Север`
+  resolves to `None`/unresolved with a diagnostic when both maps are empty. With
+  caller-supplied `alias_map={"МОСКВА": "cluster-moscow"}`, assert `МОСКВА`
+  resolves to `cluster-moscow`. With that key in both maps, assert the explicit
+  `manual_mappings={"МОСКВА": "cluster-moscow-manual"}` value wins over
+  `alias_map={"МОСКВА": "cluster-moscow-imported"}` and the result is
+  `cluster-moscow-manual`.
 - [ ] **RED command:** `python -m pytest tests/ingestion/test_normalization.py tests/ingestion/test_lifecycle.py -q`
 - [ ] **Expected RED reason:** ingestion normalization modules are absent.
-- [ ] **Minimal production implementation:** pure stdlib normalization and
-  table-driven mappings that preserve raw source values and emit diagnostics for
-  semantic decisions.
+- [ ] **Minimal production implementation:** pure stdlib text normalization plus
+  lookup only in the mappings supplied to `resolve_cluster_id`; preserve raw
+  source values and emit diagnostics for semantic decisions. Add no hard-coded
+  Ozon cluster master, embedded Russian-to-English cluster dictionary, fuzzy
+  semantic matching, or automatic geography guessing.
 - [ ] **GREEN command:** `python -m pytest tests/ingestion/test_normalization.py tests/ingestion/test_lifecycle.py -q`
 - [ ] **Regression command:** `python -m pytest -q`
 - [ ] **Commit:** `git add backend/ingestion tests/ingestion && git commit -m "feat: normalize import values and lifecycle"`
@@ -426,7 +444,7 @@ never rewrites observed history.
   field.
 - [ ] **GREEN command:** `python -m pytest tests/analytics/test_stockout_distortion.py -q`
 - [ ] **Regression command:** `python -m pytest -q`
-- [ ] **Commit:** `git add backend/analytics tests/analytics && git commit -m "feat: identify stockout-driven route distortion"`
+- [ ] **Commit:** `git add backend/domain/signals.py backend/analytics tests/analytics && git commit -m "feat: identify stockout-driven route distortion"`
 
 ## Task 12: Produce observed and clean route profiles
 
@@ -550,7 +568,7 @@ quality/coverage thresholds; result includes objective and binding reasons.
   solver dependency.
 - [ ] **GREEN command:** `python -m pytest tests/supply/test_optimizer.py -q`
 - [ ] **Regression command:** `python -m pytest -q`
-- [ ] **Commit:** `git add backend/supply/optimizer.py tests/supply/test_optimizer.py && git commit -m "feat: optimize stock under recommendation ceilings"`
+- [ ] **Commit:** `git add backend/supply/contracts.py backend/supply/optimizer.py tests/supply/test_optimizer.py && git commit -m "feat: optimize stock under recommendation ceilings"`
 
 ---
 
@@ -593,8 +611,9 @@ serves no external asset URL, preserves `data/`, and shuts down cleanly.
 
 - [ ] **Concrete failing test:** static test rejects external runtime asset links;
   Windows smoke disables network after prepared launch, launches again, checks
-  health/UI, validates seller-data locality and data sentinel, corrupts validity
-  marker, and observes bounded actionable failure/recovery rather than silent use.
+  health/UI, validates seller-data locality and data sentinel, corrupts a required
+  runtime component, and observes bounded actionable failure/recovery rather than
+  silent use or reliance on a generic runtime-metadata subsystem.
 - [ ] **RED command:** `python -m pytest tests/test_offline_assets.py -q && powershell -File tests/windows/portable-smoke.ps1`
 - [ ] **Expected RED reason:** final offline/corruption/path acceptance assertions
   are not yet satisfied; Windows half runs authoritatively in Actions.
