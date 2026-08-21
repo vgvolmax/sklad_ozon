@@ -3,11 +3,10 @@
 Локальное Windows-приложение для экономической проверки рекомендаций Ozon FBO
 и оптимального распределения ограниченного запаса между кластерами.
 
-> **Статус:** SCOZ-lite runtime описан и утверждён архитектурно. До завершения
-> replacement PR1 текущий код остаётся исторической browser-only реализацией;
-> новая документация не притворяется уже выпущенным runtime.
+> **Статус:** SCOZ-lite runtime реализован. Единственная пользовательская точка
+> входа — `start.bat`; прямой запуск HTML через `file://` не поддерживается.
 
-## Как будет запускаться приложение
+## Как запускать приложение
 
 1. Download repository ZIP.
 2. Extract it fully to a writable folder.
@@ -68,7 +67,7 @@ node --check frontend/assets/js/app.js
 ```
 
 Portable Windows bootstrap проверяется authoritative Windows GitHub Actions
-smoke. Workflow появится в replacement foundation PR, не в этом docs-only PR.
+smoke, включая первый bootstrap, повторное использование runtime и loopback bind.
 
 ## Документы
 

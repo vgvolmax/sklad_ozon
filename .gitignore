@@ -1,0 +1,6 @@
+/runtime/
+/data/
+__pycache__/
+.pytest_cache/
+/test-artifacts/
+*.pyc
