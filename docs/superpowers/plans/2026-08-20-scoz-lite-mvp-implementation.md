@@ -52,47 +52,61 @@ rather than maintaining two runtime paths.
 ## Task 1: Pin Python runtime and bootstrap contract
 
 **Files:** Create `requirements.txt`, `requirements-dev.txt`, `start.bat`,
-`tests/test_runtime_manifest.py`; modify `.gitignore`.
+`tests/test_runtime_bootstrap.py`; modify `.gitignore`.
 
-**Interfaces:** `start.bat` accepts no required arguments, installs into
-`runtime/`, records a validity marker tied to Python 3.13.14 and requirements,
-and invokes `runtime\python.exe launcher.py`. It never modifies PATH or `data/`.
+**Interfaces:** `start.bat` accepts no required arguments, validates and reuses or
+rebuilds `runtime/`, and invokes `runtime\python.exe launcher.py`. Validation
+requires that the local interpreter exists, reports exactly Python 3.13.14, and
+imports the exact pinned runtime dependency versions. It never falls back to
+system Python, modifies PATH, or modifies/deletes `data/`.
 
 - [ ] **Concrete failing test:** write `test_runtime_versions_are_exactly_pinned`
   to parse both requirements files and `test_start_script_uses_local_runtime`
-  to assert the pinned Python version, loopback-safe local paths, staging/validity
-  marker, and absence of system `python` fallback.
-- [ ] **RED command:** `python -m pytest tests/test_runtime_manifest.py -q`
+  to assert the local path, exact Python version, no PATH mutation or system
+  fallback, runtime/data isolation, working-runtime reuse, and broken-runtime
+  rebuild. Assert incomplete downloads use `.part` and cannot pass validation.
+- [ ] **RED command:** `python -m pytest tests/test_runtime_bootstrap.py -q`
 - [ ] **Expected RED reason:** requirements and bootstrap files do not exist.
 - [ ] **Minimal production implementation:** pin `fastapi==0.139.2`,
   `uvicorn==0.51.0`, `openpyxl==3.1.5`, `python-multipart==0.0.32`, then
-  `-r requirements.txt`, `pytest==8.4.2`, `httpx==0.28.1`; download and verify the
-  official embeddable Python 3.13.14 into staging, bootstrap pip, install and
-  validate dependencies, atomically mark runtime valid, and invoke launcher.
-  Ignore `/runtime/` and `/data/` without creating either directory.
-- [ ] **GREEN command:** `python -m pytest tests/test_runtime_manifest.py -q`
+  `-r requirements.txt`, `pytest==8.4.2`, `httpx==0.28.1`; follow the SCOZ
+  bootstrap pattern to download official embeddable Python 3.13.14 through a
+  `.part` path, reject absent/plainly corrupt artifacts, bootstrap pip, and
+  validate the interpreter and exact installed versions before invoking the
+  launcher. Rebuild only `runtime/` on failure and reuse it on success. Ignore
+  `/runtime/` and `/data/` without creating either directory or a separate
+  generic runtime-metadata subsystem.
+- [ ] **GREEN command:** `python -m pytest tests/test_runtime_bootstrap.py -q`
 - [ ] **Regression command:** `python -m pytest -q`
-- [ ] **Commit:** `git add .gitignore start.bat requirements.txt requirements-dev.txt tests/test_runtime_manifest.py && git commit -m "feat: add portable Python bootstrap contract"`
+- [ ] **Commit:** `git add .gitignore start.bat requirements.txt requirements-dev.txt tests/test_runtime_bootstrap.py && git commit -m "feat: add portable Python bootstrap contract"`
 
 ## Task 2: Add launcher lifecycle and developer server command
 
 **Files:** Create `launcher.py`, `RUN_SERVER.cmd`, `tests/test_launcher.py`.
 
-**Interfaces:** `launcher.main()` starts `runtime\python.exe -m uvicorn
-backend.main:app --host 127.0.0.1 --port 17843`, polls `/api/health` to a bounded
-deadline, opens one browser tab only after a valid response, writes startup state
-under `data/`, and terminates the child on launcher exit.
+**Interfaces:** `launcher.expected_health(payload)`, `fetch_health(...)`,
+`port_is_open()`, `start_server_wrapper()`, `wait_until_ready(...)`,
+`open_browser()`, and `launch()` implement the SCOZ lifecycle. `launch()` reuses
+an existing valid health response; otherwise it requires a free port, starts
+`RUN_SERVER.cmd` detached/in the background, waits to a bounded deadline, and
+opens one browser tab only after readiness. It writes startup state under
+`data/`, returns success, and leaves a successfully started server running.
 
-- [ ] **Concrete failing test:** mock process creation, monotonic time, health
-  requests, browser opening, and filesystem writes; prove two failures followed
-  by success open once, permanent failure opens zero times and records failure,
-  and command arguments contain neither `0.0.0.0` nor port 17842.
+- [ ] **Concrete failing test:** with existing valid health, prove server start is
+  not called, browser opens once, and launch succeeds. With a free port and no
+  initial health, prove the detached wrapper starts once, readiness eventually
+  succeeds, browser opens once, launch succeeds, and no stop/cleanup call occurs.
+  With permanent readiness failure, prove no browser opens and failure status is
+  written. With an occupied port and invalid health, prove no second server is
+  started, an actionable failure is returned, and no browser opens.
 - [ ] **RED command:** `python -m pytest tests/test_launcher.py -q`
 - [ ] **Expected RED reason:** `launcher` cannot be imported.
 - [ ] **Minimal production implementation:** use stdlib subprocess, urllib,
   webbrowser, JSON, and pathlib with injected helpers for deterministic tests;
-  create `data/` lazily; add a diagnostic `RUN_SERVER.cmd` that uses only the
-  project-local interpreter and same bind/port.
+  create `data/` lazily; start `RUN_SERVER.cmd` with Windows detached/background
+  flags and the project-local interpreter at the same bind/port. The production
+  launcher never stops a successfully started server; smoke/tests own explicit
+  cleanup of servers they create.
 - [ ] **GREEN command:** `python -m pytest tests/test_launcher.py -q`
 - [ ] **Regression command:** `python -m pytest -q`
 - [ ] **Commit:** `git add launcher.py RUN_SERVER.cmd tests/test_launcher.py && git commit -m "feat: launch loopback service after health readiness"`
@@ -129,11 +143,11 @@ committed frontend; `/assets/*` serves local committed assets.
 superseded node:test domain test files identified by `git grep load-classic-script`.
 
 **Interfaces:** Python exposes `OrderLifecycle`, `ReportMeta`, `ImportResult`,
-`OrderRecord`, `StockoutSignal`, `RecommendationDistortionSignal`,
-`PlacementAssessment`, cluster-direction guards, lifecycle population predicates,
-and serializable validation errors.
+`OrderRecord`, cluster-direction guards, lifecycle population predicates, the PII
+boundary, and serializable validation errors. Future behavioral contracts are
+introduced by their owning PR rather than as empty dataclasses in PR1.
 
-- [ ] **Concrete failing test:** instantiate every contract; reject an order whose
+- [ ] **Concrete failing test:** instantiate each listed contract; reject an order whose
   destination and origin fields are missing; prove net-demand eligibility is
   fulfilled/in-progress, route eligibility is fulfilled only, and a
   `Kazan → Moscow` record retains Moscow destination and Kazan origin.
@@ -181,7 +195,7 @@ portable smoke pass.
 
 # PR2 — Operational imports in Python
 
-## Task 6: Normalize source values and classify lifecycle
+## Task A: Normalize source values and classify lifecycle
 
 **Files:** Create `backend/ingestion/__init__.py`,
 `backend/ingestion/normalization.py`, `backend/ingestion/lifecycle.py`,
@@ -205,58 +219,126 @@ explicit semantic alias mapping.
 - [ ] **Regression command:** `python -m pytest -q`
 - [ ] **Commit:** `git add backend/ingestion tests/ingestion && git commit -m "feat: normalize import values and lifecycle"`
 
-## Task 7: Add XLSX adapter and malformed-dimension regression
+## Task B: Add XLSX adapter and malformed-dimension regression
 
 **Files:** Create `backend/ingestion/xlsx.py`,
 `tests/ingestion/test_xlsx_adapter.py`,
 `tests/fixtures/xlsx/ozon_dimension_a1.xlsx`,
-`tests/fixtures/xlsx/ozon_regular.xlsx`, and fixture-generation documentation in
+`tests/fixtures/xlsx/ozon_regular.xlsx`, and
 `tests/fixtures/xlsx/README.md`.
 
-**Interfaces:** `iter_worksheet_rows(stream, sheet_selector)` returns all populated
-rows with source row numbers and diagnostics; repaired workbooks include
+**Interfaces:** `iter_worksheet_rows(stream, sheet_selector)` returns every
+populated row with its source row number and diagnostics; repaired workbooks emit
 `WORKSHEET_DIMENSION_REPAIRED` exactly once.
 
-- [ ] **Concrete failing test:** sanitized workbook XML declares
-  `<dimension ref="A1"/>` but contains header plus at least three populated data
-  rows; test regular and read-only modes, assert all values/order, and assert the
-  repair diagnostic only for malformed input.
+- [ ] **Concrete failing test:** a sanitized workbook declares
+  `<dimension ref="A1"/>` but contains a header and at least three populated data
+  rows; regular and read-only modes return all values in order, and only malformed
+  input emits the repair diagnostic.
 - [ ] **RED command:** `python -m pytest tests/ingestion/test_xlsx_adapter.py -q`
-- [ ] **Expected RED reason:** adapter is absent and openpyxl's declared range can
-  truncate iteration for the malformed fixture.
-- [ ] **Minimal production implementation:** inspect actual openpyxl 3.1.5
-  behavior, use worksheet `reset_dimensions()` as the first recovery, and add
-  narrowly scoped zipfile/ElementTree dimension inspection only if the fixture
-  still fails. Do not parse XLSX cells independently.
+- [ ] **Expected RED reason:** the adapter is absent and the malformed declared
+  range can truncate openpyxl iteration.
+- [ ] **Minimal production implementation:** use openpyxl 3.1.5 and
+  `reset_dimensions()` first; add narrowly scoped zipfile/ElementTree range
+  inspection only if the fixture proves it necessary, never independent XLSX cell
+  parsing.
 - [ ] **GREEN command:** `python -m pytest tests/ingestion/test_xlsx_adapter.py -q`
 - [ ] **Regression command:** `python -m pytest -q`
 - [ ] **Commit:** `git add backend/ingestion/xlsx.py tests/ingestion/test_xlsx_adapter.py tests/fixtures/xlsx && git commit -m "feat: recover malformed Ozon worksheet dimensions"`
 
-## Task 8: Add CSV adapter and three operational importers
+## Task C: Add the CSV row adapter
 
 **Files:** Create `backend/ingestion/csv_adapter.py`,
-`backend/ingestion/availability.py`, `backend/ingestion/restrictions.py`,
-`backend/ingestion/orders.py`, `tests/ingestion/test_csv_adapter.py`,
-`tests/ingestion/test_operational_importers.py`, and sanitized files under
-`tests/fixtures/csv/` and `tests/fixtures/operational/`.
+`tests/ingestion/test_csv_adapter.py`, and sanitized files under
+`tests/fixtures/csv/`.
 
-**Interfaces:** `iter_csv_rows`, `import_availability`, `import_restrictions`, and
-`import_orders` accept bytes plus explicit report context and return
-`ImportResult` containing records, `ReportMeta`, row diagnostics, and no persisted
-PII fields.
+**Interfaces:** `iter_csv_rows(data, encoding="utf-8-sig")` accepts bytes and
+returns normalized header-keyed rows with source row numbers and structured
+adapter diagnostics.
 
-- [ ] **Concrete failing test:** cover UTF-8 BOM, comma, semicolon, quoted delimiter,
-  CRLF/LF, missing/duplicate headers, numeric parsing, report date, source row,
-  cluster direction, every lifecycle, and input customer name/address/phone being
-  absent from returned normalized records.
-- [ ] **RED command:** `python -m pytest tests/ingestion/test_csv_adapter.py tests/ingestion/test_operational_importers.py -q`
-- [ ] **Expected RED reason:** CSV adapter and report importers do not exist.
-- [ ] **Minimal production implementation:** use stdlib csv sniffing with bounded
-  candidate delimiters and report-specific header maps; reuse XLSX row interface;
-  create immutable normalized records and structured diagnostics.
-- [ ] **GREEN command:** `python -m pytest tests/ingestion/test_csv_adapter.py tests/ingestion/test_operational_importers.py -q`
+- [ ] **Concrete failing test:** cover UTF-8 BOM, comma and semicolon inputs,
+  quoted delimiters, CRLF/LF, missing headers, duplicate normalized headers, and
+  stable source row numbers.
+- [ ] **RED command:** `python -m pytest tests/ingestion/test_csv_adapter.py -q`
+- [ ] **Expected RED reason:** `backend.ingestion.csv_adapter` does not exist.
+- [ ] **Minimal production implementation:** use stdlib `csv` with candidate
+  delimiters limited to comma and semicolon; reuse normalization helpers and
+  return explicit diagnostics instead of guessing through invalid headers.
+- [ ] **GREEN command:** `python -m pytest tests/ingestion/test_csv_adapter.py -q`
 - [ ] **Regression command:** `python -m pytest -q`
-- [ ] **Commit:** `git add backend/ingestion tests/ingestion tests/fixtures/csv tests/fixtures/operational && git commit -m "feat: import Ozon operational reports in Python"`
+- [ ] **Commit:** `git add backend/ingestion/csv_adapter.py tests/ingestion/test_csv_adapter.py tests/fixtures/csv && git commit -m "feat: add deterministic CSV row adapter"`
+
+## Task D: Import availability reports
+
+**Files:** Create `backend/ingestion/availability.py`,
+`tests/ingestion/test_availability.py`, and sanitized availability fixtures under
+`tests/fixtures/operational/`.
+
+**Interfaces:** `import_availability(data, report_context)` consumes rows from the
+XLSX/CSV adapter and returns `ImportResult` with immutable normalized availability
+records, `ReportMeta`, source row numbers, and structured diagnostics.
+
+- [ ] **Concrete failing test:** cover required/duplicate headers, report date,
+  SKU and warehouse/cluster normalization, numeric quantities, invalid negative
+  or malformed values, source row numbers, and metadata/diagnostic retention.
+- [ ] **RED command:** `python -m pytest tests/ingestion/test_availability.py -q`
+- [ ] **Expected RED reason:** the availability importer does not exist.
+- [ ] **Minimal production implementation:** add the report-specific header map
+  and pure row conversion over the common adapter interface; create the smallest
+  shared ImportResult/diagnostics helper here if repeated construction requires
+  it, without a generic importer framework.
+- [ ] **GREEN command:** `python -m pytest tests/ingestion/test_availability.py -q`
+- [ ] **Regression command:** `python -m pytest -q`
+- [ ] **Commit:** `git add backend/ingestion/availability.py tests/ingestion/test_availability.py tests/fixtures/operational && git commit -m "feat: import Ozon availability reports"`
+
+## Task E: Import restriction reports
+
+**Files:** Create `backend/ingestion/restrictions.py`,
+`tests/ingestion/test_restrictions.py`, and sanitized restriction fixtures under
+`tests/fixtures/operational/`.
+
+**Interfaces:** `import_restrictions(data, report_context)` returns `ImportResult`
+with normalized SKU/warehouse restriction records, `ReportMeta`, source row
+numbers, reason codes, and structured diagnostics.
+
+- [ ] **Concrete failing test:** cover required/duplicate headers, explicit
+  allowed/prohibited source values, unknown restriction values, report date,
+  source row numbers, SKU/warehouse normalization, and rejected malformed rows.
+- [ ] **RED command:** `python -m pytest tests/ingestion/test_restrictions.py -q`
+- [ ] **Expected RED reason:** the restrictions importer does not exist.
+- [ ] **Minimal production implementation:** define an explicit source-value map
+  and immutable restriction rows over the shared adapter/diagnostic contracts;
+  preserve unknown values diagnostically rather than coercing them to allowed.
+- [ ] **GREEN command:** `python -m pytest tests/ingestion/test_restrictions.py -q`
+- [ ] **Regression command:** `python -m pytest -q`
+- [ ] **Commit:** `git add backend/ingestion/restrictions.py tests/ingestion/test_restrictions.py tests/fixtures/operational && git commit -m "feat: import Ozon restriction reports"`
+
+## Task F: Import orders with direction and PII safeguards
+
+**Files:** Create `backend/ingestion/orders.py`,
+`tests/ingestion/test_orders.py`, and sanitized order fixtures under
+`tests/fixtures/operational/`.
+
+**Interfaces:** `import_orders(data, report_context)` returns an `ImportResult` of
+`OrderRecord` values with `ReportMeta`, source row numbers, lifecycle and
+structured diagnostics. Normalized records expose no buyer/customer name,
+address, phone, email, or raw-row payload.
+
+- [ ] **Concrete failing test:** cover required/duplicate headers, numeric parsing,
+  report date, every lifecycle, and source row numbers. A sanitized
+  `Казань → Москва` input must produce `origin_cluster == "Казань"` and
+  `destination_cluster == "Москва"`; input buyer/customer name, address, phone,
+  and email must be wholly absent from the normalized `ImportResult` and its
+  serialized form.
+- [ ] **RED command:** `python -m pytest tests/ingestion/test_orders.py -q`
+- [ ] **Expected RED reason:** the orders importer does not exist.
+- [ ] **Minimal production implementation:** map explicit order headers through
+  the common adapters, lifecycle classifier, and direction guards; construct
+  only whitelisted immutable `OrderRecord` fields so PII never crosses the
+  normalized boundary.
+- [ ] **GREEN command:** `python -m pytest tests/ingestion/test_orders.py -q`
+- [ ] **Regression command:** `python -m pytest -q`
+- [ ] **Commit:** `git add backend/ingestion/orders.py tests/ingestion/test_orders.py tests/fixtures/operational && git commit -m "feat: import directional orders without PII"`
 
 ---
 
@@ -323,12 +405,14 @@ returns counts/shares plus completed-week metadata.
 
 ## Task 11: Detect probable stockouts and donor distortion
 
-**Files:** Create `backend/analytics/stockout.py`,
+**Files:** Create `backend/domain/signals.py`, `backend/analytics/stockout.py`,
 `backend/analytics/distortion.py`, `tests/analytics/test_stockout_distortion.py`.
 
 **Interfaces:** `detect_stockouts(weekly_profiles, availability, thresholds)`
-returns `StockoutSignal`; `detect_recommendation_distortion(signals, routes)`
-returns destination-linked donor evidence and never rewrites observed history.
+returns the PR5-owned `StockoutSignal`;
+`detect_recommendation_distortion(signals, routes)` returns the PR5-owned
+`RecommendationDistortionSignal` with destination-linked donor evidence and
+never rewrites observed history.
 
 - [ ] **Concrete failing test:** week1 Moscow demand 100/local 90%/Kazan donor 5%;
   week2 Moscow demand 95/local 20%/Kazan donor 65%. Assert probable Moscow
@@ -336,9 +420,10 @@ returns destination-linked donor evidence and never rewrites observed history.
   corroborate confidence but cannot create or erase the route-pattern signal.
 - [ ] **RED command:** `python -m pytest tests/analytics/test_stockout_distortion.py -q`
 - [ ] **Expected RED reason:** detectors do not exist.
-- [ ] **Minimal production implementation:** explicit threshold comparisons over
-  completed weeks, evidence-rich immutable signals, no origin-as-demand shortcut,
-  and a separate corroboration field.
+- [ ] **Minimal production implementation:** introduce both immutable signal
+  types with their first detectors; use explicit threshold comparisons over
+  completed weeks, no origin-as-demand shortcut, and a separate corroboration
+  field.
 - [ ] **GREEN command:** `python -m pytest tests/analytics/test_stockout_distortion.py -q`
 - [ ] **Regression command:** `python -m pytest -q`
 - [ ] **Commit:** `git add backend/analytics tests/analytics && git commit -m "feat: identify stockout-driven route distortion"`
@@ -419,13 +504,14 @@ coverage, and rounding metadata.
 
 ## Task 15: Assess feasibility and counterfactual placements
 
-**Files:** Create `backend/supply/__init__.py`,
+**Files:** Create `backend/supply/__init__.py`, `backend/supply/contracts.py`,
 `backend/supply/feasibility.py`, `backend/supply/placement.py`,
 `tests/supply/test_placement.py`.
 
-**Interfaces:** `assess_feasibility` returns reason-coded eligibility;
-`compare_placements` returns `PlacementAssessment` for observed, recommended, and
-counterfactual candidates while keeping assessment distinct from allocation.
+**Interfaces:** this PR introduces `PlacementAssessment` with its first behavior;
+`assess_feasibility` returns reason-coded eligibility, and `compare_placements`
+returns assessments for observed, recommended, and counterfactual candidates
+while keeping assessment distinct from allocation.
 
 - [ ] **Concrete failing test:** evaluate Moscow when Ozon recommendation is zero:
   counterfactual economics remain visible, but automatic eligibility/ceiling is
@@ -442,10 +528,11 @@ counterfactual candidates while keeping assessment distinct from allocation.
 
 ## Task 16: Optimize limited seller stock under hard ceilings
 
-**Files:** Create `backend/supply/optimizer.py`,
+**Files:** Modify `backend/supply/contracts.py`; create `backend/supply/optimizer.py`,
 `tests/supply/test_optimizer.py`.
 
-**Interfaces:** `optimize_allocations(candidates, available_stock, thresholds)`
+**Interfaces:** introduce `ClusterCandidate` only if the optimizer's tested input
+requires that named type; `optimize_allocations(candidates, available_stock, thresholds)`
 maximizes `Σ allocation × expected_profit_per_unit` with integer nonnegative
 allocations, total-stock limit, feasibility, recommendation ceilings, and minimum
 quality/coverage thresholds; result includes objective and binding reasons.
