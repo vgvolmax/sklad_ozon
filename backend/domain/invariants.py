@@ -1,6 +1,7 @@
 """Pure validation and lifecycle population predicates."""
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any
 
 from .contracts import OrderLifecycle, OrderRecord
@@ -20,13 +21,15 @@ class DomainValidationError(ValueError):
 
 
 def assert_non_negative(value: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not isfinite(value) or value < 0):
         raise DomainValidationError("NON_NEGATIVE_REQUIRED", "value must be non-negative")
     return value
 
 
 def assert_rate(value: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not isfinite(value) or not 0 <= value <= 1):
         raise DomainValidationError("RATE_OUT_OF_RANGE", "rate must be between zero and one")
     return value
 

@@ -21,7 +21,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
   "Expand-Archive -LiteralPath '%ARCHIVE%' -DestinationPath '%RUNTIME%' -Force" || goto rebuild_fail
 del /q "%ARCHIVE%"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$p=Get-ChildItem '%RUNTIME%\python*._pth' | Select-Object -First 1; (Get-Content $p.FullName) -replace '^#import site$','import site' | Set-Content -Encoding Ascii $p.FullName" || goto rebuild_fail
+  "$p=Get-ChildItem '%RUNTIME%\python*._pth' | Select-Object -First 1; $pthLines=@('python313.zip','.','Lib\site-packages','..','import site'); Set-Content -LiteralPath $p.FullName -Value $pthLines -Encoding Ascii" || goto rebuild_fail
 set "GET_PIP=%RUNTIME%\get-pip.py"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference='Stop'; Invoke-WebRequest -UseBasicParsing 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%GET_PIP%.part'; if ((Get-Item '%GET_PIP%.part').Length -lt 10000) { throw 'Downloaded get-pip.py is invalid' }; Move-Item -Force '%GET_PIP%.part' '%GET_PIP%'" || goto rebuild_fail
