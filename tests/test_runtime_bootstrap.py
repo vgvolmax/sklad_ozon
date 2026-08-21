@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -26,6 +27,25 @@ def test_start_script_uses_local_runtime_and_isolates_data():
     assert "rmdir /s /q \"%root%data" not in script
     assert "runtime_valid" in script
     assert "rmdir /s /q \"%runtime%\"" in script
+
+
+def test_start_script_writes_canonical_embedded_python_path_contract():
+    script = (ROOT / "start.bat").read_text()
+    match = re.search(
+        r"\$pthLines=@\((?P<lines>[^)]*)\);\s*"
+        r"Set-Content -LiteralPath \$p\.FullName -Value \$pthLines -Encoding Ascii",
+        script,
+        flags=re.IGNORECASE,
+    )
+    assert match, "start.bat must explicitly write the embedded Python ._pth contract"
+    assert re.findall(r"'([^']+)'", match.group("lines")) == [
+        "python313.zip",
+        ".",
+        "Lib\\site-packages",
+        "..",
+        "import site",
+    ]
+    assert "PYTHONPATH" not in script.upper()
 
 
 def test_runtime_and_data_are_ignored_separately():

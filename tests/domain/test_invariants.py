@@ -47,3 +47,14 @@ def test_foundation_value_guards_preserve_javascript_parity():
                  lambda: assert_non_empty("   ")):
         with pytest.raises(DomainValidationError):
             call()
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("guard,code", [
+    (assert_non_negative, "NON_NEGATIVE_REQUIRED"),
+    (assert_rate, "RATE_OUT_OF_RANGE"),
+])
+def test_numeric_guards_reject_non_finite_values(guard, code, value):
+    with pytest.raises(DomainValidationError) as caught:
+        guard(value)
+    assert caught.value.code == code

@@ -16,6 +16,15 @@ function Wait-Health([int]$Seconds = 180) {
     throw "Health endpoint did not become ready"
 }
 
+function Assert-RuntimeValid([string]$Runtime) {
+    $python = Join-Path $Runtime "python.exe"
+    if (-not (Test-Path $python)) { throw "Portable Python was not restored" }
+    & $python -c "import sys; raise SystemExit(sys.version_info[:3] != (3,13,14))"
+    if ($LASTEXITCODE -ne 0) { throw "Restored Python version validation failed" }
+    & $python -c "import fastapi,uvicorn,openpyxl,multipart; from importlib.metadata import version; expected={'fastapi':'0.139.2','uvicorn':'0.51.0','openpyxl':'3.1.5','python-multipart':'0.0.32'}; raise SystemExit(any(version(k)!=v for k,v in expected.items()))"
+    if ($LASTEXITCODE -ne 0) { throw "Restored dependency validation failed" }
+}
+
 try {
     Remove-Item $sandbox -Recurse -Force -ErrorAction SilentlyContinue
     New-Item $sandbox -ItemType Directory | Out-Null
@@ -45,7 +54,23 @@ try {
     if (Test-Path (Join-Path $runtime "*.part")) { throw "Incomplete download was retained as complete" }
     if ((Get-Content $sentinel -Raw).Trim() -ne "must survive runtime repair") { throw "data sentinel did not survive reuse" }
     Wait-Health 10
-    Write-Host "Portable bootstrap, reuse, health, data isolation, and loopback checks passed."
+
+    Stop-Process -Id $serverPid -Force
+    Wait-Process -Id $serverPid -ErrorAction SilentlyContinue
+    $serverPid = $null
+    Remove-Item (Join-Path $runtime "python.exe") -Force
+    if (Test-Path (Join-Path $runtime "python.exe")) { throw "Failed to damage runtime deterministically" }
+
+    $recovery = Start-Process cmd.exe -ArgumentList "/d", "/c", "start.bat" -WorkingDirectory $sandbox -Wait -PassThru
+    if ($recovery.ExitCode -ne 0) { throw "Damaged runtime recovery failed with $($recovery.ExitCode)" }
+    Wait-Health
+    $connection = Get-NetTCPConnection -LocalPort 17843 -State Listen
+    if ($connection.LocalAddress -ne "127.0.0.1") { throw "Recovered listener is not loopback-only: $($connection.LocalAddress)" }
+    $serverPid = $connection.OwningProcess
+    Assert-RuntimeValid $runtime
+    if (Get-ChildItem $runtime -Filter "*.part" -Recurse -File) { throw "Recovery retained an incomplete .part download" }
+    if ((Get-Content $sentinel -Raw).Trim() -ne "must survive runtime repair") { throw "data sentinel did not survive runtime rebuild" }
+    Write-Host "Portable bootstrap, reuse, damaged-runtime recovery, health, data isolation, and loopback checks passed."
 } finally {
     if (-not $serverPid) {
         $listener = Get-NetTCPConnection -LocalPort 17843 -State Listen -ErrorAction SilentlyContinue |
