@@ -78,10 +78,16 @@ First launch:
 3. `start.bat` checks the project-local `runtime/`.
 4. If absent or invalid, bootstrap downloads official Windows embeddable Python
    3.13.14, enables/bootstraps pip, and installs pinned requirements.
-5. Bootstrap validates imports and runtime version before marking it valid.
-6. `launcher.py` starts local FastAPI.
-7. The launcher polls `http://127.0.0.1:17843/api/health` with a bounded timeout.
-8. Only a successful health response opens the browser.
+5. Bootstrap validates the exact interpreter version and installed dependency
+   versions before invoking the launcher.
+6. `launcher.py` first checks the expected health contract. If it already
+   responds, the launcher reuses that server and opens the browser without
+   starting another process.
+7. Otherwise, the launcher verifies that the port is free, starts
+   `RUN_SERVER.cmd` as a detached/background process, and polls
+   `http://127.0.0.1:17843/api/health` with a bounded timeout.
+8. Only a successful health response opens the browser. The launcher then exits
+   successfully while FastAPI continues running.
 
 Subsequent launch is `start.bat → validate/reuse runtime → FastAPI → health →
 browser`. It requires no administrator rights, system Python, system Node/npm,
@@ -89,24 +95,35 @@ or PATH modification. First preparation may need Internet; normal later use with
 a valid runtime must not.
 
 Failures remain visible and actionable through console/status/log files. A failed
-health check must never open a misleading browser tab.
+health check must never open a misleading browser tab. If port 17843 is occupied
+but the expected health contract does not answer, the launcher fails without
+starting a second server or attempting to stop the foreign process.
 
 ## 6. Portable runtime
 
 `runtime/` is project-local, runtime-created, gitignored, and disposable. The
-bootstrap pins the official 64-bit Windows embeddable Python 3.13.14 artifact and
-verifies the download using an approved checksum recorded in implementation.
-Partial preparation uses a staging location and is never treated as valid.
+bootstrap follows SCOZ's proven contract, adapted only for the project name,
+port, pinned requirements, and absence of SQLite. It verifies that
+`runtime/python.exe` exists, reports exactly Python 3.13.14, and can import the
+exact pinned versions of FastAPI, Uvicorn, openpyxl, and python-multipart.
 
-Runtime validity covers Python version, installed dependency imports, and a
-version/requirements marker. A dependency change causes revalidation or repair.
-Repair/rebuild may replace `runtime/` but may not touch `data/`.
+A missing or broken runtime is rebuilt without touching `data/`. A download is
+not successful when its artifact is absent or plainly corrupt, and an incomplete
+download remains in a temporary `.part` path until completion. Every subsequent
+launch revalidates the runtime and reuses working dependencies rather than
+reinstalling them without cause. This MVP adds no separate generic runtime
+metadata or download-integrity subsystem beyond the current proven SCOZ
+bootstrap pattern.
 
-`RUN_SERVER.cmd` is a developer/diagnostic convenience using the project-local
-interpreter; it is not a second user entry point. `launcher.py` owns child server
-lifecycle, bounded readiness polling, browser opening, and useful failure state.
-Uvicorn binds exactly `127.0.0.1:17843`; port 17842 is reserved by SCOZ and is
-not used.
+`RUN_SERVER.cmd` uses the project-local interpreter and owns server process
+startup; it is not a second user entry point. `launcher.py` owns existing-health
+detection, port-conflict detection, detached startup, bounded readiness polling,
+browser opening, and useful failure state. It is not the server's lifetime owner:
+it must not terminate a successfully started server on normal exit, and the
+server remains alive after the launcher exits. PID/log artifacts may be written
+under `data/`. Tests and portable smoke explicitly clean up a test server after
+verification; that cleanup is not production launcher behavior. Uvicorn binds
+exactly `127.0.0.1:17843`; port 17842 is reserved by SCOZ and is not used.
 
 ## 7. Runtime/data separation
 
@@ -152,12 +169,18 @@ implementation, not semantics. Replacement PR1 ports them to
 Python contracts and pytest parity tests. It then removes obsolete JS contracts,
 the classic-script loader, and node:test domain tests.
 
-Canonical types include `OrderLifecycle` (`fulfilled`, `in_progress`,
-`cancelled`, `unknown`), `ReportMeta`, `ImportResult`, `OrderRecord`,
-`StockoutSignal`, `RecommendationDistortionSignal`, and `PlacementAssessment`.
-Contracts distinguish `delivery_cluster`/`destination_cluster` from
-`origin_cluster`/`dispatch_cluster`; adapters may retain source-field provenance
-without collapsing these concepts.
+Replacement PR1 introduces only `OrderLifecycle` (`fulfilled`, `in_progress`,
+`cancelled`, `unknown`), `ReportMeta`, `ImportResult`, `OrderRecord`, their basic
+validation/invariants, cluster-direction semantics, the lifecycle population
+predicates needed by the next PRs, and the PII boundary. Contracts distinguish
+`delivery_cluster`/`destination_cluster` from `origin_cluster`/`dispatch_cluster`;
+adapters may retain source-field provenance without collapsing these concepts.
+
+A domain entity enters production code in the PR that needs its first real
+behavior; empty future dataclasses are not scaffolding. PR5 introduces
+`StockoutSignal` and `RecommendationDistortionSignal` with their detectors. PR7
+introduces `PlacementAssessment` and any `ClusterCandidate` or optimizer-related
+types actually required by feasibility, comparison, or allocation behavior.
 
 Python packages are introduced only when used: `backend/domain`, then
 `backend/ingestion`, `backend/analytics`, `backend/economics`, and
@@ -280,7 +303,7 @@ httpx==0.28.1
 ```
 
 Python stdlib supplies `csv`, `zipfile`, JSON, subprocess/lifecycle, hashing, and
-XML inspection as needed. Each added dependency requires a concrete tested need
+the narrowly scoped XML inspection defined in section 11. Each added dependency requires a concrete tested need
 and design review; convenience alone is insufficient.
 
 ## 16. Testing/CI
