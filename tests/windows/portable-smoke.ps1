@@ -16,6 +16,30 @@ function Wait-Health([int]$Seconds = 180) {
     throw "Health endpoint did not become ready"
 }
 
+function Invoke-StartBat {
+    param(
+        [string]$WorkingDirectory,
+        [int]$TimeoutSeconds = 300
+    )
+
+    $process = Start-Process `
+        -FilePath "cmd.exe" `
+        -ArgumentList "/d", "/c", "start.bat" `
+        -WorkingDirectory $WorkingDirectory `
+        -PassThru
+    $exited = $process.WaitForExit($TimeoutSeconds * 1000)
+
+    if (-not $exited) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        throw "start.bat did not exit within $TimeoutSeconds seconds"
+    }
+    if ($process.ExitCode -ne 0) {
+        throw "start.bat failed with exit code $($process.ExitCode)"
+    }
+
+    return $process.ExitCode
+}
+
 function Assert-RuntimeValid([string]$Runtime) {
     $python = Join-Path $Runtime "python.exe"
     if (-not (Test-Path $python)) { throw "Portable Python was not restored" }
@@ -35,8 +59,7 @@ try {
     Set-Content $sentinel "must survive runtime repair"
     if (Test-Path (Join-Path $sandbox "runtime\python.exe")) { throw "Smoke must begin without a runtime" }
 
-    $first = Start-Process cmd.exe -ArgumentList "/d", "/c", "start.bat" -WorkingDirectory $sandbox -Wait -PassThru
-    if ($first.ExitCode -ne 0) { throw "First bootstrap failed with $($first.ExitCode)" }
+    $null = Invoke-StartBat -WorkingDirectory $sandbox
     Wait-Health
     $connection = Get-NetTCPConnection -LocalPort 17843 -State Listen
     if ($connection.LocalAddress -ne "127.0.0.1") { throw "Listener is not loopback-only: $($connection.LocalAddress)" }
@@ -46,8 +69,7 @@ try {
     $runtime = Join-Path $sandbox "runtime"
     $before = Get-ChildItem $runtime -Recurse -File | Sort-Object FullName |
         ForEach-Object { "$($_.FullName.Substring($runtime.Length))|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }
-    $second = Start-Process cmd.exe -ArgumentList "/d", "/c", "start.bat" -WorkingDirectory $sandbox -Wait -PassThru
-    if ($second.ExitCode -ne 0) { throw "Second launch failed with $($second.ExitCode)" }
+    $null = Invoke-StartBat -WorkingDirectory $sandbox
     $after = Get-ChildItem $runtime -Recurse -File | Sort-Object FullName |
         ForEach-Object { "$($_.FullName.Substring($runtime.Length))|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }
     if (Compare-Object $before $after) { throw "Valid runtime was downloaded, rebuilt, or reinstalled on second launch" }
@@ -61,8 +83,7 @@ try {
     Remove-Item (Join-Path $runtime "python.exe") -Force
     if (Test-Path (Join-Path $runtime "python.exe")) { throw "Failed to damage runtime deterministically" }
 
-    $recovery = Start-Process cmd.exe -ArgumentList "/d", "/c", "start.bat" -WorkingDirectory $sandbox -Wait -PassThru
-    if ($recovery.ExitCode -ne 0) { throw "Damaged runtime recovery failed with $($recovery.ExitCode)" }
+    $null = Invoke-StartBat -WorkingDirectory $sandbox
     Wait-Health
     $connection = Get-NetTCPConnection -LocalPort 17843 -State Listen
     if ($connection.LocalAddress -ne "127.0.0.1") { throw "Recovered listener is not loopback-only: $($connection.LocalAddress)" }
