@@ -58,3 +58,4 @@ class ImportResult(Generic[RecordT]):
     records: tuple[RecordT, ...]
     diagnostics: tuple[ImportDiagnostic, ...]
     meta: ReportMeta
+    record_sources: tuple[int, ...] = ()
