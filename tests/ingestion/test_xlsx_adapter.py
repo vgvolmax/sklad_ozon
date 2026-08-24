@@ -27,3 +27,12 @@ def test_regular_workbook_needs_no_repair():
     result = iter_worksheet_rows(BytesIO(payload), "Отчёт")
     assert len(result.rows) == 4
     assert result.diagnostics == ()
+
+
+def test_real_one_cell_workbook_needs_no_repair_diagnostic():
+    payload = make_xlsx(headers=["SKU"], rows=[])
+
+    result = iter_worksheet_rows(BytesIO(payload), 0)
+
+    assert [(row.source_row, row.values) for row in result.rows] == [(1, ("SKU",))]
+    assert result.diagnostics == ()
