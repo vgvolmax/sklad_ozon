@@ -3,6 +3,8 @@
 from ._weeks import AnalyticsWindow, WeekPolicy
 from .demand import DemandCell, DemandResult, aggregate_demand
 from .routes import RouteCell, RouteProfile, build_route_profile
+from .stockout import StockoutThresholds, detect_stockouts
+from .distortion import detect_recommendation_distortion
 
 __all__ = (
     "AnalyticsWindow",
@@ -13,4 +15,7 @@ __all__ = (
     "WeekPolicy",
     "aggregate_demand",
     "build_route_profile",
+    "detect_recommendation_distortion",
+    "detect_stockouts",
+    "StockoutThresholds",
 )
