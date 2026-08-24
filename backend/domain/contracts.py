@@ -1,6 +1,7 @@
 """Immutable data crossing the normalized domain boundary."""
 
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
 from typing import Generic, TypeVar
 
@@ -59,3 +60,25 @@ class ImportResult(Generic[RecordT]):
     diagnostics: tuple[ImportDiagnostic, ...]
     meta: ReportMeta
     record_sources: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TariffRow:
+    origin_cluster_id: str
+    destination_cluster_id: str
+    min_volume_liters: Decimal
+    max_volume_liters: Decimal | None
+    min_price: Decimal | None
+    max_price: Decimal | None
+    logistics_fee: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class ProductEconomicsInput:
+    sku: str
+    article: str
+    cost: Decimal | None
+    available_qty: int | None
+    price: Decimal | None
+    commission_rate: Decimal | None
+    volume_liters: Decimal | None

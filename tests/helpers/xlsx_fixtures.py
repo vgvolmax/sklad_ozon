@@ -31,6 +31,24 @@ def make_xlsx(*, headers: list[object], rows: list[list[object]], malformed_dime
     return _normalize_zip_metadata(payload)
 
 
+def make_multisheet_xlsx(sheets: list[tuple[str, list[object], list[list[object]]]]) -> bytes:
+    """Build a deterministic workbook with explicitly named worksheets."""
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    for name, headers, rows in sheets:
+        worksheet = workbook.create_sheet(name)
+        worksheet.append(headers)
+        for row in rows:
+            worksheet.append(row)
+    fixed_time = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    workbook.properties.created = fixed_time
+    workbook.properties.modified = fixed_time
+    stream = BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    return _normalize_zip_metadata(stream.getvalue())
+
+
 def worksheet_xml(payload: bytes) -> bytes:
     """Expose worksheet XML so tests can independently prove fixture shape."""
     with ZipFile(BytesIO(payload)) as archive:

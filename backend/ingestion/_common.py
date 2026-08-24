@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from io import BytesIO
 from math import isfinite
+from decimal import Decimal, InvalidOperation
 
 from backend.domain.contracts import ImportDiagnostic
 from .csv_adapter import iter_csv_rows
@@ -41,6 +42,23 @@ def parse_non_negative_number(value: object) -> float:
     if not isfinite(number) or number < 0:
         raise ValueError
     return number
+
+
+def parse_decimal(value: object, *, optional: bool = False) -> Decimal | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if optional:
+            return None
+        raise ValueError
+    if isinstance(value, bool):
+        raise ValueError
+    text = str(value).strip().replace("\u00a0", "").replace(" ", "").replace(",", ".")
+    try:
+        result = Decimal(text)
+    except (InvalidOperation, ValueError):
+        raise ValueError from None
+    if not result.is_finite():
+        raise ValueError
+    return result
 
 
 def _diag(code: str, message: str, *, row=None, field=None, severity="error"):
