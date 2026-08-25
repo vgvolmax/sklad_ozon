@@ -17,11 +17,16 @@ from backend.project import EconomicsSettings, OptimizerThresholds
 MAX_UPLOAD_BYTES=64*1024*1024
 router=APIRouter()
 
+def _decimal_string(value: Decimal) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in {"", "-0"} else text
+
 def wire(value):
     if is_dataclass(value): return {f:wire(v) for f,v in asdict(value).items()}
     if isinstance(value,Enum): return value.value
-    if isinstance(value,Decimal):
-        text=format(value.normalize(),'f'); return '0' if text in ('','-0') else text
+    if isinstance(value,Decimal): return _decimal_string(value)
     if isinstance(value,(date,datetime)): return value.isoformat()
     if isinstance(value,dict): return {str(k):wire(v) for k,v in value.items()}
     if isinstance(value,(tuple,list)): return [wire(v) for v in value]
@@ -61,6 +66,18 @@ async def analysis(request:Request):
             values[name]=Decimal(str(form.get(name,'')))
             if not values[name].is_finite():raise InvalidOperation
         except (InvalidOperation,ValueError):return error(400,'INVALID_DECIMAL','Expected a finite decimal string.',name)
+    domains = {
+        'acquiring_rate': lambda value: 0 <= value <= 1,
+        'advertising_rate': lambda value: 0 <= value <= 1,
+        'buyout_rate': lambda value: 0 < value <= 1,
+        'fixed_fbo_fee': lambda value: value >= 0,
+        'income_tax_rate': lambda value: 0 <= value <= 1,
+        'vat_rate': lambda value: 0 <= value <= 1,
+        'co_invest_rate': lambda value: 0 <= value <= 1,
+    }
+    for name, accepted in domains.items():
+        if not accepted(values[name]):
+            return error(400,'INVALID_SETTING','Value is outside the accepted domain.',name)
     tax=str(form.get('tax_system',''))
     if tax not in {'usn_income','usn_income_minus_expenses','osno','manual'}:return error(400,'INVALID_TAX_SYSTEM','Unsupported tax system.','tax_system')
     imported=[]
@@ -75,4 +92,5 @@ async def analysis(request:Request):
     coverage={key:0 for key in ('complete','partial','none','no_profile')}
     for item in result.logistics: coverage[item.coverage_status.value]+=1
     diagnostics=tuple(d for item in imported for d in item.diagnostics)+result.diagnostics
-    return {"api_version":1,"complete":not any(d.severity=='error' for d in diagnostics),"as_of":as_of.isoformat(),"metadata":{k:wire(v.meta) for k,v in zip(_IMPORTERS,imported)},"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"coverage":coverage,"diagnostics":wire(diagnostics)}
+    complete = not any(d.severity=='error' for d in diagnostics) and all(item.complete for item in result.economics)
+    return {"api_version":1,"complete":complete,"as_of":as_of.isoformat(),"metadata":{k:wire(v.meta) for k,v in zip(_IMPORTERS,imported)},"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"coverage":coverage,"diagnostics":wire(diagnostics)}
