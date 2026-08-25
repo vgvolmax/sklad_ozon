@@ -56,3 +56,23 @@ def test_real_unitka_selects_only_fbo_and_builds_half_open_volume_tiers():
     assert [(r.min_volume_liters, r.max_volume_liters) for r in lows] == [
         (Decimal("0"), Decimal("0.201")), (Decimal("0.201"), Decimal("800.001")),
         (Decimal("800.001"), None)]
+
+
+def test_fbo_marker_with_incomplete_block_fails_closed_without_fbs_or_base_fallback():
+    result = import_tariffs(make_real_unitka(fbo_complete=False), META)
+
+    assert result.records == ()
+    assert [diagnostic.code for diagnostic in result.diagnostics] == ["UNSUPPORTED_UNITKA_TARIFF_LAYOUT"]
+    assert {record.logistics_fee for record in result.records}.isdisjoint(
+        {Decimal("118"), Decimal("169"), Decimal("5"), Decimal("15")}
+    )
+
+
+def test_legacy_single_table_without_fbo_marker_remains_supported():
+    result = import_tariffs(
+        make_xlsx(headers=HEADERS, rows=[["Москва", "Москва", 0, "", "", "", 49]]),
+        META,
+    )
+
+    assert [record.logistics_fee for record in result.records] == [Decimal("49")]
+    assert result.diagnostics == ()

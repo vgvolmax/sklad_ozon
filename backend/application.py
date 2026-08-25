@@ -49,7 +49,8 @@ class AnalysisResult:
     diagnostics: tuple[AnalysisDiagnostic, ...]
 
 def analyze(availability, restrictions, orders, tariffs, products, *, as_of: date,
-            economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds) -> AnalysisResult:
+            economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds,
+            availability_fbs_authoritative: bool = False) -> AnalysisResult:
     demand = aggregate_demand(orders, as_of)
     observed = build_route_profile(orders, as_of)
     stockouts = detect_stockouts(observed, availability)
@@ -134,7 +135,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
     for sku in skus:
         product=product_map.get(sku); group=tuple(p for p in placements if p.sku==sku)
         stock = ((next(iter(positive_fbs[sku])) if positive_fbs.get(sku) else 0) if sku in fbs and sku not in conflicting_fbs else
-                 (product.available_qty if product and sku not in fbs else None))
+                 (product.available_qty if product and sku not in fbs and not availability_fbs_authoritative else None))
         if product and stock is not None and group:
             allocations.append(optimize_allocations(group, stock, optimizer_thresholds))
         elif product and sku not in conflicting_fbs:
