@@ -14,6 +14,7 @@ from backend.supply import (WarehouseCapability, PlacementInput, PlacementSource
 @dataclass(frozen=True, slots=True)
 class AnalysisDiagnostic:
     severity: str; code: str; message: str; sku: str | None = None; cluster_id: str | None = None
+    destination_cluster_id: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class AnalysisResult:
@@ -72,6 +73,15 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             log=expected_logistics(profile, tariffs, LogisticsContext(sku,cluster,product.volume_liters,product.price,source))
             econ=calculate_unit_economics(product,cluster,log,economics_settings)
             logistics_results.append(log); economics_results.append(econ)
+            diagnostics.extend(
+                AnalysisDiagnostic(item.severity, item.code, item.message, sku, cluster, item.destination_cluster_id)
+                for item in log.diagnostics
+            )
+            if not econ.complete:
+                diagnostics.extend(
+                    AnalysisDiagnostic("error", blocker, f"Unit economics is blocked by {blocker}.", sku, cluster)
+                    for blocker in econ.blockers
+                )
             qty=0 if (sku,cluster) in conflicts else rec_values.get((sku,cluster),0)
             sources=[]
             if observed_profile: sources.append(PlacementSource.OBSERVED)
