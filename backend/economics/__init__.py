@@ -10,6 +10,13 @@ from .tariffs import (
     TariffLookupStatus,
     expected_logistics,
 )
+from .unit import (
+    CalculationBases,
+    EconomicsLineItem,
+    RoundingMetadata,
+    UnitEconomicsResult,
+    calculate_unit_economics,
+)
 
 __all__ = (
     "ExpectedLogisticsResult",
@@ -20,4 +27,9 @@ __all__ = (
     "RouteProfileSource",
     "TariffLookupStatus",
     "expected_logistics",
+    "CalculationBases",
+    "EconomicsLineItem",
+    "RoundingMetadata",
+    "UnitEconomicsResult",
+    "calculate_unit_economics",
 )
