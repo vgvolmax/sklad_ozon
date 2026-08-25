@@ -1,6 +1,6 @@
 from backend.domain.contracts import ReportMeta
 from backend.ingestion.restrictions import RestrictionState, import_restrictions
-from tests.helpers.xlsx_fixtures import make_xlsx
+from tests.helpers.xlsx_fixtures import make_multisheet_xlsx, make_xlsx
 
 META = ReportMeta(source_name="restrictions.xlsx", imported_at="2026-08-21T10:00:00Z", report_generated_at="2026-08-20")
 
@@ -33,3 +33,19 @@ def test_malformed_rows_and_structural_headers():
     duplicate = import_restrictions("SKU; sku;Склад;Статус\n1;2;W;Разрешено\n".encode(), META)
     assert "MISSING_REQUIRED_HEADER" in [d.code for d in missing.diagnostics]
     assert [d.code for d in duplicate.diagnostics] == ["DUPLICATE_HEADER"]
+
+
+def test_real_multisheet_restrictions_preserve_prohibited_dash():
+    headers = ["Артикул", "SKU", "Название товара", "Рекомендуемая поставка на 56 дней", "Кластер", "Склад",
+               "Возможно ли поставить товар", "Зона размещения", "Ошибки в карточке товара",
+               "Склад оборудован под хранение товара", "Статус ликвидности: Без продаж, ограничен",
+               "Максимальный размер поставки"]
+    data = make_multisheet_xlsx([
+        ("Первая", ["метаданные"], [["ещё"]]),
+        ("Ограничения", [None], [[None], headers, ["A", "SKU-1", "Товар", 10, "Уфа", "УФА_РФЦ", "Нет", "", "", "", "", "-"]]),
+        ("Дополнительно", [None], [[None], headers, ["B", "SKU-2", "Товар", 10, "Уфа", "УФА_РФЦ", "Да", "", "", "", "", "Без ограничений"]]),
+    ])
+    result = import_restrictions(data, META)
+    assert [(r.sku, r.state, r.max_supply_qty) for r in result.records] == [
+        ("SKU-1", RestrictionState.PROHIBITED, None), ("SKU-2", RestrictionState.ALLOWED, None)]
+    assert "INVALID_MAX_SUPPLY_QTY" not in {d.code for d in result.diagnostics}

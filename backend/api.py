@@ -111,15 +111,15 @@ async def analysis(request:Request):
     for product in products.records:
         if product.sku:joined.append(product);continue
         if product.article in primary_conflicts:
-            join_diags.append(ImportDiagnostic('error','CONFLICTING_ARTICLE_TO_SKU','Availability article maps to multiple SKU.'));continue
+            join_diags.append(ImportDiagnostic('warning','CONFLICTING_ARTICLE_TO_SKU','Unitka article has conflicting availability mappings; affected current SKU remain blocked without economics.'));continue
         sku=primary.get(product.article)
         if sku is None:
             candidates=fallback.get(product.article,set())
             if len(candidates)>1:
-                join_diags.append(ImportDiagnostic('error','AMBIGUOUS_ARTICLE_TO_SKU_FALLBACK','Orders article mapping is ambiguous.'));continue
+                join_diags.append(ImportDiagnostic('warning','AMBIGUOUS_ARTICLE_TO_SKU_FALLBACK','Unitka article has ambiguous historical mappings; affected current SKU remain blocked without economics.'));continue
             sku=next(iter(candidates),None)
         if sku:joined.append(replace(product,sku=sku))
-        else:join_diags.append(ImportDiagnostic('error','MISSING_ARTICLE_TO_SKU','No SKU mapping exists for Unitka article.'))
+        else:join_diags.append(ImportDiagnostic('warning','MISSING_ARTICLE_TO_SKU','Unitka article is outside the current SKU universe.'))
     products=replace(products,records=tuple(joined),diagnostics=products.diagnostics+tuple(join_diags))
     imported=[availability,restrictions,orders,tariffs,products]
     settings=EconomicsSettings(*(values[n] for n in decimal_names[:4]),tax,*(values[n] for n in decimal_names[4:7])); thresholds=OptimizerThresholds(*(values[n] for n in decimal_names[7:]))
