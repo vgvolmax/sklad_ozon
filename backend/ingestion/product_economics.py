@@ -7,7 +7,8 @@ from .normalization import normalize_text
 
 _HEADERS = {"sku": "sku", "артикул": "article", "себестоимость": "cost", "доступный остаток": "available", "цена": "price", "комиссия": "commission", "объём, л": "volume", "объем, л": "volume"}
 _HEADERS.update({"себестоимость единицы":"cost", "цена поставщика до скидок ozon":"price",
-                 "комиссия ozon %":"commission", "объём товара":"volume", "объем товара":"volume"})
+                 "комиссия ozon %":"commission", "объём товара":"volume", "объем товара":"volume",
+                 "объём товара (л)":"volume", "объем товара (л)":"volume"})
 _REQUIRED = frozenset({"sku", "article", "cost", "available", "price", "commission", "volume"})
 
 
@@ -35,7 +36,7 @@ def import_product_economics(data: bytes, report_context: ReportMeta) -> ImportR
         sku = normalize_text(row.get("sku"))
         article = normalize_text(row.get("article"))
         if not sku and not article:
-            diagnostics.append(_diag("MALFORMED_ROW", "SKU or article must be nonblank.", row=row_number)); continue
+            continue
         try:
             cost = parse_decimal(row.get("cost"), optional=True); price = parse_decimal(row.get("price"), optional=True)
             volume = parse_decimal(row.get("volume"), optional=True)

@@ -48,7 +48,10 @@ def import_restrictions(data: bytes, report_context: ReportMeta) -> ImportResult
             diagnostics.append(_diag("UNKNOWN_RESTRICTION_VALUE", f"Unknown restriction value: {raw!r}", row=row_number, field="state", severity="warning"))
         maximum = row.get("максимальный размер поставки")
         max_qty = None
-        if maximum not in (None, "") and normalize_text(maximum).casefold() != "без ограничений":
+        maximum_text = normalize_text(maximum).casefold()
+        if state is RestrictionState.PROHIBITED and maximum_text in {"", "-"}:
+            max_qty = None
+        elif maximum not in (None, "") and maximum_text != "без ограничений":
             try:
                 value=float(maximum); max_qty=int(value)
                 if value != max_qty or max_qty < 0: raise ValueError

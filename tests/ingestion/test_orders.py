@@ -44,3 +44,12 @@ def test_non_finite_seller_price_is_rejected():
     result = import_orders(data, META)
     assert result.records == ()
     assert [d.code for d in result.diagnostics] == ["INVALID_NUMBER"]
+
+
+def test_real_shape_your_price_direction_and_pii_are_preserved_safely():
+    data = ("SKU;Артикул;Количество;Статус;Ваша цена;Кластер отгрузки;Кластер доставки;Склад отгрузки;Принят в обработку;Имя покупателя;Телефон\n"
+            "X;ART-X;2;Доставлен;999;Казань;Москва;КАЗАНЬ_РФЦ;2026-07-01T10:00:00;SECRET;79990000000\n").encode()
+    result = import_orders(data, META)
+    record = result.records[0]
+    assert (record.article, record.seller_price, record.origin_cluster, record.destination_cluster) == ("ART-X", 999.0, "Казань", "Москва")
+    assert "SECRET" not in json.dumps(asdict(result), ensure_ascii=False, default=str)

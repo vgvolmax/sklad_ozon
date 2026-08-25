@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from backend.domain.contracts import ReportMeta
 from backend.ingestion.product_economics import import_product_economics
-from tests.helpers.xlsx_fixtures import make_xlsx
+from tests.helpers.xlsx_fixtures import make_real_unitka, make_xlsx
 
 META = ReportMeta("economics.xlsx", "2026-08-24T10:00:00Z")
 HEADERS = ["SKU", "Артикул", "Себестоимость", "Доступный остаток", "Цена", "Комиссия", "Объём, л"]
@@ -30,3 +30,16 @@ def test_rejects_malformed_negative_noninteger_and_nonfinite_values():
     result = import_product_economics(make_xlsx(headers=HEADERS, rows=rows), META)
     assert result.records == ()
     assert len(result.diagnostics) == 6
+
+
+def test_real_unitka_volume_header_and_blank_template_tail():
+    data = make_real_unitka(product_rows=[
+        ["ART-1", "Товар", 123, 999, "12%", "2,5"],
+        [None, None, 0, 0, 0, 0],
+    ])
+    result = import_product_economics(data, META)
+    assert len(result.records) == 1
+    assert (result.records[0].cost, result.records[0].price,
+            result.records[0].commission_rate, result.records[0].volume_liters) == (
+                Decimal("123"), Decimal("999"), Decimal("0.12"), Decimal("2.5"))
+    assert not {"MISSING_REQUIRED_HEADER", "MALFORMED_ROW"} & {d.code for d in result.diagnostics}
