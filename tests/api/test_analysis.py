@@ -5,10 +5,12 @@ from decimal import Decimal, getcontext
 from enum import Enum
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 import backend.api as api_module
+from backend.application import AnalysisSummary, build_analysis_summary
 from backend.api import MAX_UPLOAD_BYTES, wire
 from backend.main import app
 from tests.helpers.xlsx_fixtures import make_xlsx
@@ -53,6 +55,20 @@ def _analysis_files(*, recommendations=(10,), available_stock=20, origin="Мос
         "orders_file": ("orders.csv", _orders(origin, destination, pii=pii)),
         "tariffs_file": ("tariffs.xlsx", make_xlsx(headers=TARIFF_HEADERS, rows=tariff_rows)),
         "product_economics_file": ("products.xlsx", make_xlsx(headers=PRODUCT_HEADERS, rows=[["SKU-1", "ART-1", 100, available_stock, 1000, "10%", 1]])),
+    }
+
+
+def _two_sku_analysis_files():
+    return {
+        "availability_file": ("availability.xlsx", make_xlsx(headers=AVAILABILITY_HEADERS, rows=[
+            ["SKU-1", "W1", "Москва", 999, 3], ["SKU-2", "W2", "Москва", 999, 4],
+        ])),
+        "restrictions_file": ("restrictions.csv", "SKU;Склад;Статус;Причина\nSKU-1;W1;Разрешено;\nSKU-2;W2;Разрешено;\n".encode()),
+        "orders_file": ("orders.csv", _orders() + _orders().decode().splitlines()[1].replace("SKU-1", "SKU-2").encode() + b"\n"),
+        "tariffs_file": ("tariffs.xlsx", make_xlsx(headers=TARIFF_HEADERS, rows=[["Москва", "Москва", 0, "", "", "", 50]])),
+        "product_economics_file": ("products.xlsx", make_xlsx(headers=PRODUCT_HEADERS, rows=[
+            ["SKU-1", "ART-1", 100, 3, 1000, "10%", 1], ["SKU-2", "ART-2", 200, 4, 1200, "10%", 1],
+        ])),
     }
 
 
@@ -104,6 +120,62 @@ def test_happy_path_uses_recommendation_not_availability():
     assert {"api_version", "complete", "as_of", "metadata", "demand", "observed_routes", "clean_routes", "stockout_signals", "distortion_signals", "logistics", "economics", "placements", "allocations", "coverage", "diagnostics"} <= payload.keys()
     assert _placement(payload, "Москва")["ozon_recommended_qty"] == 3
     assert _allocation(payload, "Москва") == 3
+
+
+def test_analysis_summary_contract_and_reconciliation():
+    payload = _post_analysis(recommendations=(3,), available_stock=5).json()
+    summary = payload["summary"]
+    assert set(summary) == {"sku_count", "placement_count", "ozon_recommended_qty", "allocated_qty", "objective_profit"}
+    assert isinstance(summary["objective_profit"], str)
+    assert summary["sku_count"] == len({item["sku"] for item in payload["placements"]})
+    assert summary["placement_count"] == len(payload["placements"])
+    assert summary["ozon_recommended_qty"] == sum(item["ozon_recommended_qty"] for item in payload["placements"])
+    assert summary["allocated_qty"] == sum(item["allocated_qty"] for item in payload["allocations"])
+
+
+def test_multi_sku_summary_has_one_exact_objective_profit_total():
+    payload = _post_analysis(files=_two_sku_analysis_files()).json()
+    profits = [Decimal(item["objective_profit"]) for item in payload["allocations"]]
+    assert len(profits) == 2 and all(profit > 0 for profit in profits)
+    assert Decimal(payload["summary"]["objective_profit"]) == profits[0] + profits[1]
+    assert "," not in payload["summary"]["objective_profit"]
+
+
+def test_summary_uses_local_canonical_decimal_context_without_mutating_global_context():
+    context = getcontext()
+    original_precision, original_rounding = context.prec, context.rounding
+    try:
+        context.prec = 5
+        placements = (SimpleNamespace(sku="A", ozon_recommended_qty=2), SimpleNamespace(sku="B", ozon_recommended_qty=3))
+        allocations = (
+            SimpleNamespace(allocated_qty=2, objective_profit=Decimal("1.12345678901234567890123456789")),
+            SimpleNamespace(allocated_qty=3, objective_profit=Decimal("2.98765432109876543210987654321")),
+        )
+        assert build_analysis_summary(placements, allocations) == AnalysisSummary(2, 2, 5, 5, Decimal("4.11111111011111111101111111110"))
+        assert (context.prec, context.rounding) == (5, original_rounding)
+    finally:
+        context.prec, context.rounding = original_precision, original_rounding
+
+
+def test_empty_analysis_summary_has_no_null_fields():
+    assert build_analysis_summary((), ()) == AnalysisSummary(0, 0, 0, 0, Decimal("0"))
+
+
+def test_analysis_exposes_all_successful_import_statuses():
+    payload = _post_analysis().json()
+    statuses = payload["input_statuses"]
+    assert set(statuses) == {"availability_file", "restrictions_file", "orders_file", "tariffs_file", "product_economics_file"}
+    assert all(status["ok"] is True and status["record_count"] > 0 and isinstance(status["diagnostics"], list) for status in statuses.values())
+
+
+def test_analysis_import_error_is_visible_in_file_status_without_short_circuiting_response():
+    files = _analysis_files()
+    files["availability_file"] = ("availability.xlsx", make_xlsx(headers=AVAILABILITY_HEADERS, rows=[["SKU-1", "W1", "Москва", -1, 3]]))
+    response = _post_analysis(files=files)
+    assert response.status_code == 200
+    status = response.json()["input_statuses"]["availability_file"]
+    assert status["ok"] is False
+    assert any(item["severity"] == "error" for item in status["diagnostics"])
 
 
 def test_seller_stock_not_ozon_availability_is_hard_limit():
@@ -200,3 +272,9 @@ def test_upload_limit_and_thin_frontend_contract():
     source = Path("frontend/assets/js/app.js").read_text(encoding="utf-8")
     assert "fetch(" in source and "FormData" in source and "/api/" in source
     assert not any(token in source for token in ("calculate_unit_economics", "expected_logistics", "SheetJS", "FileReader", "ArrayBuffer", "JSZip"))
+    assert all(f"data.summary.{field}" in source for field in ("sku_count", "placement_count", "ozon_recommended_qty", "allocated_qty", "objective_profit"))
+    assert "objective_profit).join" not in source
+    assert "Number(data.summary.objective_profit" not in source
+    assert "parseFloat(data.summary.objective_profit" not in source
+    assert "data.input_statuses" in source
+    assert all(label in source for label in ("Выбран", "Проверено", "Есть ошибки"))
