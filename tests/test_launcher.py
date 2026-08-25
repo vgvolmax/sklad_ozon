@@ -8,6 +8,19 @@ import launcher
 HEALTH = {"status": "ok", "service": "sklad_ozon", "api_version": 1}
 
 
+def test_start_server_wrapper_closes_parent_log_handle(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr(launcher, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(launcher, "ROOT", tmp_path)
+
+    def fake_popen(*_args, **kwargs):
+        captured["log"] = kwargs["stdout"]
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
+    launcher.start_server_wrapper()
+    assert captured["log"].closed
+
+
 def test_invalid_utf8_health_is_treated_as_foreign(monkeypatch):
     class Response:
         status = 200

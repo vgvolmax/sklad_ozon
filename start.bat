@@ -13,7 +13,7 @@ if not errorlevel 1 goto launch
 
 echo Preparing project-local Python %PYTHON_VERSION%...
 if exist "%RUNTIME%" rmdir /s /q "%RUNTIME%"
-mkdir "%RUNTIME%" || goto fail
+mkdir "%RUNTIME%" || goto rebuild_fail
 set "ARCHIVE=%RUNTIME%\%PYTHON_ZIP%"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference='Stop'; Invoke-WebRequest -UseBasicParsing '%PYTHON_URL%' -OutFile '%ARCHIVE%.part'; if ((Get-Item '%ARCHIVE%.part').Length -lt 1000000) { throw 'Downloaded Python archive is invalid' }; Move-Item -Force '%ARCHIVE%.part' '%ARCHIVE%'" || goto rebuild_fail
@@ -42,7 +42,9 @@ if not exist "%PYTHON%" exit /b 1
 exit /b 0
 
 :rebuild_fail
-echo Failed to prepare portable runtime. Delete runtime and retry when online.
+echo Failed to prepare or repair the project-local portable runtime.
 if exist "%RUNTIME%" rmdir /s /q "%RUNTIME%"
+if not exist "%ROOT%data" mkdir "%ROOT%data"
+>"%ROOT%data\startup_status.json" echo {"status":"error","code":"RUNTIME_REPAIR_REQUIRED","message":"Portable runtime is unavailable or invalid. Connect to the internet and run start.bat again. Seller and local data in data/ was preserved."}
 :fail
 exit /b 1

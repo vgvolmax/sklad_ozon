@@ -43,19 +43,19 @@ def port_is_open(timeout: float = 0.25) -> bool:
 
 def start_server_wrapper() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    log = (DATA_DIR / "server_console.log").open("ab")
     flags = 0
     if sys.platform == "win32":
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-    subprocess.Popen(
-        ["cmd.exe", "/d", "/c", str(ROOT / "RUN_SERVER.cmd")],
-        cwd=ROOT,
-        stdin=subprocess.DEVNULL,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        creationflags=flags,
-        close_fds=True,
-    )
+    with (DATA_DIR / "server_console.log").open("ab") as log:
+        subprocess.Popen(
+            ["cmd.exe", "/d", "/c", str(ROOT / "RUN_SERVER.cmd")],
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            creationflags=flags,
+            close_fds=True,
+        )
 
 
 def wait_until_ready(timeout: float = 30.0, interval: float = 0.25) -> bool:

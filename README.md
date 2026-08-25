@@ -11,8 +11,8 @@
 1. Download repository ZIP.
 2. Extract it fully to a writable folder.
 3. Double-click `start.bat`.
-4. При первом запуске bootstrap может скачать официальный portable Python и
-   закреплённые зависимости.
+4. Если runtime ещё не подготовлен, первая подготовка требует интернета: bootstrap
+   скачивает официальный portable Python и закреплённые зависимости.
 5. Браузер откроется автоматически только после готовности локального приложения.
 
 Системный Python и Node/npm устанавливать не нужно, права администратора не
@@ -22,6 +22,11 @@ project-local `runtime/`. После его подготовки обычная 
 FastAPI слушает только `127.0.0.1:17843`. Отчёты и данные продавца обрабатываются
 локально и не отправляются во внешние сервисы. `runtime/` можно пересоздать;
 локальные артефакты `data/` при repair/rebuild не удаляются.
+
+Если запуск сообщает код `RUNTIME_REPAIR_REQUIRED`, подключитесь к интернету и
+снова запустите `start.bat`: повреждённый runtime будет пересоздан, а содержимое
+`data/` сохранится. Полезные диагностические файлы —
+`data/startup_status.json` и `data/server_console.log`.
 
 ## Архитектура
 
@@ -67,7 +72,9 @@ node --check frontend/assets/js/app.js
 ```
 
 Portable Windows bootstrap проверяется authoritative Windows GitHub Actions
-smoke, включая первый bootstrap, повторное использование runtime и loopback bind.
+smoke, включая первый bootstrap, настоящее offline-переиспользование runtime,
+отказ при offline-повреждении, online-восстановление, UI/assets, сохранность
+`data/`, путь с пробелами, loopback bind и полную очистку тестовых процессов.
 
 ## Документы
 
