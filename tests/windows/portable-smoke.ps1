@@ -19,20 +19,34 @@ function Get-RuntimeProcesses([string]$WorkingDirectory) {
 function Wait-ServerStopped([string]$WorkingDirectory, [int]$TimeoutSeconds = 20) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
-        if (@(Get-SmokeListeners).Count -eq 0 -and @(Get-RuntimeProcesses $WorkingDirectory).Count -eq 0) { return }
+        $runtimeProcesses = @(Get-RuntimeProcesses $WorkingDirectory)
+        $runtimeProcessIds = @($runtimeProcesses | Select-Object -ExpandProperty ProcessId)
+        $sandboxListeners = @(Get-SmokeListeners | Where-Object { $runtimeProcessIds -contains $_.OwningProcess })
+        if ($runtimeProcesses.Count -eq 0 -and $sandboxListeners.Count -eq 0) { return }
         Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $deadline)
     throw "Sandbox listener/runtime processes did not stop within $TimeoutSeconds seconds"
 }
 function Stop-SmokeServer([string]$WorkingDirectory) {
-    foreach ($id in @(Get-SmokeListeners | Select-Object -ExpandProperty OwningProcess -Unique)) {
-        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+    $listeners = @(Get-SmokeListeners)
+    $runtimeProcesses = @(Get-RuntimeProcesses $WorkingDirectory)
+    $runtimeProcessIds = @($runtimeProcesses | Select-Object -ExpandProperty ProcessId)
+    $foreignListeners = @($listeners | Where-Object { $runtimeProcessIds -notcontains $_.OwningProcess })
+    $ownershipError = $null
+    if ($foreignListeners.Count) {
+        $foreignProcessIds = @($foreignListeners | Select-Object -ExpandProperty OwningProcess -Unique)
+        $ownershipError = "Port 17843 has a listener not owned by the sandbox runtime (PID: $($foreignProcessIds -join ', ')); it was not stopped"
     }
-    foreach ($process in @(Get-RuntimeProcesses $WorkingDirectory)) {
-        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+
+    foreach ($runtimeProcessId in @($runtimeProcessIds | Select-Object -Unique)) {
+        $confirmedProcessIds = @(Get-RuntimeProcesses $WorkingDirectory | Select-Object -ExpandProperty ProcessId)
+        if ($confirmedProcessIds -contains $runtimeProcessId) {
+            Stop-Process -Id $runtimeProcessId -Force -ErrorAction SilentlyContinue
+        }
     }
     Wait-ServerStopped $WorkingDirectory $stopTimeoutSeconds
     $script:serverPid = $null
+    if ($ownershipError) { throw $ownershipError }
 }
 function Wait-Health([int]$Seconds = 180) {
     $deadline = (Get-Date).AddSeconds($Seconds)
@@ -48,7 +62,8 @@ function Assert-WebApplication {
     $health = Invoke-WebRequest "http://127.0.0.1:17843/api/health" -TimeoutSec 5 -UseBasicParsing
     if ($health.StatusCode -ne 200) { throw "Health HTTP status was $($health.StatusCode)" }
     $index = Invoke-WebRequest "http://127.0.0.1:17843/" -TimeoutSec 5 -UseBasicParsing
-    if ($index.StatusCode -ne 200 -or $index.Content -notmatch "Склад Ozon") { throw "Application UI identity was not served" }
+    $expectedTitle = (-join @([char]0x0421, [char]0x043A, [char]0x043B, [char]0x0430, [char]0x0434)) + " Ozon"
+    if ($index.StatusCode -ne 200 -or $index.Content -notmatch [regex]::Escape($expectedTitle)) { throw "Application UI identity was not served" }
     foreach ($asset in @("/assets/css/app.css", "/assets/js/app.js")) {
         $response = Invoke-WebRequest "http://127.0.0.1:17843$asset" -TimeoutSec 5 -UseBasicParsing
         if ($response.StatusCode -ne 200) { throw "Asset $asset was not served" }
@@ -91,6 +106,10 @@ function Assert-LoopbackListener([string]$Stage) {
     if ($listeners.Count -ne 1 -or $listeners[0].LocalAddress -ne "127.0.0.1") {
         throw "$Stage listener is not exactly loopback-only: $($listeners.LocalAddress -join ', ')"
     }
+    $runtimeProcessIds = @(Get-RuntimeProcesses $sandbox | Select-Object -ExpandProperty ProcessId)
+    if ($runtimeProcessIds -notcontains $listeners[0].OwningProcess) {
+        throw "$Stage listener PID $($listeners[0].OwningProcess) is not owned by the sandbox runtime"
+    }
     $script:serverPid = $listeners[0].OwningProcess
 }
 function Assert-NoPart([string]$Runtime) {
@@ -129,6 +148,7 @@ try {
     [IO.File]::WriteAllText($sentinel, "must survive runtime repair")
     $runtime = Join-Path $sandbox "runtime"
     if (Test-Path $runtime) { throw "Smoke must begin without runtime/" }
+    if (@(Get-SmokeListeners).Count) { throw "Port 17843 is already occupied before the portable smoke started." }
 
     $currentPhase = "Phase A: fresh online bootstrap"
     Write-Host $currentPhase
