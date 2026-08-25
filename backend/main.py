@@ -5,12 +5,15 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from backend.api import router
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
 
 app = FastAPI(title="sklad_ozon", docs_url=None, redoc_url=None)
 
+
+app.include_router(router)
 
 @app.get("/api/health")
 def health() -> dict[str, object]:

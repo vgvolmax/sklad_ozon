@@ -1,14 +1,1 @@
-:root {
-  color-scheme: light;
-  font-family: system-ui, sans-serif;
-}
-
-body {
-  margin: 0;
-}
-
-main {
-  max-width: 40rem;
-  margin: 4rem auto;
-  padding: 0 1rem;
-}
+:root{font-family:system-ui;color:#18212f;background:#f3f6fa}body{margin:0}main{max-width:1400px;margin:auto;padding:28px}section,form{background:white;border-radius:12px;padding:18px;margin:16px 0}.grid,.settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}label{display:grid;gap:7px;font-weight:600}input,select,button{padding:10px;border:1px solid #aab4c2;border-radius:7px}button{background:#1769e0;color:white;font-weight:700}.status,#server-error{font-weight:400}table{border-collapse:collapse;width:100%;overflow:auto}th,td{padding:9px;border:1px solid #d7dde5;text-align:left}th{background:#eaf1fb}pre{white-space:pre-wrap}.summary{font-weight:600;line-height:2}

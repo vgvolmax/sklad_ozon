@@ -50,3 +50,16 @@ def test_non_finite_quantity_is_rejected():
     result = import_availability("SKU,Склад,Кластер,Доступно\n1,W,C,NaN\n".encode(), META)
     assert result.records == ()
     assert [d.code for d in result.diagnostics] == ["INVALID_NUMBER"]
+
+def test_optional_cluster_recommendation_aliases_and_validation():
+    base = [["SKU", "Склад", "Кластер", "Доступно", "Рекомендуемая поставка"],
+            ["1", "W1", "Москва", 99, 10], ["2", "W2", "Казань", 1, -1],
+            ["3", "W3", "Казань", 1, 1.5], ["4", "W4", "Казань", 1, "bad"]]
+    result = import_availability(make_xlsx(headers=base[0], rows=base[1:]), META)
+    assert result.records[0].recommended_quantity == 10
+    assert len([d for d in result.diagnostics if d.field == "recommended_quantity"]) == 3
+
+
+def test_fbo_recommendation_alias():
+    result = import_availability(make_xlsx(headers=["SKU","Склад","Кластер","Доступно","Рекомендуемая поставка по FBO"], rows=[["1","W","Москва",2,7]]), META)
+    assert result.records[0].recommended_quantity == 7

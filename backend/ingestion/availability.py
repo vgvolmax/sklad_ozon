@@ -6,6 +6,7 @@ from ._common import _diag, parse_non_negative_number, read_source_rows
 from .normalization import normalize_cluster_label, normalize_text
 
 _HEADERS = {"sku": "sku", "склад": "warehouse", "кластер": "cluster", "доступно": "available_quantity"}
+_RECOMMENDATION_HEADERS = {"рекомендуемая поставка", "рекомендуемая поставка по fbo"}
 _REQUIRED = frozenset(_HEADERS)
 
 
@@ -15,6 +16,7 @@ class AvailabilityRecord:
     warehouse: str
     cluster: str
     available_quantity: float
+    recommended_quantity: int | None = None
 
 
 def import_availability(data: bytes, report_context: ReportMeta) -> ImportResult[AvailabilityRecord]:
@@ -31,15 +33,27 @@ def import_availability(data: bytes, report_context: ReportMeta) -> ImportResult
     for row_number, row in source.rows:
         try:
             quantity = parse_non_negative_number(row["доступно"])
+        except ValueError:
+            diagnostics.append(_diag("INVALID_NUMBER", "Availability quantity must be a non-negative number.", row=row_number, field="available_quantity"))
+            continue
+        try:
             sku, warehouse = normalize_text(row["sku"]), normalize_text(row["склад"])
             cluster = normalize_cluster_label(row["кластер"])
             if not sku or not warehouse or not cluster:
                 raise KeyError
+            raw_recommendation = next((row.get(key) for key in _RECOMMENDATION_HEADERS if key in row), None)
+            if raw_recommendation is None or (isinstance(raw_recommendation, str) and not raw_recommendation.strip()):
+                recommendation = None
+            else:
+                parsed = parse_non_negative_number(raw_recommendation)
+                if not parsed.is_integer():
+                    raise ValueError
+                recommendation = int(parsed)
         except ValueError:
-            diagnostics.append(_diag("INVALID_NUMBER", "Availability quantity must be a non-negative number.", row=row_number, field="available_quantity"))
+            diagnostics.append(_diag("INVALID_NUMBER", "Recommendation quantity must be a non-negative integer.", row=row_number, field="recommended_quantity"))
             continue
         except KeyError:
             diagnostics.append(_diag("MALFORMED_ROW", "Required availability value is blank.", row=row_number))
             continue
-        records.append(AvailabilityRecord(sku, warehouse, cluster, quantity)); sources.append(row_number)
+        records.append(AvailabilityRecord(sku, warehouse, cluster, quantity, recommendation)); sources.append(row_number)
     return ImportResult(tuple(records), tuple(diagnostics), report_context, tuple(sources))
