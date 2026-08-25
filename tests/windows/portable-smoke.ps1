@@ -1,57 +1,39 @@
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$sandbox = Join-Path $env:RUNNER_TEMP "sklad ozon portable smoke"
-if (-not $env:RUNNER_TEMP) { $sandbox = Join-Path $env:TEMP "sklad ozon portable smoke" }
-$serverPid = $null
+$sandbox = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }) "sklad ozon portable smoke"
 $artifacts = Join-Path $root "test-artifacts\windows-portable"
 $currentPhase = "setup"
+$serverPid = $null
 $failed = $false
-$releaseTimeoutSeconds = 20
+$cleanupFailure = $null
+$stopTimeoutSeconds = 20
 
-function Get-SmokeListeners {
-    @(Get-NetTCPConnection -LocalPort 17843 -State Listen -ErrorAction SilentlyContinue)
-}
-
+function Get-SmokeListeners { @(Get-NetTCPConnection -LocalPort 17843 -State Listen -ErrorAction SilentlyContinue) }
 function Get-RuntimeProcesses([string]$WorkingDirectory) {
-    $runtimePython = [System.IO.Path]::GetFullPath((Join-Path $WorkingDirectory "runtime\python.exe"))
+    $python = [IO.Path]::GetFullPath((Join-Path $WorkingDirectory "runtime\python.exe"))
     @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        ($_.ExecutablePath -and [System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $runtimePython) -or
-        ($_.CommandLine -and $_.CommandLine.IndexOf($runtimePython, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+        ($_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath) -ieq $python) -or
+        ($_.CommandLine -and $_.CommandLine.IndexOf($python, [StringComparison]::OrdinalIgnoreCase) -ge 0)
     })
 }
-
-function Wait-ServerStopped {
-    param(
-        [string]$WorkingDirectory,
-        [Nullable[int]]$OwningProcessId,
-        [int]$TimeoutSeconds = 20
-    )
-
+function Wait-ServerStopped([string]$WorkingDirectory, [int]$TimeoutSeconds = 20) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
-        $listeners = @(Get-SmokeListeners)
-        $runtimeProcesses = @(Get-RuntimeProcesses $WorkingDirectory)
-        $ownerExists = $false
-        if ($null -ne $OwningProcessId) {
-            $ownerExists = $null -ne (Get-Process -Id $OwningProcessId -ErrorAction SilentlyContinue)
-        }
-        if ($listeners.Count -eq 0 -and -not $ownerExists -and $runtimeProcesses.Count -eq 0) { return }
-        Start-Sleep -Milliseconds 500
+        if (@(Get-SmokeListeners).Count -eq 0 -and @(Get-RuntimeProcesses $WorkingDirectory).Count -eq 0) { return }
+        Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $deadline)
-
-    $listeners = @(Get-SmokeListeners)
-    $runtimeProcesses = @(Get-RuntimeProcesses $WorkingDirectory)
-    Write-Host "Server shutdown timed out. Remaining listeners:"
-    $listeners | Select-Object LocalAddress, LocalPort, OwningProcess | Format-Table | Out-String | Write-Host
-    Write-Host "Remaining portable-runtime processes:"
-    $runtimeProcesses | Select-Object ProcessId, Name, ExecutablePath, CommandLine | Format-List | Out-String | Write-Host
-    if ($null -ne $OwningProcessId) {
-        Get-Process -Id $OwningProcessId -ErrorAction SilentlyContinue |
-            Select-Object Id, ProcessName, Path | Format-List | Out-String | Write-Host
-    }
-    throw "Portable test server/runtime did not stop within $TimeoutSeconds seconds"
+    throw "Sandbox listener/runtime processes did not stop within $TimeoutSeconds seconds"
 }
-
+function Stop-SmokeServer([string]$WorkingDirectory) {
+    foreach ($id in @(Get-SmokeListeners | Select-Object -ExpandProperty OwningProcess -Unique)) {
+        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($process in @(Get-RuntimeProcesses $WorkingDirectory)) {
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    Wait-ServerStopped $WorkingDirectory $stopTimeoutSeconds
+    $script:serverPid = $null
+}
 function Wait-Health([int]$Seconds = 180) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $deadline) {
@@ -62,60 +44,65 @@ function Wait-Health([int]$Seconds = 180) {
     }
     throw "Health endpoint did not become ready"
 }
-
-function Invoke-StartBat {
-    param(
-        [string]$WorkingDirectory,
-        [int]$TimeoutSeconds = 300
-    )
-
-    $process = Start-Process `
-        -FilePath "cmd.exe" `
-        -ArgumentList "/d", "/c", "start.bat" `
-        -WorkingDirectory $WorkingDirectory `
-        -PassThru
-    $exited = $process.WaitForExit($TimeoutSeconds * 1000)
-
-    if (-not $exited) {
-        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+function Assert-WebApplication {
+    $health = Invoke-WebRequest "http://127.0.0.1:17843/api/health" -TimeoutSec 5 -UseBasicParsing
+    if ($health.StatusCode -ne 200) { throw "Health HTTP status was $($health.StatusCode)" }
+    $index = Invoke-WebRequest "http://127.0.0.1:17843/" -TimeoutSec 5 -UseBasicParsing
+    if ($index.StatusCode -ne 200 -or $index.Content -notmatch "Склад Ozon") { throw "Application UI identity was not served" }
+    foreach ($asset in @("/assets/css/app.css", "/assets/js/app.js")) {
+        $response = Invoke-WebRequest "http://127.0.0.1:17843$asset" -TimeoutSec 5 -UseBasicParsing
+        if ($response.StatusCode -ne 200) { throw "Asset $asset was not served" }
+    }
+}
+function Invoke-StartBat([string]$WorkingDirectory, [int]$TimeoutSeconds = 300, [switch]$Offline) {
+    $info = [Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = "$env:SystemRoot\System32\cmd.exe"
+    $info.Arguments = "/d /c start.bat"
+    $info.WorkingDirectory = $WorkingDirectory
+    $info.UseShellExecute = $false
+    if ($Offline) {
+        $info.EnvironmentVariables["HTTP_PROXY"] = "http://127.0.0.1:9"
+        $info.EnvironmentVariables["HTTPS_PROXY"] = "http://127.0.0.1:9"
+        $info.EnvironmentVariables["ALL_PROXY"] = "http://127.0.0.1:9"
+        $info.EnvironmentVariables["NO_PROXY"] = "127.0.0.1,localhost"
+        $info.EnvironmentVariables["PIP_NO_INDEX"] = "1"
+        $info.EnvironmentVariables["PATH"] = "$env:SystemRoot\System32"
+    }
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $process = [Diagnostics.Process]::Start($info)
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        $process.Kill()
         throw "start.bat did not exit within $TimeoutSeconds seconds"
     }
-    if ($process.ExitCode -ne 0) {
-        throw "start.bat failed with exit code $($process.ExitCode)"
-    }
-
-    return $process.ExitCode
+    $watch.Stop()
+    [pscustomobject]@{ ExitCode = $process.ExitCode; ElapsedSeconds = $watch.Elapsed.TotalSeconds }
 }
-
 function Test-RuntimeValid([string]$Runtime) {
     $python = Join-Path $Runtime "python.exe"
     if (-not (Test-Path $python)) { return $false }
     & $python -c "import sys,fastapi,uvicorn,openpyxl,multipart; from importlib.metadata import version; expected={'fastapi':'0.139.2','uvicorn':'0.51.0','openpyxl':'3.1.5','python-multipart':'0.0.32'}; raise SystemExit(sys.version_info[:3] != (3,13,14) or any(version(k)!=v for k,v in expected.items()))"
     return $LASTEXITCODE -eq 0
 }
-
-function Assert-RuntimeValid([string]$Runtime) {
-    if (-not (Test-RuntimeValid $Runtime)) { throw "Portable runtime validation failed" }
-}
-
 function Assert-Sentinel([string]$Path, [string]$Stage) {
-    if ((Get-Content $Path -Raw).Trim() -ne "must survive runtime repair") {
-        throw "data sentinel changed $Stage"
-    }
+    if ([IO.File]::ReadAllText($Path) -ne "must survive runtime repair") { throw "Seller data sentinel changed $Stage" }
 }
-
 function Assert-LoopbackListener([string]$Stage) {
     $listeners = @(Get-SmokeListeners)
     if ($listeners.Count -ne 1 -or $listeners[0].LocalAddress -ne "127.0.0.1") {
-        $addresses = ($listeners | ForEach-Object { "$($_.LocalAddress) (PID $($_.OwningProcess))" }) -join ", "
-        throw "$Stage listener is not exactly 127.0.0.1: $addresses"
+        throw "$Stage listener is not exactly loopback-only: $($listeners.LocalAddress -join ', ')"
     }
-    return $listeners[0]
+    $script:serverPid = $listeners[0].OwningProcess
 }
-
-function Write-FailureDiagnostics {
-    param([string]$WorkingDirectory, [string]$Phase, [string]$Destination)
-
+function Assert-NoPart([string]$Runtime) {
+    if (@(Get-ChildItem $Runtime -Filter "*.part" -Recurse -File -ErrorAction SilentlyContinue).Count) { throw "Runtime contains a leftover .part file" }
+}
+function Get-RuntimeFingerprint([string]$Runtime) {
+    @((Get-ChildItem $Runtime -Recurse -File | ForEach-Object {
+        $relative = $_.FullName.Substring($Runtime.Length).TrimStart('\')
+        "$relative|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)"
+    } | Sort-Object))
+}
+function Write-FailureDiagnostics([string]$WorkingDirectory, [string]$Phase, [string]$Destination) {
     try {
         Remove-Item $Destination -Recurse -Force -ErrorAction SilentlyContinue
         New-Item $Destination -ItemType Directory -Force | Out-Null
@@ -123,106 +110,95 @@ function Write-FailureDiagnostics {
             $source = Join-Path $WorkingDirectory "data\$name"
             if (Test-Path $source) { Copy-Item $source $Destination -Force }
         }
-        $diagnostic = [ordered]@{
-            timestampUtc = (Get-Date).ToUniversalTime().ToString("o")
+        [ordered]@{
             phase = $Phase
             runtimePythonExists = Test-Path (Join-Path $WorkingDirectory "runtime\python.exe")
             listeners = @(Get-SmokeListeners | Select-Object LocalAddress, LocalPort, OwningProcess)
-            runtimeProcesses = @(Get-RuntimeProcesses $WorkingDirectory |
-                Select-Object ProcessId, Name, ExecutablePath, CommandLine)
-        }
-        $diagnostic | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $Destination "diagnostics.json")
-    } catch {
-        Write-Warning "Failed to preserve smoke diagnostics: $($_.Exception.Message)"
-    }
+            runtimeProcesses = @(Get-RuntimeProcesses $WorkingDirectory | Select-Object ProcessId, Name, ExecutablePath, CommandLine)
+        } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $Destination "diagnostics.json")
+    } catch { Write-Warning "Failed to preserve diagnostics: $($_.Exception.Message)" }
 }
 
 try {
     Remove-Item $artifacts -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $sandbox -Recurse -Force -ErrorAction SilentlyContinue
     New-Item $sandbox -ItemType Directory | Out-Null
-    Get-ChildItem $root -Force | Where-Object { $_.Name -notin @(".git", "runtime", "data", "test-artifacts") } |
-        Copy-Item -Destination $sandbox -Recurse -Force
+    Get-ChildItem $root -Force | Where-Object { $_.Name -notin @(".git", "runtime", "data", "test-artifacts") } | Copy-Item -Destination $sandbox -Recurse -Force
     New-Item (Join-Path $sandbox "data") -ItemType Directory | Out-Null
-    $sentinel = Join-Path $sandbox "data\preserve-me.txt"
-    Set-Content $sentinel "must survive runtime repair"
-    if (Test-Path (Join-Path $sandbox "runtime\python.exe")) { throw "Smoke must begin without a runtime" }
-
-    $currentPhase = "Phase A: bootstrap missing runtime"
-    Write-Host $currentPhase
-    $null = Invoke-StartBat -WorkingDirectory $sandbox
-    Wait-Health
-    $connection = Assert-LoopbackListener "Initial"
-    $serverPid = $connection.OwningProcess
-    Assert-Sentinel $sentinel "after initial bootstrap"
-
-    $currentPhase = "Phase B: reuse valid runtime"
-    Write-Host $currentPhase
+    $sentinel = Join-Path $sandbox "data\seller-data-sentinel.txt"
+    [IO.File]::WriteAllText($sentinel, "must survive runtime repair")
     $runtime = Join-Path $sandbox "runtime"
-    $before = Get-ChildItem $runtime -Recurse -File | Sort-Object FullName |
-        ForEach-Object { "$($_.FullName.Substring($runtime.Length))|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }
-    $null = Invoke-StartBat -WorkingDirectory $sandbox
-    $after = Get-ChildItem $runtime -Recurse -File | Sort-Object FullName |
-        ForEach-Object { "$($_.FullName.Substring($runtime.Length))|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }
-    if (Compare-Object $before $after) { throw "Valid runtime was downloaded, rebuilt, or reinstalled on second launch" }
-    if (Get-ChildItem $runtime -Filter "*.part" -Recurse -File) { throw "Incomplete download was retained as complete" }
-    Assert-Sentinel $sentinel "after runtime reuse"
-    Wait-Health 10
+    if (Test-Path $runtime) { throw "Smoke must begin without runtime/" }
 
-    $currentPhase = "Phase C: stop running server"
+    $currentPhase = "Phase A: fresh online bootstrap"
     Write-Host $currentPhase
-    Stop-Process -Id $serverPid -Force
-    Wait-ServerStopped -WorkingDirectory $sandbox -OwningProcessId $serverPid -TimeoutSeconds $releaseTimeoutSeconds
-    $serverPid = $null
+    $result = Invoke-StartBat $sandbox
+    if ($result.ExitCode -ne 0) { throw "Fresh start.bat exited $($result.ExitCode)" }
+    Wait-Health; Assert-WebApplication; Assert-LoopbackListener "Fresh bootstrap"
+    if (-not (Test-RuntimeValid $runtime)) { throw "Fresh runtime validation failed" }
+    Assert-Sentinel $sentinel "after fresh bootstrap"; Assert-NoPart $runtime
 
-    $currentPhase = "Phase D: damage runtime"
+    $currentPhase = "Phase B: stop fresh server"
     Write-Host $currentPhase
-    $metadataTargets = @(Get-ChildItem (Join-Path $runtime "Lib\site-packages") -Directory -Filter "fastapi-*.dist-info")
-    if ($metadataTargets.Count -ne 1) {
-        throw "Expected exactly one fastapi dist-info damage target, found $($metadataTargets.Count)"
-    }
-    $damagedMetadataName = $metadataTargets[0].Name
-    Remove-Item $metadataTargets[0].FullName -Recurse -Force
-    if (Test-RuntimeValid $runtime) { throw "Failed to damage runtime deterministically" }
+    Stop-SmokeServer $sandbox
 
-    $currentPhase = "Phase E: recover runtime"
+    $currentPhase = "Phase C: offline valid-runtime reuse"
     Write-Host $currentPhase
-    $null = Invoke-StartBat -WorkingDirectory $sandbox
-    Wait-Health
+    $before = Get-RuntimeFingerprint $runtime
+    $result = Invoke-StartBat $sandbox -Offline
+    if ($result.ExitCode -ne 0) { throw "Offline reuse exited $($result.ExitCode)" }
+    Wait-Health 30; Assert-WebApplication; Assert-LoopbackListener "Offline reuse"
+    $after = Get-RuntimeFingerprint $runtime
+    if (Compare-Object $before $after) { throw "Offline reuse changed the runtime fingerprint" }
+    Assert-NoPart $runtime; Assert-Sentinel $sentinel "after offline reuse"
 
-    $currentPhase = "Phase F: validate recovered runtime"
+    $currentPhase = "Phase D: stop offline-reused server"
     Write-Host $currentPhase
-    $connection = Assert-LoopbackListener "Recovered"
-    $serverPid = $connection.OwningProcess
-    Assert-RuntimeValid $runtime
-    $restoredMetadata = @(Get-ChildItem (Join-Path $runtime "Lib\site-packages") -Directory -Filter "fastapi-*.dist-info")
-    if ($restoredMetadata.Count -ne 1 -or $restoredMetadata[0].Name -ne $damagedMetadataName) {
-        throw "Recovery did not restore the damaged fastapi dependency metadata"
-    }
-    if (Get-ChildItem $runtime -Filter "*.part" -Recurse -File) { throw "Recovery retained an incomplete .part download" }
-    Assert-Sentinel $sentinel "after runtime recovery"
-    Write-Host "Portable bootstrap, reuse, damaged-runtime recovery, health, data isolation, and loopback checks passed."
+    Stop-SmokeServer $sandbox
+
+    $currentPhase = "Phase E: corrupt required runtime package"
+    Write-Host $currentPhase
+    $fastapi = Join-Path $runtime "Lib\site-packages\fastapi"
+    if (-not (Test-Path $fastapi)) { throw "Required fastapi package directory is missing before corruption" }
+    Remove-Item $fastapi -Recurse -Force
+    if (Test-RuntimeValid $runtime) { throw "Damaged runtime unexpectedly validates" }
+
+    $currentPhase = "Phase F: corrupt runtime offline rejection"
+    Write-Host $currentPhase
+    $result = Invoke-StartBat $sandbox -TimeoutSeconds 30 -Offline
+    if ($result.ExitCode -eq 0) { throw "Corrupt offline launch unexpectedly succeeded" }
+    if ($result.ElapsedSeconds -gt 30) { throw "Corrupt offline rejection exceeded 30 seconds" }
+    if (@(Get-SmokeListeners).Count -or @(Get-RuntimeProcesses $sandbox).Count) { throw "Corrupt runtime started a service/process" }
+    Assert-Sentinel $sentinel "after failed offline repair"
+    $statusPath = Join-Path $sandbox "data\startup_status.json"
+    if (-not (Test-Path $statusPath)) { throw "Repair status was not written" }
+    $status = Get-Content $statusPath -Raw | ConvertFrom-Json
+    if ($status.status -ne "error" -or $status.code -ne "RUNTIME_REPAIR_REQUIRED") { throw "Repair status contract is invalid" }
+    if ($status.message -notmatch "(?i)connect to the internet" -or $status.message -notmatch "(?i)run start\.bat again" -or $status.message -notmatch "(?i)preserved") { throw "Repair guidance is not actionable" }
+    Write-Host "Offline rejection exit=$($result.ExitCode), elapsed=$([Math]::Round($result.ElapsedSeconds, 2))s"
+
+    $currentPhase = "Phase G: online recovery"
+    Write-Host $currentPhase
+    $result = Invoke-StartBat $sandbox
+    if ($result.ExitCode -ne 0) { throw "Online recovery exited $($result.ExitCode)" }
+    Wait-Health; Assert-WebApplication; Assert-LoopbackListener "Online recovery"
+    if (-not (Test-RuntimeValid $runtime)) { throw "Recovered runtime validation failed" }
+    Assert-NoPart $runtime; Assert-Sentinel $sentinel "after online recovery"
+
+    $currentPhase = "Phase H: final cleanup"
+    Write-Host $currentPhase
+    Stop-SmokeServer $sandbox
+    Write-Host "Offline portable release acceptance passed."
 } catch {
     $failed = $true
-    Write-FailureDiagnostics -WorkingDirectory $sandbox -Phase $currentPhase -Destination $artifacts
+    Write-FailureDiagnostics $sandbox $currentPhase $artifacts
     throw
 } finally {
-    try {
-        $listenerPids = @(Get-SmokeListeners | Select-Object -ExpandProperty OwningProcess -Unique)
-        foreach ($processId in $listenerPids) {
-            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-        }
-        foreach ($process in @(Get-RuntimeProcesses $sandbox)) {
-            Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
-        }
-        Wait-ServerStopped -WorkingDirectory $sandbox -OwningProcessId $serverPid -TimeoutSeconds $releaseTimeoutSeconds
-    } catch {
-        Write-Warning "Smoke cleanup could not fully stop runtime processes: $($_.Exception.Message)"
-    }
+    try { Stop-SmokeServer $sandbox } catch { $cleanupFailure = $_.Exception.Message }
     try {
         Remove-Item $sandbox -Recurse -Force -ErrorAction Stop
-    } catch {
-        Write-Warning "Smoke cleanup could not remove sandbox: $($_.Exception.Message)"
-    }
-    if (-not $failed) { Remove-Item $artifacts -Recurse -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $sandbox) { throw "Sandbox still exists after removal" }
+    } catch { $cleanupFailure = "${cleanupFailure}; sandbox removal failed: $($_.Exception.Message)" }
+    if (-not $failed -and -not $cleanupFailure) { Remove-Item $artifacts -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($cleanupFailure) { throw "Final cleanup failed: $cleanupFailure" }
 }
