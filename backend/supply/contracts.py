@@ -1,6 +1,7 @@
 """Immutable contracts for supply feasibility and placement assessment."""
 
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
 
 from backend.domain.signals import RecommendationDistortionSignal
@@ -100,3 +101,27 @@ class PlacementAssessment:
     distortion_signal: RecommendationDistortionSignal | None
     route_confidence: RouteConfidence
     status_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AllocationDecision:
+    sku: str
+    cluster_id: str
+    allocation_qty: int
+    automatic_ceiling_qty: int
+    expected_profit_per_unit: Decimal | None
+    expected_profit: Decimal
+    eligible: bool
+    reason_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OptimizationResult:
+    sku: str
+    available_stock: int
+    allocated_qty: int
+    unallocated_stock: int
+    eligible_capacity_qty: int
+    objective_profit: Decimal
+    decisions: tuple[AllocationDecision, ...]
+    binding_reasons: tuple[str, ...]
