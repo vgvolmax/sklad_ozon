@@ -1,0 +1,742 @@
+{
+  "schema_version": 1,
+  "oracle": {
+    "source_workbook": "Юнитка OZON 23.07.26(1).xlsx",
+    "workbook_sheet": "Расчёт юнит-экономики",
+    "tariff_sheet": "Логистика с 28 августа 2026г.",
+    "reference_sheet": "Справочник",
+    "source_handling": "Original XLSX is not to be committed. This file contains sanitized formulas and numeric regression evidence only.",
+    "scope": "FBO unit economics Task 14",
+    "calculation_precision_policy": {
+      "engine": "Decimal end-to-end",
+      "spreadsheet_round_calls_found": false,
+      "intermediate_quantization": false,
+      "presentation_rounding_is_not_calculation_rounding": true,
+      "cached_comparison_absolute_tolerance": "0.0000000001"
+    }
+  },
+  "formula_contract": {
+    "commission": {
+      "excel": "I = H * G",
+      "canonical": "commission = price * commission_rate"
+    },
+    "acquiring": {
+      "excel": "J = G * 2%",
+      "canonical": "acquiring = price * acquiring_rate",
+      "observed_workbook_rate": "0.02",
+      "note": "Workbook cell comment says 'В среднем 1,5%', but executable formulas use 2%; formulas are authoritative for parity."
+    },
+    "fbo_logistics": {
+      "excel": [
+        "R = O + P + Q; populated workbook rows are FBO so P is blank/0 and Q = 25",
+        "S = O",
+        "U = (100/T) * R + (100/T - 1) * S"
+      ],
+      "canonical": [
+        "base_delivery_tariff = ExpectedLogisticsResult.expected_fee from Task 13",
+        "delivery_once = base_delivery_tariff + fixed_fbo_fee",
+        "reverse_logistics_tariff = base_delivery_tariff",
+        "expected_logistics = delivery_once / buyout_rate + (1 / buyout_rate - 1) * reverse_logistics_tariff"
+      ],
+      "observed_fixed_fbo_fee": "25",
+      "observed_buyout_rate": "0.95",
+      "critical": "Task 13 expected_fee is the one-way base tariff O, not the final buyout-adjusted workbook logistics U."
+    },
+    "advertising_and_services": {
+      "excel": "X = W * G",
+      "canonical": "advertising_and_services = price * advertising_rate"
+    },
+    "ozon_withholdings": {
+      "excel": "Y = I + J + U + X",
+      "canonical": "ozon_withholdings = commission + acquiring + expected_logistics + advertising_and_services"
+    },
+    "payout": {
+      "excel": "AA = G - Y",
+      "canonical": "payout = price - ozon_withholdings"
+    },
+    "co_invest": {
+      "excel": "AE = G * (1 - AB)",
+      "canonical": [
+        "co_invest = price * co_invest_rate",
+        "realization = price - co_invest"
+      ],
+      "critical": "Co-invest is not included in Y (Ozon withholdings) and is not subtracted from profit a second time; in this workbook it changes realization/tax bases."
+    },
+    "vat": {
+      "excel": "AG = AE * AF / (1 + AF), or 0 when AF is blank",
+      "canonical": "vat = realization * vat_rate / (1 + vat_rate)",
+      "meaning": "VAT is treated as included in realization."
+    },
+    "income_tax_base": {
+      "reference_mapping": {
+        "УСН-доходы": 1,
+        "АУСН-доходы": 1,
+        "УСН Д-Р": 2,
+        "АУСН Д-Р": 2,
+        "Не считать налог": 3
+      },
+      "excel": {
+        "id_1": "AH = AE - AG",
+        "id_2": "AH = AA - F - AG",
+        "id_3": "AH = 0"
+      },
+      "canonical": {
+        "usn_income": "income_tax_base = realization - vat",
+        "usn_income_minus_expenses": "income_tax_base = payout - cost - vat"
+      }
+    },
+    "income_tax": {
+      "excel": "AI = AH * AD; several template blocks wrap this in IF(AH*AD<0,0,AH*AD)",
+      "canonical_for_golden_cases": "income_tax = max(0, income_tax_base * income_tax_rate)",
+      "known_workbook_inconsistency": "Rows are split between clamped and unclamped negative tax formulas. Golden tax cases use positive tax bases, so this inconsistency does not affect the oracle. Do not infer negative-tax credits."
+    },
+    "total_tax": {
+      "excel": "AJ = AI + AG",
+      "canonical": "tax = income_tax + vat"
+    },
+    "profit": {
+      "excel": "AL = AA - AJ - F",
+      "canonical": "profit_per_unit = payout - tax - cost"
+    },
+    "margin": {
+      "excel": "AM = AL / G with IFERROR",
+      "canonical": "margin_rate = profit_per_unit / price; None when price == 0"
+    },
+    "roi": {
+      "excel": "AN = AL / F with IFERROR",
+      "canonical": "roi = profit_per_unit / cost; None when cost == 0"
+    }
+  },
+  "supported_tax_semantics": {
+    "usn_income": "Validated from workbook formula mapping id=1.",
+    "usn_income_minus_expenses": "Validated from workbook formula mapping id=2.",
+    "osno": "UNSUPPORTED_TAX_SEMANTICS: workbook has no explicit OSNO branch.",
+    "manual": "UNSUPPORTED_TAX_SEMANTICS: workbook has no explicit canonical manual branch."
+  },
+  "real_cached_cases": [
+    {
+      "id": "real_row_10_low_price_intercluster",
+      "source_row": 10,
+      "description": "Цена 299 ₽, комиссия 20%, межкластерная доставка; фактический cached result workbook.",
+      "input": {
+        "price": "299",
+        "cost": "78.64",
+        "commission_rate": "0.20",
+        "base_delivery_tariff": "21",
+        "acquiring_rate": "0.02",
+        "advertising_rate": "0.20",
+        "buyout_rate": "0.95",
+        "fixed_fbo_fee": "25",
+        "co_invest_rate": "0",
+        "vat_rate": "0",
+        "income_tax_rate": "0",
+        "tax_system": "usn_income"
+      },
+      "cached": {
+        "commission": "59.800000000000004",
+        "acquiring": "5.98",
+        "base_delivery_tariff": "21",
+        "expected_logistics": "49.526315789473678",
+        "advertising_and_services": "59.800000000000004",
+        "ozon_withholdings": "175.10631578947368",
+        "payout": "123.89368421052632",
+        "tax": "0",
+        "profit_per_unit": "45.253684210526316",
+        "margin_rate": "0.15135011441647597",
+        "roi": "0.5754537666648819"
+      },
+      "oracle_refs": [
+        "Расчёт юнит-экономики!F10:AN10"
+      ],
+      "decimal_expected": {
+        "commission_base": "299",
+        "commission": "59.80",
+        "acquiring_base": "299",
+        "acquiring": "5.98",
+        "base_delivery_tariff": "21",
+        "fixed_fbo_fee": "25",
+        "delivery_once": "46",
+        "reverse_logistics_tariff": "21",
+        "expected_logistics": "49.52631578947368421052631578947368421053",
+        "advertising_base": "299",
+        "advertising_and_services": "59.80",
+        "ozon_withholdings": "175.1063157894736842105263157894736842105",
+        "payout": "123.8936842105263157894736842105263157895",
+        "co_invest_base": "299",
+        "co_invest": "0",
+        "realization": "299",
+        "vat_base": "299",
+        "vat": "0",
+        "income_tax_base": "299",
+        "income_tax": "0",
+        "tax": "0",
+        "cost": "78.64",
+        "profit_per_unit": "45.2536842105263157894736842105263157895",
+        "margin_rate": "0.1513501144164759725400457665903890160184",
+        "roi": "0.5754537666648819403544466456068961824708"
+      },
+      "comparison": {
+        "cached_absolute_tolerance": "0.0000000001",
+        "reason": "Excel cache uses binary floating arithmetic; canonical engine uses Decimal and must not quantize intermediate values."
+      }
+    },
+    {
+      "id": "real_row_12_high_commission_intercluster",
+      "source_row": 12,
+      "description": "Цена 699 ₽, комиссия 41%, межкластерный тариф 80 ₽.",
+      "input": {
+        "price": "699",
+        "cost": "124.75",
+        "commission_rate": "0.41",
+        "base_delivery_tariff": "80",
+        "acquiring_rate": "0.02",
+        "advertising_rate": "0.20",
+        "buyout_rate": "0.95",
+        "fixed_fbo_fee": "25",
+        "co_invest_rate": "0",
+        "vat_rate": "0",
+        "income_tax_rate": "0",
+        "tax_system": "usn_income"
+      },
+      "cached": {
+        "commission": "286.58999999999997",
+        "acquiring": "13.98",
+        "base_delivery_tariff": "80",
+        "expected_logistics": "114.73684210526315",
+        "advertising_and_services": "139.80000000000001",
+        "ozon_withholdings": "555.10684210526324",
+        "payout": "143.89315789473676",
+        "tax": "0",
+        "profit_per_unit": "19.14315789473676",
+        "margin_rate": "0.027386491981025409",
+        "roi": "0.15345216749287985"
+      },
+      "oracle_refs": [
+        "Расчёт юнит-экономики!F12:AN12"
+      ],
+      "decimal_expected": {
+        "commission_base": "699",
+        "commission": "286.59",
+        "acquiring_base": "699",
+        "acquiring": "13.98",
+        "base_delivery_tariff": "80",
+        "fixed_fbo_fee": "25",
+        "delivery_once": "105",
+        "reverse_logistics_tariff": "80",
+        "expected_logistics": "114.7368421052631578947368421052631578947",
+        "advertising_base": "699",
+        "advertising_and_services": "139.80",
+        "ozon_withholdings": "555.1068421052631578947368421052631578947",
+        "payout": "143.8931578947368421052631578947368421053",
+        "co_invest_base": "699",
+        "co_invest": "0",
+        "realization": "699",
+        "vat_base": "699",
+        "vat": "0",
+        "income_tax_base": "699",
+        "income_tax": "0",
+        "tax": "0",
+        "cost": "124.75",
+        "profit_per_unit": "19.1431578947368421052631578947368421053",
+        "margin_rate": "0.02738649198102552518635644906257058956409",
+        "roi": "0.1534521674928804978377808248075097563551"
+      },
+      "comparison": {
+        "cached_absolute_tolerance": "0.0000000001",
+        "reason": "Excel cache uses binary floating arithmetic; canonical engine uses Decimal and must not quantize intermediate values."
+      }
+    },
+    {
+      "id": "real_row_117_local_route",
+      "source_row": 117,
+      "description": "Локальная доставка Омск→Омск; проверка более дешёвого базового тарифа.",
+      "input": {
+        "price": "750",
+        "cost": "115.7",
+        "commission_rate": "0.41",
+        "base_delivery_tariff": "59",
+        "acquiring_rate": "0.02",
+        "advertising_rate": "0.20",
+        "buyout_rate": "0.95",
+        "fixed_fbo_fee": "25",
+        "co_invest_rate": "0",
+        "vat_rate": "0",
+        "income_tax_rate": "0",
+        "tax_system": "usn_income"
+      },
+      "cached": {
+        "commission": "307.5",
+        "acquiring": "15",
+        "base_delivery_tariff": "59",
+        "expected_logistics": "91.526315789473685",
+        "advertising_and_services": "150",
+        "ozon_withholdings": "564.02631578947376",
+        "payout": "185.97368421052624",
+        "tax": "0",
+        "profit_per_unit": "70.273684210526241",
+        "margin_rate": "0.093698245614034989",
+        "roi": "0.60737842878587933"
+      },
+      "oracle_refs": [
+        "Расчёт юнит-экономики!F117:AN117"
+      ],
+      "decimal_expected": {
+        "commission_base": "750",
+        "commission": "307.50",
+        "acquiring_base": "750",
+        "acquiring": "15.00",
+        "base_delivery_tariff": "59",
+        "fixed_fbo_fee": "25",
+        "delivery_once": "84",
+        "reverse_logistics_tariff": "59",
+        "expected_logistics": "91.52631578947368421052631578947368421055",
+        "advertising_base": "750",
+        "advertising_and_services": "150.00",
+        "ozon_withholdings": "564.0263157894736842105263157894736842106",
+        "payout": "185.9736842105263157894736842105263157894",
+        "co_invest_base": "750",
+        "co_invest": "0",
+        "realization": "750",
+        "vat_base": "750",
+        "vat": "0",
+        "income_tax_base": "750",
+        "income_tax": "0",
+        "tax": "0",
+        "cost": "115.7",
+        "profit_per_unit": "70.2736842105263157894736842105263157894",
+        "margin_rate": "0.0936982456140350877192982456140350877192",
+        "roi": "0.6073784287858799981804121366510485375056"
+      },
+      "comparison": {
+        "cached_absolute_tolerance": "0.0000000001",
+        "reason": "Excel cache uses binary floating arithmetic; canonical engine uses Decimal and must not quantize intermediate values."
+      }
+    },
+    {
+      "id": "real_row_119_large_ticket",
+      "source_row": 119,
+      "description": "Высокая цена, комиссия 41%, базовый тариф 92 ₽.",
+      "input": {
+        "price": "3713",
+        "cost": "456.3",
+        "commission_rate": "0.41",
+        "base_delivery_tariff": "92",
+        "acquiring_rate": "0.02",
+        "advertising_rate": "0.20",
+        "buyout_rate": "0.95",
+        "fixed_fbo_fee": "25",
+        "co_invest_rate": "0",
+        "vat_rate": "0",
+        "income_tax_rate": "0",
+        "tax_system": "usn_income"
+      },
+      "cached": {
+        "commission": "1522.33",
+        "acquiring": "74.260000000000005",
+        "base_delivery_tariff": "92",
+        "expected_logistics": "127.99999999999999",
+        "advertising_and_services": "742.6",
+        "ozon_withholdings": "2467.19",
+        "payout": "1245.81",
+        "tax": "0",
+        "profit_per_unit": "789.51",
+        "margin_rate": "0.21263398868839214",
+        "roi": "1.7302432610124918"
+      },
+      "oracle_refs": [
+        "Расчёт юнит-экономики!F119:AN119"
+      ],
+      "decimal_expected": {
+        "commission_base": "3713",
+        "commission": "1522.33",
+        "acquiring_base": "3713",
+        "acquiring": "74.26",
+        "base_delivery_tariff": "92",
+        "fixed_fbo_fee": "25",
+        "delivery_once": "117",
+        "reverse_logistics_tariff": "92",
+        "expected_logistics": "128.0000000000000000000000000000000000001",
+        "advertising_base": "3713",
+        "advertising_and_services": "742.60",
+        "ozon_withholdings": "2467.190000000000000000000000000000000000",
+        "payout": "1245.810000000000000000000000000000000000",
+        "co_invest_base": "3713",
+        "co_invest": "0",
+        "realization": "3713",
+        "vat_base": "3713",
+        "vat": "0",
+        "income_tax_base": "3713",
+        "income_tax": "0",
+        "tax": "0",
+        "cost": "456.3",
+        "profit_per_unit": "789.510000000000000000000000000000000000",
+        "margin_rate": "0.2126339886883921357392943711284675464584",
+        "roi": "1.730243261012491781722550953320184089415"
+      },
+      "comparison": {
+        "cached_absolute_tolerance": "0.0000000001",
+        "reason": "Excel cache uses binary floating arithmetic; canonical engine uses Decimal and must not quantize intermediate values."
+      }
+    },
+    {
+      "id": "real_row_148_advertising_15pct",
+      "source_row": 148,
+      "description": "Реклама/другие услуги 15% вместо типичных 20%.",
+      "input": {
+        "price": "15590",
+        "cost": "3893",
+        "commission_rate": "0.41",
+        "base_delivery_tariff": "503",
+        "acquiring_rate": "0.02",
+        "advertising_rate": "0.15",
+        "buyout_rate": "0.95",
+        "fixed_fbo_fee": "25",
+        "co_invest_rate": "0",
+        "vat_rate": "0",
+        "income_tax_rate": "0",
+        "tax_system": "usn_income"
+      },
+      "cached": {
+        "commission": "6391.9",
+        "acquiring": "311.8",
+        "base_delivery_tariff": "503",
+        "expected_logistics": "582.26315789473676",
+        "advertising_and_services": "2338.5",
+        "ozon_withholdings": "9624.4631578947374",
+        "payout": "5965.5368421052626",
+        "tax": "0",
+        "profit_per_unit": "2072.5368421052626",
+        "margin_rate": "0.13294014381688662",
+        "roi": "0.53237524842159323"
+      },
+      "oracle_refs": [
+        "Расчёт юнит-экономики!F148:AN148"
+      ],
+      "decimal_expected": {
+        "commission_base": "15590",
+        "commission": "6391.90",
+        "acquiring_base": "15590",
+        "acquiring": "311.80",
+        "base_delivery_tariff": "503",
+        "fixed_fbo_fee": "25",
+        "delivery_once": "528",
+        "reverse_logistics_tariff": "503",
+        "expected_logistics": "582.2631578947368421052631578947368421055",
+        "advertising_base": "15590",
+        "advertising_and_services": "2338.50",
+        "ozon_withholdings": "9624.463157894736842105263157894736842106",
+        "payout": "5965.536842105263157894736842105263157894",
+        "co_invest_base": "15590",
+        "co_invest": "0",
+        "realization": "15590",
+        "vat_base": "15590",
+        "vat": "0",
+        "income_tax_base": "15590",
+        "income_tax": "0",
+        "tax": "0",
+        "cost": "3893",
+        "profit_per_unit": "2072.536842105263157894736842105263157894",
+        "margin_rate": "0.1329401438168866682421255190574254751696",
+        "roi": "0.5323752484215934132788946422053077723848"
+      },
+      "comparison": {
+        "cached_absolute_tolerance": "0.0000000001",
+        "reason": "Excel cache uses binary floating arithmetic; canonical engine uses Decimal and must not quantize intermediate values."
+      }
+    }
+  ],
+  "formula_derived_cases": [
+    {
+      "id": "formula_buyout_100pct",
+      "description": "Формула U при 100% выкупе: обратная логистика исчезает, остаётся базовый тариф + фикс FBO.",
+      "input": {
+        "price": "1000",
+        "cost": "100",
+        "commission_rate": "0.41",
+        "base_delivery_tariff": "80",
+        "acquiring_rate": "0.02",
+        "advertising_rate": "0.20",
+        "buyout_rate": "1",
+        "fixed_fbo_fee": "25",
+        "co_invest_rate": "0",
+        "vat_rate": "0",
+        "income_tax_rate": "0",
+        "tax_system": "usn_income"
+      },
+      "expected": {
+        "commission_base": "1000",
+        "commission": "410.00",
+        "acquiring_base": "1000",
+        "acquiring": "20.00",
+        "base_delivery_tariff": "80",
+        "fixed_fbo_fee": "25",
+        "delivery_once": "105",
+        "reverse_logistics_tariff": "80",
+        "expected_logistics": "105",
+        "advertising_base": "1000",
+        "advertising_and_services": "200.00",
+        "ozon_withholdings": "735.00",
+        "payout": "265.00",
+        "co_invest_base": "1000",
+        "co_invest": "0",
+        "realization": "1000",
+        "vat_base": "1000",
+        "vat": "0",
+        "income_tax_base": "1000",
+        "income_tax": "0",
+        "tax": "0",
+        "cost": "100",
+        "profit_per_unit": "165.00",
+        "margin_rate": "0.165",
+        "roi": "1.65"
+      },
+      "oracle_refs": [
+        "Расчёт юнит-экономики!I:J",
+        "Расчёт юнит-экономики!R:U",
+        "Расчёт юнит-экономики!X:AN",
+        "Справочник!C2:D6"
+      ],
+      "comparison": {
+        "absolute_tolerance": "0.0000000001"
+      }
+    },
+    {
+      "id": "formula_usn_income_vat_coinvest",
+      "description": "УСН доходы + НДС + соинвест; синтетика непосредственно из формул AE/AG/AH/AI/AJ.",
+      "input": {
+        "price": "1000",
+        "cost": "300",
+        "commission_rate": "0.20",
+        "base_delivery_tariff": "50",
+        "acquiring_rate": "0.02",
+        "advertising_rate": "0.10",
+        "buyout_rate": "0.95",
+        "fixed_fbo_fee": "25",
+        "co_invest_rate": "0.10",
+        "vat_rate": "0.05",
+        "income_tax_rate": "0.06",
+        "tax_system": "usn_income"
+      },
+      "expected": {
+        "commission_base": "1000",
+        "commission": "200.00",
+        "acquiring_base": "1000",
+        "acquiring": "20.00",
+        "base_delivery_tariff": "50",
+        "fixed_fbo_fee": "25",
+        "delivery_once": "75",
+        "reverse_logistics_tariff": "50",
+        "expected_logistics": "81.57894736842105263157894736842105263160",
+        "advertising_base": "1000",
+        "advertising_and_services": "100.00",
+        "ozon_withholdings": "401.5789473684210526315789473684210526316",
+        "payout": "598.4210526315789473684210526315789473684",
+        "co_invest_base": "1000",
+        "co_invest": "100.00",
+        "realization": "900.00",
+        "vat_base": "900.00",
+        "vat": "42.85714285714285714285714285714285714286",
+        "income_tax_base": "857.1428571428571428571428571428571428571",
+        "income_tax": "51.42857142857142857142857142857142857143",
+        "tax": "94.28571428571428571428571428571428571429",
+        "cost": "300",
+        "profit_per_unit": "204.1353383458646616541353383458646616541",
+        "margin_rate": "0.2041353383458646616541353383458646616541",
+        "roi": "0.6804511278195488721804511278195488721803"
+      },
+      "oracle_refs": [
+        "Расчёт юнит-экономики!I:J",
+        "Расчёт юнит-экономики!R:U",
+        "Расчёт юнит-экономики!X:AN",
+        "Справочник!C2:D6"
+      ],
+      "comparison": {
+        "absolute_tolerance": "0.0000000001"
+      }
+    },
+    {
+      "id": "formula_usn_income_minus_expenses_vat_coinvest",
+      "description": "УСН Д-Р + НДС + соинвест; налоговая база = payout - cost - VAT.",
+      "input": {
+        "price": "1000",
+        "cost": "300",
+        "commission_rate": "0.20",
+        "base_delivery_tariff": "50",
+        "acquiring_rate": "0.02",
+        "advertising_rate": "0.10",
+        "buyout_rate": "0.95",
+        "fixed_fbo_fee": "25",
+        "co_invest_rate": "0.10",
+        "vat_rate": "0.05",
+        "income_tax_rate": "0.15",
+        "tax_system": "usn_income_minus_expenses"
+      },
+      "expected": {
+        "commission_base": "1000",
+        "commission": "200.00",
+        "acquiring_base": "1000",
+        "acquiring": "20.00",
+        "base_delivery_tariff": "50",
+        "fixed_fbo_fee": "25",
+        "delivery_once": "75",
+        "reverse_logistics_tariff": "50",
+        "expected_logistics": "81.57894736842105263157894736842105263160",
+        "advertising_base": "1000",
+        "advertising_and_services": "100.00",
+        "ozon_withholdings": "401.5789473684210526315789473684210526316",
+        "payout": "598.4210526315789473684210526315789473684",
+        "co_invest_base": "1000",
+        "co_invest": "100.00",
+        "realization": "900.00",
+        "vat_base": "900.00",
+        "vat": "42.85714285714285714285714285714285714286",
+        "income_tax_base": "255.5639097744360902255639097744360902255",
+        "income_tax": "38.33458646616541353383458646616541353382",
+        "tax": "81.19172932330827067669172932330827067668",
+        "cost": "300",
+        "profit_per_unit": "217.2293233082706766917293233082706766917",
+        "margin_rate": "0.2172293233082706766917293233082706766917",
+        "roi": "0.724097744360902255639097744360902255639"
+      },
+      "oracle_refs": [
+        "Расчёт юнит-экономики!I:J",
+        "Расчёт юнит-экономики!R:U",
+        "Расчёт юнит-экономики!X:AN",
+        "Справочник!C2:D6"
+      ],
+      "comparison": {
+        "absolute_tolerance": "0.0000000001"
+      }
+    },
+    {
+      "id": "formula_zero_revenue",
+      "description": "Нулевая выручка: margin undefined, ROI остаётся определённым при ненулевой себестоимости.",
+      "input": {
+        "price": "0",
+        "cost": "100",
+        "commission_rate": "0.20",
+        "base_delivery_tariff": "0",
+        "acquiring_rate": "0.02",
+        "advertising_rate": "0.10",
+        "buyout_rate": "1",
+        "fixed_fbo_fee": "25",
+        "co_invest_rate": "0",
+        "vat_rate": "0",
+        "income_tax_rate": "0.06",
+        "tax_system": "usn_income"
+      },
+      "expected": {
+        "commission_base": "0",
+        "commission": "0.00",
+        "acquiring_base": "0",
+        "acquiring": "0.00",
+        "base_delivery_tariff": "0",
+        "fixed_fbo_fee": "25",
+        "delivery_once": "25",
+        "reverse_logistics_tariff": "0",
+        "expected_logistics": "25",
+        "advertising_base": "0",
+        "advertising_and_services": "0.00",
+        "ozon_withholdings": "25.00",
+        "payout": "-25.00",
+        "co_invest_base": "0",
+        "co_invest": "0",
+        "realization": "0",
+        "vat_base": "0",
+        "vat": "0",
+        "income_tax_base": "0",
+        "income_tax": "0",
+        "tax": "0",
+        "cost": "100",
+        "profit_per_unit": "-125.00",
+        "margin_rate": null,
+        "roi": "-1.25"
+      },
+      "oracle_refs": [
+        "Расчёт юнит-экономики!I:J",
+        "Расчёт юнит-экономики!R:U",
+        "Расчёт юнит-экономики!X:AN",
+        "Справочник!C2:D6"
+      ],
+      "comparison": {
+        "absolute_tolerance": "0.0000000001"
+      }
+    },
+    {
+      "id": "formula_negative_profit_complete",
+      "description": "Все входы известны, но экономика отрицательная; complete не должен становиться false только из-за убытка.",
+      "input": {
+        "price": "500",
+        "cost": "400",
+        "commission_rate": "0.41",
+        "base_delivery_tariff": "80",
+        "acquiring_rate": "0.02",
+        "advertising_rate": "0.20",
+        "buyout_rate": "0.95",
+        "fixed_fbo_fee": "25",
+        "co_invest_rate": "0",
+        "vat_rate": "0",
+        "income_tax_rate": "0.06",
+        "tax_system": "usn_income"
+      },
+      "expected": {
+        "commission_base": "500",
+        "commission": "205.00",
+        "acquiring_base": "500",
+        "acquiring": "10.00",
+        "base_delivery_tariff": "80",
+        "fixed_fbo_fee": "25",
+        "delivery_once": "105",
+        "reverse_logistics_tariff": "80",
+        "expected_logistics": "114.7368421052631578947368421052631578947",
+        "advertising_base": "500",
+        "advertising_and_services": "100.00",
+        "ozon_withholdings": "429.7368421052631578947368421052631578947",
+        "payout": "70.2631578947368421052631578947368421053",
+        "co_invest_base": "500",
+        "co_invest": "0",
+        "realization": "500",
+        "vat_base": "500",
+        "vat": "0",
+        "income_tax_base": "500",
+        "income_tax": "30.00",
+        "tax": "30.00",
+        "cost": "400",
+        "profit_per_unit": "-359.7368421052631578947368421052631578947",
+        "margin_rate": "-0.7194736842105263157894736842105263157894",
+        "roi": "-0.8993421052631578947368421052631578947368"
+      },
+      "oracle_refs": [
+        "Расчёт юнит-экономики!I:J",
+        "Расчёт юнит-экономики!R:U",
+        "Расчёт юнит-экономики!X:AN",
+        "Справочник!C2:D6"
+      ],
+      "comparison": {
+        "absolute_tolerance": "0.0000000001"
+      }
+    }
+  ],
+  "contract_cases": [
+    {
+      "id": "partial_logistics_must_block_profit",
+      "source": "Task 13 coverage contract + Task 14 completeness requirement",
+      "logistics": {
+        "coverage_status": "partial",
+        "covered_expected_fee": "40",
+        "expected_fee": null
+      },
+      "expected": {
+        "complete": false,
+        "blockers": [
+          "INCOMPLETE_LOGISTICS_COVERAGE"
+        ],
+        "expected_logistics": null,
+        "profit_per_unit": null,
+        "margin_rate": null,
+        "roi": null
+      },
+      "critical": "covered_expected_fee must never leak into unit profit."
+    }
+  ]
+}
