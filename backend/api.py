@@ -41,11 +41,19 @@ async def read(upload,field):
 
 def response(kind,result): return {"api_version":1,"kind":kind,**wire(result)}
 
-def input_status(result):
+def input_status(*results):
     return {
-        "ok": not any(diagnostic.severity == "error" for diagnostic in result.diagnostics),
-        "record_count": len(result.records),
-        "diagnostics": wire(result.diagnostics),
+        "ok": not any(
+            diagnostic.severity == "error"
+            for result in results
+            for diagnostic in result.diagnostics
+        ),
+        "record_count": sum(len(result.records) for result in results),
+        "diagnostics": wire(tuple(
+            diagnostic
+            for result in results
+            for diagnostic in result.diagnostics
+        )),
     }
 
 _IMPORTERS={"availability":import_availability,"restrictions":import_restrictions,"orders":import_orders,"tariffs":import_tariffs,"product-economics":import_product_economics}
@@ -123,10 +131,13 @@ async def analysis(request:Request):
     products=replace(products,records=tuple(joined),diagnostics=products.diagnostics+tuple(join_diags))
     imported=[availability,restrictions,orders,tariffs,products]
     settings=EconomicsSettings(*(values[n] for n in decimal_names[:4]),tax,*(values[n] for n in decimal_names[4:7])); thresholds=OptimizerThresholds(*(values[n] for n in decimal_names[7:]))
-    result=analyze(availability.records,restrictions.records,orders.records,tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds)
+    result=analyze(availability.records,restrictions.records,orders.records,tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None)
     coverage={key:0 for key in ('complete','partial','none','no_profile')}
     for item in result.logistics:coverage[item.coverage_status.value]+=1
     diagnostics=tuple(d for item in imported for d in item.diagnostics)+result.diagnostics
     complete=not any(d.severity=='error' for d in diagnostics) and all(item.complete for item in result.economics)
     statuses=([availability,restrictions,orders,products] if unitka is not None else imported)
-    return {"api_version":1,"complete":complete,"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":{field:input_status(item) for field,item in zip(files,statuses)},"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}
+    input_statuses={field:input_status(item) for field,item in zip(files,statuses)}
+    if unitka is not None:
+        input_statuses["unitka_file"]=input_status(products,tariffs)
+    return {"api_version":1,"complete":complete,"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}

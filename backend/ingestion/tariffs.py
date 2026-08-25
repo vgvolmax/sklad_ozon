@@ -56,6 +56,14 @@ def _find_fbo_block(worksheet):
     return None
 
 
+def _has_fbo_marker(worksheet) -> bool:
+    return any(
+        normalize_header(value) == "fbo"
+        for row in worksheet.iter_rows(min_row=1, max_row=12, values_only=True)
+        for value in row
+    )
+
+
 def _import_fbo(worksheet, header_row, binding, report_context):
     tiers, diagnostics = [], []
     for row_number in range(header_row + 1, worksheet.max_row + 1):
@@ -90,12 +98,19 @@ def import_tariffs(data: bytes, report_context: ReportMeta) -> ImportResult[Tari
     if not data.startswith(b"PK"):
         return ImportResult((), (_diag("TARIFF_SHEET_NOT_FOUND", "Tariffs require an XLSX workbook with a recognizable tariff sheet."),), report_context)
     workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
-    fbo_matches = [(worksheet, block) for worksheet in workbook.worksheets
+    fbo_sheets = [worksheet for worksheet in workbook.worksheets if _has_fbo_marker(worksheet)]
+    fbo_matches = [(worksheet, block) for worksheet in fbo_sheets
                    if (block := _find_fbo_block(worksheet)) is not None]
-    if fbo_matches:
+    if fbo_sheets:
         if len(fbo_matches) > 1:
             workbook.close()
             return ImportResult((), (_diag("AMBIGUOUS_TARIFF_SHEETS", "Multiple sheets contain an FBO tariff section."),), report_context)
+        if len(fbo_sheets) != 1 or not fbo_matches:
+            workbook.close()
+            return ImportResult((), (_diag(
+                "UNSUPPORTED_UNITKA_TARIFF_LAYOUT",
+                "The marked FBO tariff section is incomplete or unsupported.",
+            ),), report_context)
         worksheet, (header_row, binding) = fbo_matches[0]
         result = _import_fbo(worksheet, header_row, binding, report_context)
         workbook.close()

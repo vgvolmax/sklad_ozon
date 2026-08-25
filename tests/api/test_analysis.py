@@ -95,7 +95,8 @@ def _placement(payload, cluster):
     return next(item for item in payload["placements"] if item["cluster_id"] == cluster)
 
 
-def _real_four_files(fbs_a=(0, 0, 84, 0), *, include_second=True, obsolete=False):
+def _real_four_files(fbs_a=(0, 0, 84, 0), *, include_second=True, obsolete=False,
+                     fbo_complete=True, product_available_qty=None):
     availability_headers = ["SKU", "Артикул", "Название товара", "Рекомендуемая поставка, шт на 56 дней",
                             "Рекомендация", "Кластер", "Схема продаж", "Дней без остатка за 28 дней",
                             "Доля локальных продаж", "Среднесуточные продажи, руб. за 28дн", "Признак товара",
@@ -111,7 +112,7 @@ def _real_four_files(fbs_a=(0, 0, 84, 0), *, include_second=True, obsolete=False
                            "Возможно ли поставить товар", "Зона размещения", "Ошибки в карточке товара",
                            "Склад оборудован под хранение товара", "Статус ликвидности: Без продаж, ограничен", "Максимальный размер поставки"]
     restriction_rows = [["ART-A", "SKU-A", "A", 10, "Москва", "МОСКВА_РФЦ", "Да", "", "", "", "", 3],
-                        ["ART-X", "SKU-X", "X", 0, "Москва", "МОСКВА_ЗАПРЕТ", "Нет", "", "", "", "", "-"]]
+                        ["ART-A", "SKU-A", "A", 10, "Москва", "МОСКВА_ЗАПРЕТ", "Нет", "", "", "", "", "-"]]
     if include_second: restriction_rows.insert(1, ["ART-B", "SKU-B", "B", 10, "Москва", "МОСКВА_РФЦ", "Да", "", "", "", "", 7])
     restrictions = make_multisheet_xlsx([("Справка", ["meta"], [["x"]]),
         ("Ограничения", [None], [[None], restriction_headers, *restriction_rows])])
@@ -121,7 +122,8 @@ def _real_four_files(fbs_a=(0, 0, 84, 0), *, include_second=True, obsolete=False
     product_rows = [["ART-A", "A", 100, 1000, "10%", 1]]
     if include_second: product_rows.append(["ART-B", "B", 100, 1000, "10%", 1])
     if obsolete: product_rows.append(["OLD-ARTICLE", "Старый", 100, 1000, "10%", 1])
-    unitka = make_real_unitka(product_rows=product_rows)
+    unitka = make_real_unitka(product_rows=product_rows, fbo_complete=fbo_complete,
+                              product_available_qty=product_available_qty)
     return {"availability_file": ("availability.xlsx", availability),
             "restrictions_file": ("restrictions.xlsx", restrictions),
             "orders_file": ("orders.csv", orders.encode()), "unitka_file": ("Юнитка OZON.xlsx", unitka)}
@@ -279,7 +281,11 @@ def test_real_four_file_mode_fbo_fbs_article_and_sku_specific_caps():
     assert not {"MISSING_REQUIRED_HEADER", "HEADER_ROW_NOT_FOUND", "TARIFF_SHEET_NOT_FOUND"} & {d["code"] for d in payload["diagnostics"]}
     assert {(p["sku"], p["ozon_recommended_qty"], p["feasibility"]["max_supply_qty"]) for p in payload["placements"]} == {
         ("SKU-A", 10, 3), ("SKU-B", 10, 7)}
+    sku_a = next(p for p in payload["placements"] if p["sku"] == "SKU-A")
+    assert sku_a["feasibility"]["eligible_warehouses"] == ["МОСКВА_РФЦ"]
+    assert "PROHIBITED_WAREHOUSE_PRESENT" in sku_a["feasibility"]["reasons"]
     assert {a["sku"]: a["allocated_qty"] for a in payload["allocations"]} == {"SKU-A": 3, "SKU-B": 7}
+    assert "INVALID_MAX_SUPPLY_QTY" not in {d["code"] for d in payload["diagnostics"]}
     assert {item["expected_fee"] for item in payload["logistics"]} == {"69"}
     assert "PII_REAL_SHAPE" not in json.dumps(payload, ensure_ascii=False)
     obsolete = next(d for d in payload["diagnostics"] if d["code"] == "MISSING_ARTICLE_TO_SKU")
@@ -301,9 +307,20 @@ def test_fbs_stock_resolution_zero_positive_all_zero_and_conflict():
 
 
 def test_all_null_fbs_is_missing_seller_stock():
-    payload = _post_analysis(files=_real_four_files((None, None), include_second=False)).json()
+    payload = _post_analysis(files=_real_four_files(
+        (None, None), include_second=False, product_available_qty=99,
+    )).json()
     assert payload["allocations"] == []
     assert "MISSING_SELLER_AVAILABLE_STOCK" in {d["code"] for d in payload["diagnostics"]}
+
+
+def test_unitka_status_combines_valid_economics_with_invalid_fbo_tariffs():
+    response = _post_analysis(files=_real_four_files(include_second=False, fbo_complete=False))
+
+    assert response.status_code == 200
+    status = response.json()["input_statuses"]["unitka_file"]
+    assert status["ok"] is False
+    assert "UNSUPPORTED_UNITKA_TARIFF_LAYOUT" in {item["code"] for item in status["diagnostics"]}
 
 
 def test_upload_limit_is_enforced(monkeypatch):
