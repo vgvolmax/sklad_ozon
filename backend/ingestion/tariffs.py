@@ -24,17 +24,32 @@ def import_tariffs(data: bytes, report_context: ReportMeta) -> ImportResult[Tari
     workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
     matches = []
     for worksheet in workbook.worksheets:
-        first = next(worksheet.iter_rows(values_only=True), ())
-        mapped = tuple(_ALIASES.get(normalize_header(value), "") for value in first)
-        if _REQUIRED <= set(mapped):
-            matches.append((worksheet.title, mapped))
+        for header_row, first in enumerate(worksheet.iter_rows(max_row=30, values_only=True), 1):
+            names=tuple(normalize_header(value) for value in first)
+            mapped = tuple(_ALIASES.get(name, "") for name in names)
+            if _REQUIRED <= set(mapped): matches.append((worksheet.title, mapped, header_row, False)); break
+            real={"кластер поставки","кластер доставки","для товаров до 300 руб.","для товаров свыше 300 руб."}
+            if real <= set(names): matches.append((worksheet.title,names,header_row,True)); break
     if len(matches) != 1:
         workbook.close()
         code = "TARIFF_SHEET_NOT_FOUND" if not matches else "AMBIGUOUS_TARIFF_SHEETS"
         return ImportResult((), (_diag(code, "No tariff sheet matched required columns." if not matches else "Multiple sheets matched tariff columns."),), report_context)
-    name, mapped = matches[0]; worksheet = workbook[name]
+    name, mapped, header_row, real = matches[0]; worksheet = workbook[name]
     records, sources, diagnostics = [], [], []
-    for row_number, values in enumerate(worksheet.iter_rows(min_row=2, values_only=True), start=2):
+    for row_number, values in enumerate(worksheet.iter_rows(min_row=header_row+1, values_only=True), start=header_row+1):
+        if real:
+            raw=dict(zip(mapped,values,strict=False))
+            origin=normalize_text(raw.get("кластер поставки")); destination=normalize_text(raw.get("кластер доставки"))
+            volume=next((raw.get(k) for k in ("объём от","объем от","объём товара","объем товара") if k in raw),0)
+            if not origin or not destination: continue
+            try:
+                min_volume=parse_decimal(volume); low=parse_decimal(raw.get("для товаров до 300 руб.")); high=parse_decimal(raw.get("для товаров свыше 300 руб."))
+                if min_volume < 0 or low < 0 or high < 0: raise ValueError
+            except ValueError:
+                diagnostics.append(_diag("UNSUPPORTED_UNITKA_TARIFF_LAYOUT","FBO tariff row cannot be interpreted.",row=row_number)); continue
+            records.extend((TariffRow(origin,destination,min_volume,None,None,Decimal("300"),low),
+                            TariffRow(origin,destination,min_volume,None,Decimal("300"),None,high)))
+            sources.extend((row_number,row_number)); continue
         row = dict(zip(mapped, values, strict=False))
         if not any(value is not None for value in values): continue
         origin, destination = normalize_text(row.get("origin")), normalize_text(row.get("destination"))

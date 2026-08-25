@@ -2,10 +2,12 @@
 
 from decimal import Decimal
 from backend.domain.contracts import ImportResult, ProductEconomicsInput, ReportMeta
-from ._common import _diag, parse_decimal, read_source_rows
+from ._common import _diag, parse_decimal, read_source_rows, read_xlsx_tables
 from .normalization import normalize_text
 
 _HEADERS = {"sku": "sku", "артикул": "article", "себестоимость": "cost", "доступный остаток": "available", "цена": "price", "комиссия": "commission", "объём, л": "volume", "объем, л": "volume"}
+_HEADERS.update({"себестоимость единицы":"cost", "цена поставщика до скидок ozon":"price",
+                 "комиссия ozon %":"commission", "объём товара":"volume", "объем товара":"volume"})
 _REQUIRED = frozenset({"sku", "article", "cost", "available", "price", "commission", "volume"})
 
 
@@ -20,17 +22,20 @@ def _rate(value: object) -> Decimal | None:
 
 
 def import_product_economics(data: bytes, report_context: ReportMeta) -> ImportResult[ProductEconomicsInput]:
-    source = read_source_rows(data); diagnostics = list(source.diagnostics)
+    source = (read_xlsx_tables(data, lambda h: _REQUIRED <= {_HEADERS[x] for x in h if x in _HEADERS} or {"артикул","себестоимость единицы","цена поставщика до скидок ozon","комиссия ozon %"} <= set(h))
+              if data.startswith(b"PK") else read_source_rows(data)); diagnostics = list(source.diagnostics)
     keys = {_HEADERS[key] for key in source.rows[0][1] if key in _HEADERS} if source.rows else set()
-    missing = _REQUIRED - keys
+    real = "article" in keys and "cost" in keys and "price" in keys and "commission" in keys and "volume" in keys
+    missing = set() if real else _REQUIRED - keys
     if missing:
         diagnostics.append(_diag("MISSING_REQUIRED_HEADER", "Missing product economics columns.")); return ImportResult((), tuple(diagnostics), report_context)
     records, sources = [], []
     for row_number, raw in source.rows:
         row = {_HEADERS[key]: value for key, value in raw.items() if key in _HEADERS}
         sku = normalize_text(row.get("sku"))
-        if not sku:
-            diagnostics.append(_diag("MALFORMED_ROW", "SKU must be nonblank.", row=row_number)); continue
+        article = normalize_text(row.get("article"))
+        if not sku and not article:
+            diagnostics.append(_diag("MALFORMED_ROW", "SKU or article must be nonblank.", row=row_number)); continue
         try:
             cost = parse_decimal(row.get("cost"), optional=True); price = parse_decimal(row.get("price"), optional=True)
             volume = parse_decimal(row.get("volume"), optional=True)
@@ -46,5 +51,5 @@ def import_product_economics(data: bytes, report_context: ReportMeta) -> ImportR
         try: commission = _rate(row.get("commission"))
         except ValueError:
             diagnostics.append(_diag("INVALID_RATE", "Commission must be a rate from zero to one; use % for whole percentages.", row=row_number)); continue
-        records.append(ProductEconomicsInput(sku, normalize_text(row.get("article")), cost, available, price, commission, volume)); sources.append(row_number)
+        records.append(ProductEconomicsInput(sku, article, cost, available, price, commission, volume)); sources.append(row_number)
     return ImportResult(tuple(records), tuple(diagnostics), report_context, tuple(sources))

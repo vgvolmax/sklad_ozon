@@ -32,6 +32,32 @@ def read_source_rows(data: bytes) -> SourceRows:
     return SourceRows(tuple((row.source_row, row.values) for row in adapted.rows), adapted.diagnostics)
 
 
+def read_xlsx_tables(data: bytes, signature, *, all_sheets=False, scan_rows=30) -> SourceRows:
+    """Find logical XLSX headers by signature instead of assuming row one."""
+    from openpyxl import load_workbook
+    workbook = load_workbook(BytesIO(data), read_only=False, data_only=True)
+    output, diagnostics = [], []
+    for worksheet in workbook.worksheets:
+        header = None
+        for number, values in enumerate(worksheet.iter_rows(max_row=scan_rows, values_only=True), 1):
+            names = [normalize_header(value) for value in values]
+            if signature(names):
+                header = number, names
+                break
+        if header is None:
+            continue
+        number, names = header
+        for row_number, values in enumerate(worksheet.iter_rows(min_row=number + 1, values_only=True), number + 1):
+            if any(value is not None and str(value).strip() for value in values):
+                output.append((row_number, dict(zip(names, values, strict=False))))
+        if not all_sheets:
+            break
+    workbook.close()
+    if not output and header is None:
+        diagnostics.append(_diag("HEADER_ROW_NOT_FOUND", "No worksheet contained the required logical headers."))
+    return SourceRows(tuple(output), tuple(diagnostics))
+
+
 def parse_non_negative_number(value: object) -> float:
     if isinstance(value, bool) or value is None:
         raise ValueError
