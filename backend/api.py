@@ -41,6 +41,13 @@ async def read(upload,field):
 
 def response(kind,result): return {"api_version":1,"kind":kind,**wire(result)}
 
+def input_status(result):
+    return {
+        "ok": not any(diagnostic.severity == "error" for diagnostic in result.diagnostics),
+        "record_count": len(result.records),
+        "diagnostics": wire(result.diagnostics),
+    }
+
 _IMPORTERS={"availability":import_availability,"restrictions":import_restrictions,"orders":import_orders,"tariffs":import_tariffs,"product-economics":import_product_economics}
 for _kind,_importer in _IMPORTERS.items():
     async def endpoint(request:Request, kind=_kind, importer=_importer):
@@ -93,4 +100,4 @@ async def analysis(request:Request):
     for item in result.logistics: coverage[item.coverage_status.value]+=1
     diagnostics=tuple(d for item in imported for d in item.diagnostics)+result.diagnostics
     complete = not any(d.severity=='error' for d in diagnostics) and all(item.complete for item in result.economics)
-    return {"api_version":1,"complete":complete,"as_of":as_of.isoformat(),"metadata":{k:wire(v.meta) for k,v in zip(_IMPORTERS,imported)},"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"coverage":coverage,"diagnostics":wire(diagnostics)}
+    return {"api_version":1,"complete":complete,"as_of":as_of.isoformat(),"metadata":{k:wire(v.meta) for k,v in zip(_IMPORTERS,imported)},"input_statuses":{field:input_status(item) for field,item in zip(files,imported)},"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}

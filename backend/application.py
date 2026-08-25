@@ -1,6 +1,7 @@
 """Pure application orchestration for one stateless analysis request."""
 from dataclasses import dataclass
 from datetime import date
+from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
 from backend.analytics.demand import aggregate_demand, DemandResult
 from backend.analytics.routes import build_route_profile, RouteProfile
 from backend.analytics.stockout import detect_stockouts
@@ -17,10 +18,35 @@ class AnalysisDiagnostic:
     destination_cluster_id: str | None = None
 
 @dataclass(frozen=True, slots=True)
+class AnalysisSummary:
+    sku_count: int
+    placement_count: int
+    ozon_recommended_qty: int
+    allocated_qty: int
+    objective_profit: Decimal
+
+
+def build_analysis_summary(placements: tuple, allocations: tuple) -> AnalysisSummary:
+    with localcontext(Context(prec=40, rounding=ROUND_HALF_EVEN)):
+        objective_profit = sum(
+            (result.objective_profit for result in allocations),
+            start=Decimal("0"),
+        )
+    return AnalysisSummary(
+        sku_count=len({placement.sku for placement in placements}),
+        placement_count=len(placements),
+        ozon_recommended_qty=sum(placement.ozon_recommended_qty for placement in placements),
+        allocated_qty=sum(result.allocated_qty for result in allocations),
+        objective_profit=objective_profit,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class AnalysisResult:
     demand: DemandResult; observed_routes: RouteProfile; clean_routes: CleanRouteResult
     stockouts: tuple; distortions: tuple; logistics: tuple; economics: tuple
-    placements: tuple; allocations: tuple; diagnostics: tuple[AnalysisDiagnostic, ...]
+    placements: tuple; allocations: tuple; summary: AnalysisSummary
+    diagnostics: tuple[AnalysisDiagnostic, ...]
 
 def analyze(availability, restrictions, orders, tariffs, products, *, as_of: date,
             economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds) -> AnalysisResult:
@@ -96,4 +122,6 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             allocations.append(optimize_allocations(group, product.available_qty, optimizer_thresholds))
         elif product and product.available_qty is None:
             diagnostics.append(AnalysisDiagnostic("error","MISSING_SELLER_AVAILABLE_STOCK","Missing seller available stock.",sku))
-    return AnalysisResult(demand,observed,clean,stockouts,distortions,tuple(logistics_results),tuple(economics_results),placements,tuple(allocations),tuple(diagnostics))
+    allocations = tuple(allocations)
+    summary = build_analysis_summary(placements, allocations)
+    return AnalysisResult(demand,observed,clean,stockouts,distortions,tuple(logistics_results),tuple(economics_results),placements,allocations,summary,tuple(diagnostics))
