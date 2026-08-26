@@ -37,31 +37,39 @@ def _fallback_min_volume(value: object) -> Decimal:
     return parse_decimal(match.group(1))
 
 
-def _find_fbo_block(worksheet):
-    """Return the positional FBO header binding, never worksheet-wide aliases."""
-    early = tuple(worksheet.iter_rows(min_row=1, max_row=12, values_only=True))
-    for marker_row, values in enumerate(early, 1):
-        for marker_col, value in enumerate(values, 1):
-            if normalize_header(value) != "fbo":
+def _structural_fbo_markers(worksheet):
+    """Find FBO section labels accompanied by sibling Unitka section labels."""
+    markers = []
+    for row_number, values in enumerate(
+        worksheet.iter_rows(min_row=1, max_row=12, values_only=True), 1
+    ):
+        normalized = tuple(normalize_header(value) for value in values)
+        for fbo_index, name in enumerate(normalized):
+            if name != "fbo":
                 continue
-            next_marker = next((column for column in range(marker_col + 1, len(values) + 1)
-                                if normalize_header(values[column - 1])), worksheet.max_column + 1)
-            for header_row in range(marker_row + 1, min(marker_row + 8, 31)):
-                headers = [normalize_header(worksheet.cell(header_row, col).value)
-                           for col in range(marker_col, next_marker)]
-                binding = {_FBO_HEADERS[name]: marker_col + offset for offset, name in enumerate(headers)
-                           if name in _FBO_HEADERS}
-                if _FBO_REQUIRED <= binding.keys() and ({"min_volume", "volume_label"} & binding.keys()):
-                    return header_row, binding
+            fbs_index = next(
+                (index for index in range(fbo_index + 1, len(normalized))
+                 if normalized[index] == "fbs"),
+                None,
+            )
+            if fbs_index is not None and any(
+                name == "базовый тариф" for name in normalized[fbs_index + 1:]
+            ):
+                markers.append((row_number, fbo_index + 1, fbs_index + 1))
+    return tuple(markers)
+
+
+def _find_fbo_block(worksheet, marker):
+    """Return the positional FBO header binding, never worksheet-wide aliases."""
+    marker_row, marker_col, next_marker = marker
+    for header_row in range(marker_row + 1, min(marker_row + 8, 31)):
+        headers = [normalize_header(worksheet.cell(header_row, col).value)
+                   for col in range(marker_col, next_marker)]
+        binding = {_FBO_HEADERS[name]: marker_col + offset for offset, name in enumerate(headers)
+                   if name in _FBO_HEADERS}
+        if _FBO_REQUIRED <= binding.keys() and ({"min_volume", "volume_label"} & binding.keys()):
+            return header_row, binding
     return None
-
-
-def _has_fbo_marker(worksheet) -> bool:
-    return any(
-        normalize_header(value) == "fbo"
-        for row in worksheet.iter_rows(min_row=1, max_row=12, values_only=True)
-        for value in row
-    )
 
 
 def _import_fbo(worksheet, header_row, binding, report_context):
@@ -98,14 +106,18 @@ def import_tariffs(data: bytes, report_context: ReportMeta) -> ImportResult[Tari
     if not data.startswith(b"PK"):
         return ImportResult((), (_diag("TARIFF_SHEET_NOT_FOUND", "Tariffs require an XLSX workbook with a recognizable tariff sheet."),), report_context)
     workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
-    fbo_sheets = [worksheet for worksheet in workbook.worksheets if _has_fbo_marker(worksheet)]
-    fbo_matches = [(worksheet, block) for worksheet in fbo_sheets
-                   if (block := _find_fbo_block(worksheet)) is not None]
-    if fbo_sheets:
-        if len(fbo_matches) > 1:
+    fbo_sections = [
+        (worksheet, marker)
+        for worksheet in workbook.worksheets
+        for marker in _structural_fbo_markers(worksheet)
+    ]
+    fbo_matches = [(worksheet, block) for worksheet, marker in fbo_sections
+                   if (block := _find_fbo_block(worksheet, marker)) is not None]
+    if fbo_sections:
+        if len(fbo_sections) > 1:
             workbook.close()
             return ImportResult((), (_diag("AMBIGUOUS_TARIFF_SHEETS", "Multiple sheets contain an FBO tariff section."),), report_context)
-        if len(fbo_sheets) != 1 or not fbo_matches:
+        if not fbo_matches:
             workbook.close()
             return ImportResult((), (_diag(
                 "UNSUPPORTED_UNITKA_TARIFF_LAYOUT",
@@ -120,29 +132,14 @@ def import_tariffs(data: bytes, report_context: ReportMeta) -> ImportResult[Tari
         for header_row, first in enumerate(worksheet.iter_rows(max_row=30, values_only=True), 1):
             names=tuple(normalize_header(value) for value in first)
             mapped = tuple(_ALIASES.get(name, "") for name in names)
-            if _REQUIRED <= set(mapped): matches.append((worksheet.title, mapped, header_row, False)); break
-            real={"кластер поставки","кластер доставки","для товаров до 300 руб.","для товаров свыше 300 руб."}
-            if real <= set(names): matches.append((worksheet.title,names,header_row,True)); break
+            if _REQUIRED <= set(mapped): matches.append((worksheet.title, mapped, header_row)); break
     if len(matches) != 1:
         workbook.close()
         code = "TARIFF_SHEET_NOT_FOUND" if not matches else "AMBIGUOUS_TARIFF_SHEETS"
         return ImportResult((), (_diag(code, "No tariff sheet matched required columns." if not matches else "Multiple sheets matched tariff columns."),), report_context)
-    name, mapped, header_row, real = matches[0]; worksheet = workbook[name]
+    name, mapped, header_row = matches[0]; worksheet = workbook[name]
     records, sources, diagnostics = [], [], []
     for row_number, values in enumerate(worksheet.iter_rows(min_row=header_row+1, values_only=True), start=header_row+1):
-        if real:
-            raw=dict(zip(mapped,values,strict=False))
-            origin=normalize_text(raw.get("кластер поставки")); destination=normalize_text(raw.get("кластер доставки"))
-            volume=next((raw.get(k) for k in ("объём от","объем от","объём товара","объем товара") if k in raw),0)
-            if not origin or not destination: continue
-            try:
-                min_volume=parse_decimal(volume); low=parse_decimal(raw.get("для товаров до 300 руб.")); high=parse_decimal(raw.get("для товаров свыше 300 руб."))
-                if min_volume < 0 or low < 0 or high < 0: raise ValueError
-            except ValueError:
-                diagnostics.append(_diag("UNSUPPORTED_UNITKA_TARIFF_LAYOUT","FBO tariff row cannot be interpreted.",row=row_number)); continue
-            records.extend((TariffRow(origin,destination,min_volume,None,None,Decimal("300"),low),
-                            TariffRow(origin,destination,min_volume,None,Decimal("300"),None,high)))
-            sources.extend((row_number,row_number)); continue
         row = dict(zip(mapped, values, strict=False))
         if not any(value is not None for value in values): continue
         origin, destination = normalize_text(row.get("origin")), normalize_text(row.get("destination"))
