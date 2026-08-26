@@ -123,6 +123,7 @@ def _real_four_files(fbs_a=(0, 0, 84, 0), *, include_second=True, obsolete=False
     if include_second: product_rows.append(["ART-B", "B", 100, 1000, "10%", 1])
     if obsolete: product_rows.append(["OLD-ARTICLE", "Старый", 100, 1000, "10%", 1])
     unitka = make_real_unitka(product_rows=product_rows, fbo_complete=fbo_complete,
+                              economics_scheme_fbo=True,
                               product_available_qty=product_available_qty)
     return {"availability_file": ("availability.xlsx", availability),
             "restrictions_file": ("restrictions.xlsx", restrictions),
@@ -277,6 +278,7 @@ def test_real_four_file_mode_fbo_fbs_article_and_sku_specific_caps():
     assert response.status_code == 200
     payload = response.json()
     assert set(payload["input_statuses"]) == {"availability_file", "restrictions_file", "orders_file", "unitka_file"}
+    assert payload["input_statuses"]["unitka_file"]["ok"] is True
     assert payload["complete"] is True
     assert not {"MISSING_REQUIRED_HEADER", "HEADER_ROW_NOT_FOUND", "TARIFF_SHEET_NOT_FOUND"} & {d["code"] for d in payload["diagnostics"]}
     assert {(p["sku"], p["ozon_recommended_qty"], p["feasibility"]["max_supply_qty"]) for p in payload["placements"]} == {

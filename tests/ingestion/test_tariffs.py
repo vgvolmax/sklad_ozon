@@ -58,6 +58,46 @@ def test_real_unitka_selects_only_fbo_and_builds_half_open_volume_tiers():
         (Decimal("800.001"), None)]
 
 
+def test_economics_and_reference_fbo_values_do_not_count_as_tariff_sections():
+    result = import_tariffs(make_real_unitka(
+        economics_scheme_fbo=True,
+        extra_fbo_data_sheets=2,
+    ), META)
+
+    assert [record.logistics_fee for record in result.records] == [Decimal("18"), Decimal("69")]
+    assert result.diagnostics == ()
+    assert {record.logistics_fee for record in result.records}.isdisjoint(
+        {Decimal("118"), Decimal("169"), Decimal("5"), Decimal("15")}
+    )
+
+
+def test_stray_fbo_without_tariff_structure_is_not_a_unitka_section():
+    result = import_tariffs(make_multisheet_xlsx([
+        ("Справочник", ["Схема работы"], [["FBO"]]),
+    ]), META)
+
+    assert result.records == ()
+    assert [diagnostic.code for diagnostic in result.diagnostics] == ["TARIFF_SHEET_NOT_FOUND"]
+
+
+def test_multiple_structural_fbo_sections_are_ambiguous():
+    result = import_tariffs(make_real_unitka(duplicate_tariff_section=True), META)
+
+    assert result.records == ()
+    assert [diagnostic.code for diagnostic in result.diagnostics] == ["AMBIGUOUS_TARIFF_SHEETS"]
+
+
+def test_markerless_unitka_headers_do_not_use_worksheet_wide_fallback():
+    result = import_tariffs(make_xlsx(
+        headers=["Кластер поставки", "Кластер доставки", "Для товаров до 300 руб.",
+                 "Для товаров свыше 300 руб."],
+        rows=[["Москва", "Москва", 18, 69]],
+    ), META)
+
+    assert result.records == ()
+    assert [diagnostic.code for diagnostic in result.diagnostics] == ["TARIFF_SHEET_NOT_FOUND"]
+
+
 def test_fbo_marker_with_incomplete_block_fails_closed_without_fbs_or_base_fallback():
     result = import_tariffs(make_real_unitka(fbo_complete=False), META)
 
