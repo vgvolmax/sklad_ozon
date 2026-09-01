@@ -46,6 +46,24 @@ def test_missing_and_duplicate_headers_are_structural_errors():
     assert [d.code for d in duplicate.diagnostics] == ["DUPLICATE_HEADER"]
 
 
+def test_duplicate_normalized_xlsx_headers_are_structural_errors():
+    duplicate = import_availability(make_xlsx(
+        headers=["SKU", " sku ", "Склад", "Кластер", "Доступно"],
+        rows=[["1", "2", "W", "C", 1]],
+    ), META)
+
+    assert duplicate.records == ()
+    diagnostic = next(d for d in duplicate.diagnostics if d.code == "DUPLICATE_HEADER")
+    assert diagnostic.field == "sku"
+
+
+def test_legitimate_single_a1_cell_does_not_report_dimension_repair():
+    result = import_availability(make_xlsx(headers=["SKU"], rows=[]), META)
+
+    assert result.records == ()
+    assert "WORKSHEET_DIMENSION_REPAIRED" not in {d.code for d in result.diagnostics}
+
+
 def test_non_finite_quantity_is_rejected():
     result = import_availability("SKU,Склад,Кластер,Доступно\n1,W,C,NaN\n".encode(), META)
     assert result.records == ()
