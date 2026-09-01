@@ -5,7 +5,8 @@ SkladOzon.createNdjsonParser = function (onEvent) {
 };
 SkladOzon.boot = function () {
   const form=document.querySelector('#analysis-form'), button=form.querySelector('button'), panel=document.querySelector('#loading'), error=document.querySelector('#server-error');
-  const bar=document.querySelector('#analysis-progress'), message=document.querySelector('#progress-message'), stage=document.querySelector('#progress-stage'), count=document.querySelector('#progress-count'), time=document.querySelector('#progress-time');
+  const bar=document.querySelector('#analysis-progress'), message=document.querySelector('#progress-message'), stage=document.querySelector('#progress-stage'), detail=document.querySelector('#progress-detail'), count=document.querySelector('#progress-count'), time=document.querySelector('#progress-time');
+  const reportLabels={availability:'Доступность товаров',restrictions:'Ограничения складов',orders:'История заказов',unitka:'Юнитка Ozon',economics:'Тарифы и экономика'};
   form.querySelector('[name=as_of]').value=new Date().toISOString().slice(0,10);
   form.addEventListener('submit', async (event) => {
     event.preventDefault(); button.disabled=true; panel.hidden=false; panel.classList.remove('error'); error.textContent='';bar.value=0;
@@ -21,7 +22,7 @@ SkladOzon.boot = function () {
       if(!gotResult)throw new Error('Поток завершён без результата');
       function handle(item){
         if(!item||!['progress','result','error'].includes(item.type))throw new Error('Некорректное событие протокола');
-        if(item.type==='progress'){message.textContent=item.message;stage.textContent=`Этап ${item.stage_index} из ${item.stage_count}`;count.textContent=item.total?`${item.current} / ${item.total}`:'';bar.value=((item.stage_index-1)+(item.total?item.current/item.total:0))/item.stage_count*100;}
+        if(item.type==='progress'){message.textContent=item.message;stage.textContent=`Этап ${item.stage_index} из ${item.stage_count}`;detail.textContent=reportLabels[item.detail]||'';count.textContent=item.total?`${item.current} / ${item.total}`:'';bar.value=((item.stage_index-1)+(item.total?item.current/item.total:0))/item.stage_count*100;}
         else if(item.type==='result'){gotResult=true;bar.value=100;message.textContent=`Готово за ${(item.elapsed_ms/1000).toFixed(1)} с`;stage.textContent='Этап 9 из 9';count.textContent='';render(item.data);}
         else {panel.classList.add('error');message.textContent=`Ошибка на этапе «${message.textContent}»`;throw new Error(item.error?.message||'Ошибка анализа');}
       }

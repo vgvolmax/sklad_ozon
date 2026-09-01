@@ -20,6 +20,7 @@ from backend.ingestion.restrictions import import_restrictions
 from backend.ingestion.orders import import_orders
 from backend.ingestion.tariffs import import_tariffs
 from backend.ingestion.product_economics import import_product_economics
+from backend.ingestion.unitka import import_unitka_bundle
 from backend.project import EconomicsSettings, OptimizerThresholds
 MAX_UPLOAD_BYTES=64*1024*1024
 router=APIRouter()
@@ -51,8 +52,10 @@ def wire(value):
 
 def error(status,code,message,field): return JSONResponse({"api_version":1,"error":{"code":code,"message":message,"field":field}},status_code=status)
 def meta(upload): return ReportMeta(PurePath(upload.filename or 'upload').name,datetime.now(timezone.utc).isoformat())
-async def read(upload,field):
+async def read(upload,field,request_id="http"):
+    started=perf_counter()
     data=await upload.read(MAX_UPLOAD_BYTES+1)
+    logger.info("[analysis %s] multipart_read done %.3fs field=%s bytes=%d",request_id,perf_counter()-started,field,len(data))
     if len(data)>MAX_UPLOAD_BYTES: raise OverflowError(field)
     return data
 
@@ -88,12 +91,12 @@ async def import_unitka(request:Request):
     form=await request.form(); upload=form.get('file')
     if upload is None:return error(400,'MISSING_FIELD','Required multipart field is missing.','file')
     data=await read(upload,'file'); context=meta(upload)
-    products=import_product_economics(data,context); tariffs=import_tariffs(data,context)
+    bundle=import_unitka_bundle(data,context); products=bundle.product_economics; tariffs=bundle.tariffs
     return {"api_version":1,"kind":"unitka","product_economics":wire(products.records),"tariffs":wire(tariffs.records),
             "diagnostics":wire(products.diagnostics+tariffs.diagnostics),"meta":wire(context),
             "record_sources":{"product_economics":list(products.record_sources),"tariffs":list(tariffs.record_sources)}}
 
-async def prepare_analysis(request:Request):
+async def prepare_analysis(request:Request, request_id="http"):
     form=await request.form(); common=['availability_file','restrictions_file','orders_file']
     for field in common:
         if form.get(field) is None:return error(400,'MISSING_FIELD','Required multipart field is missing.',field)
@@ -116,27 +119,28 @@ async def prepare_analysis(request:Request):
     if tax not in {'usn_income','usn_income_minus_expenses','osno','manual'}:return error(400,'INVALID_TAX_SYSTEM','Unsupported tax system.','tax_system')
     raw=[]
     for field in files:
-        try: raw.append((form[field],await read(form[field],field)))
+        try: raw.append((form[field],await read(form[field],field,request_id)))
         except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.',field)
     return raw, unitka, files, values, tax, as_of
 
 @router.post('/api/analysis')
 async def analysis(request:Request):
-    prepared=await prepare_analysis(request)
+    request_id=uuid4().hex[:8]
+    prepared=await prepare_analysis(request,request_id)
     if isinstance(prepared,JSONResponse): return prepared
-    return run_analysis_pipeline(*prepared)
+    return run_analysis_pipeline(*prepared,request_id=request_id)
 
 @router.post('/api/analysis/stream')
 async def analysis_stream(request:Request):
-    prepared=await prepare_analysis(request)
-    if isinstance(prepared,JSONResponse): return prepared
     request_id=uuid4().hex[:8]
+    prepared=await prepare_analysis(request,request_id)
+    if isinstance(prepared,JSONResponse): return prepared
     events=Queue()
     cancelled=Event()
     started=perf_counter()
     last_stage={"name":"preparing","started":started,"percent":-1}
 
-    def emit(stage,current=None,total=None):
+    def emit(stage,current=None,total=None,detail=None):
         if cancelled.is_set(): raise AnalysisCancelled
         now=perf_counter(); index,message=STAGES[stage]
         percent=(current*100//total) if current is not None and total else None
@@ -149,13 +153,14 @@ async def analysis_stream(request:Request):
         event={"type":"progress","request_id":request_id,"stage":stage,"stage_index":index,
                "stage_count":len(STAGES),"message":message,"elapsed_ms":round((now-started)*1000)}
         if current is not None:event.update(current=current,total=total)
+        if detail is not None:event["detail"]=detail
         events.put(event)
 
     def worker():
         logger.info("[analysis %s] started",request_id)
         try:
             emit("preparing",0,len(prepared[2]))
-            result=run_analysis_pipeline(*prepared,progress_callback=emit)
+            result=run_analysis_pipeline(*prepared,progress_callback=emit,request_id=request_id)
             now=perf_counter()
             logger.info("[analysis %s] complete total=%.3fs",request_id,now-started)
             events.put({"type":"result","request_id":request_id,"elapsed_ms":round((now-started)*1000),"data":result})
@@ -183,18 +188,36 @@ class AnalysisCancelled(Exception):
     """Internal cooperative cancellation at progress boundaries."""
 
 
-def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_callback=None):
+def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_callback=None, request_id="http"):
     """Run imports, joins, domain analysis and serialization for both transports."""
-    def progress(stage, current=None, total=None):
+    def progress(stage, current=None, total=None, detail=None):
         if progress_callback is not None:
-            progress_callback(stage, current, total)
+            progress_callback(stage, current, total, detail)
 
-    progress("reports")
-    availability=import_availability(raw[0][1],meta(raw[0][0])); restrictions=import_restrictions(raw[1][1],meta(raw[1][0])); orders=import_orders(raw[2][1],meta(raw[2][0]))
+    def timed(name, importer, data, context):
+        started=perf_counter(); result=importer(data,context)
+        logger.info("[analysis %s] %s done %.3fs rows=%d",request_id,name,perf_counter()-started,len(result.records))
+        return result
+
+    reports_started=perf_counter()
+    logger.info("[analysis %s] reports started",request_id)
+    progress("reports",1,4,"availability")
+    availability=timed("availability_import",import_availability,raw[0][1],meta(raw[0][0]))
+    progress("reports",2,4,"restrictions")
+    restrictions=timed("restrictions_import",import_restrictions,raw[1][1],meta(raw[1][0]))
+    progress("reports",3,4,"orders")
+    orders=timed("orders_import",import_orders,raw[2][1],meta(raw[2][0]))
+    progress("reports",4,4,"unitka" if unitka is not None else "economics")
+
     if unitka is not None:
-        tariffs=import_tariffs(raw[3][1],meta(raw[3][0])); products=import_product_economics(raw[3][1],meta(raw[3][0]))
+        def unitka_timing(name, duration, rows):
+            suffix="" if rows is None else f" rows={rows}"
+            logger.info("[analysis %s] %s done %.3fs%s",request_id,name,duration,suffix)
+        bundle=import_unitka_bundle(raw[3][1],meta(raw[3][0]),timing=unitka_timing)
+        tariffs,products=bundle.tariffs,bundle.product_economics
     else:
-        tariffs=import_tariffs(raw[3][1],meta(raw[3][0])); products=import_product_economics(raw[4][1],meta(raw[4][0]))
+        tariffs=timed("tariffs_import",import_tariffs,raw[3][1],meta(raw[3][0])); products=timed("product_economics_import",import_product_economics,raw[4][1],meta(raw[4][0]))
+    join_started=perf_counter()
     primary={}; primary_conflicts=set()
     for item in availability.records:
         if not item.article: continue
@@ -217,6 +240,8 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_ca
         if sku:joined.append(replace(product,sku=sku))
         else:join_diags.append(ImportDiagnostic('warning','MISSING_ARTICLE_TO_SKU','Unitka article is outside the current SKU universe.'))
     products=replace(products,records=tuple(joined),diagnostics=products.diagnostics+tuple(join_diags))
+    logger.info("[analysis %s] article_join done %.3fs rows=%d",request_id,perf_counter()-join_started,len(products.records))
+    logger.info("[analysis %s] reports done %.3fs",request_id,perf_counter()-reports_started)
     imported=[availability,restrictions,orders,tariffs,products]
     settings=EconomicsSettings(*(values[n] for n in DECIMAL_NAMES[:4]),tax,*(values[n] for n in DECIMAL_NAMES[4:7])); thresholds=OptimizerThresholds(*(values[n] for n in DECIMAL_NAMES[7:]))
     result=analyze(availability.records,restrictions.records,orders.records,tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,progress_callback=progress_callback)

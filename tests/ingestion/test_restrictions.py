@@ -49,3 +49,15 @@ def test_real_multisheet_restrictions_preserve_prohibited_dash():
     assert [(r.sku, r.state, r.max_supply_qty) for r in result.records] == [
         ("SKU-1", RestrictionState.PROHIBITED, None), ("SKU-2", RestrictionState.ALLOWED, None)]
     assert "INVALID_MAX_SUPPLY_QTY" not in {d.code for d in result.diagnostics}
+
+
+def test_empty_auxiliary_sheet_does_not_report_dimension_repair():
+    data = make_multisheet_xlsx([
+        ("Пустой", [None], []),
+        ("Ограничения", ["SKU", "Склад", "Статус"], [["1", "W", "Разрешено"]]),
+    ])
+
+    result = import_restrictions(data, META)
+
+    assert [record.sku for record in result.records] == ["1"]
+    assert "WORKSHEET_DIMENSION_REPAIRED" not in {d.code for d in result.diagnostics}

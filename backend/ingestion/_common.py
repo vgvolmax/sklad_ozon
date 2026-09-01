@@ -23,7 +23,7 @@ def read_source_rows(data: bytes) -> SourceRows:
         if not adapted.rows:
             return SourceRows((), adapted.diagnostics + (_diag("MISSING_HEADER", "Worksheet header is missing."),))
         headers = [normalize_header(v) for v in adapted.rows[0].values]
-        duplicate = next((h for h in headers if h and headers.count(h) > 1), None)
+        duplicate = _duplicate_header(headers)
         if duplicate:
             return SourceRows((), adapted.diagnostics + (_diag("DUPLICATE_HEADER", f"Duplicate normalized header: {duplicate}", field=duplicate),))
         rows = tuple((row.source_row, dict(zip(headers, row.values, strict=False))) for row in adapted.rows[1:])
@@ -32,28 +32,50 @@ def read_source_rows(data: bytes) -> SourceRows:
     return SourceRows(tuple((row.source_row, row.values) for row in adapted.rows), adapted.diagnostics)
 
 
-def read_xlsx_tables(data: bytes, signature, *, all_sheets=False, scan_rows=30) -> SourceRows:
+def read_xlsx_tables(data: bytes, signature, *, all_sheets=False, scan_rows=30,
+                     workbook=None, read_only=False) -> SourceRows:
     """Find logical XLSX headers by signature instead of assuming row one."""
     from openpyxl import load_workbook
-    workbook = load_workbook(BytesIO(data), read_only=False, data_only=True)
+    owns_workbook = workbook is None
+    if owns_workbook:
+        workbook = load_workbook(BytesIO(data), read_only=read_only, data_only=True)
     output, diagnostics = [], []
+    found_header = False
     for worksheet in workbook.worksheets:
+        suspected_truncated_dimension = read_only and worksheet.calculate_dimension() == "A1:A1"
+        if suspected_truncated_dimension:
+            worksheet.reset_dimensions()
         header = None
         for number, values in enumerate(worksheet.iter_rows(max_row=scan_rows, values_only=True), 1):
+            if suspected_truncated_dimension and _has_populated_cell_outside_a1(number, values):
+                diagnostics.append(_diag("WORKSHEET_DIMENSION_REPAIRED", "Worksheet declared range was repaired before row iteration.", severity="warning"))
+                suspected_truncated_dimension = False
             names = [normalize_header(value) for value in values]
             if signature(names):
                 header = number, names
                 break
         if header is None:
             continue
+        found_header = True
         number, names = header
+        duplicate = _duplicate_header(names)
+        if duplicate:
+            if owns_workbook:
+                workbook.close()
+            return SourceRows((), tuple(diagnostics) + (_diag(
+                "DUPLICATE_HEADER", f"Duplicate normalized header: {duplicate}", field=duplicate,
+            ),))
         for row_number, values in enumerate(worksheet.iter_rows(min_row=number + 1, values_only=True), number + 1):
+            if suspected_truncated_dimension and _has_populated_cell_outside_a1(row_number, values):
+                diagnostics.append(_diag("WORKSHEET_DIMENSION_REPAIRED", "Worksheet declared range was repaired before row iteration.", severity="warning"))
+                suspected_truncated_dimension = False
             if any(value is not None and str(value).strip() for value in values):
                 output.append((row_number, dict(zip(names, values, strict=False))))
         if not all_sheets:
             break
-    workbook.close()
-    if not output and header is None:
+    if owns_workbook:
+        workbook.close()
+    if not output and not found_header:
         diagnostics.append(_diag("HEADER_ROW_NOT_FOUND", "No worksheet contained the required logical headers."))
     return SourceRows(tuple(output), tuple(diagnostics))
 
@@ -89,3 +111,15 @@ def parse_decimal(value: object, *, optional: bool = False) -> Decimal | None:
 
 def _diag(code: str, message: str, *, row=None, field=None, severity="error"):
     return ImportDiagnostic(severity=severity, code=code, message=message, row=row, field=field)
+
+
+def _duplicate_header(headers: list[str]) -> str | None:
+    return next((header for header in headers if header and headers.count(header) > 1), None)
+
+
+def _has_populated_cell_outside_a1(row_number: int, values: tuple[object, ...]) -> bool:
+    return (
+        row_number > 1 and any(value is not None for value in values)
+    ) or any(
+        value is not None for value in values[1:]
+    )
