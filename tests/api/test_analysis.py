@@ -1,6 +1,8 @@
 """End-to-end Task 17 API regressions over the real ASGI application."""
 
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, getcontext
 from enum import Enum
 import json
@@ -93,6 +95,13 @@ def _allocation(payload, cluster):
 
 def _placement(payload, cluster):
     return next(item for item in payload["placements"] if item["cluster_id"] == cluster)
+
+
+def _without_import_timestamps(payload):
+    normalized = deepcopy(payload)
+    for metadata in normalized.get("metadata", {}).values():
+        metadata.pop("imported_at", None)
+    return normalized
 
 
 def _real_four_files(fbs_a=(0, 0, 84, 0), *, include_second=True, obsolete=False,
@@ -379,7 +388,11 @@ def test_analysis_stream_emits_ordered_progress_and_equivalent_result_without_pi
     assert progress and len(results) == 1
     assert [event['stage_index'] for event in progress] == sorted(event['stage_index'] for event in progress)
     assert len({event['request_id'] for event in events}) == 1
-    assert results[0]['data'] == ordinary
+    streamed_result = results[0]["data"]
+    for payload in (ordinary, streamed_result):
+        for metadata in payload["metadata"].values():
+            datetime.fromisoformat(metadata["imported_at"])
+    assert _without_import_timestamps(streamed_result) == _without_import_timestamps(ordinary)
     assert not any(marker in streamed.text for marker in PII_MARKERS)
 
 
