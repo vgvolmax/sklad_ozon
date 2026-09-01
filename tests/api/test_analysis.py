@@ -13,7 +13,7 @@ import backend.api as api_module
 from backend.application import AnalysisSummary, build_analysis_summary
 from backend.api import MAX_UPLOAD_BYTES, wire
 from backend.main import app
-from tests.helpers.xlsx_fixtures import make_xlsx
+from tests.helpers.xlsx_fixtures import make_multisheet_xlsx, make_real_unitka, make_xlsx
 
 
 CLIENT = TestClient(app)
@@ -93,6 +93,41 @@ def _allocation(payload, cluster):
 
 def _placement(payload, cluster):
     return next(item for item in payload["placements"] if item["cluster_id"] == cluster)
+
+
+def _real_four_files(fbs_a=(0, 0, 84, 0), *, include_second=True, obsolete=False,
+                     fbo_complete=True, product_available_qty=None):
+    availability_headers = ["SKU", "Артикул", "Название товара", "Рекомендуемая поставка, шт на 56 дней",
+                            "Рекомендация", "Кластер", "Схема продаж", "Дней без остатка за 28 дней",
+                            "Доля локальных продаж", "Среднесуточные продажи, руб. за 28дн", "Признак товара",
+                            "До конца остатка FBO, дн", "До конца остатка FBS, дн", "Остаток FBO, шт",
+                            "Остаток FBS, шт", "Товары в пути на склад озон, шт", "Среднесуточные продажи, шт. за 28дн"]
+    clusters = ("Новосибирск", "Ростов", "Москва", "Уфа")
+    availability_rows = [["SKU-A", "ART-A", "Товар A", 10 if cluster == "Москва" else 0, "", cluster, "FBO", 0, 1, 1, "", 1, 1, 2, fbs, 0, 1]
+                         for cluster, fbs in zip(clusters, fbs_a)]
+    if include_second:
+        availability_rows.append(["SKU-B", "ART-B", "Товар B", 10, "", "Москва", "FBO", 0, 1, 1, "", 1, 1, 2, 20, 0, 1])
+    availability = make_xlsx(headers=[None], rows=[[None], [None], [None], [None], availability_headers, *availability_rows])
+    restriction_headers = ["Артикул", "SKU", "Название товара", "Рекомендуемая поставка на 56 дней", "Кластер", "Склад",
+                           "Возможно ли поставить товар", "Зона размещения", "Ошибки в карточке товара",
+                           "Склад оборудован под хранение товара", "Статус ликвидности: Без продаж, ограничен", "Максимальный размер поставки"]
+    restriction_rows = [["ART-A", "SKU-A", "A", 10, "Москва", "МОСКВА_РФЦ", "Да", "", "", "", "", 3],
+                        ["ART-A", "SKU-A", "A", 10, "Москва", "МОСКВА_ЗАПРЕТ", "Нет", "", "", "", "", "-"]]
+    if include_second: restriction_rows.insert(1, ["ART-B", "SKU-B", "B", 10, "Москва", "МОСКВА_РФЦ", "Да", "", "", "", "", 7])
+    restrictions = make_multisheet_xlsx([("Справка", ["meta"], [["x"]]),
+        ("Ограничения", [None], [[None], restriction_headers, *restriction_rows])])
+    order_header = "SKU;Артикул;Количество;Статус;Ваша цена;Кластер отгрузки;Кластер доставки;Склад отгрузки;Принят в обработку;Имя покупателя\n"
+    orders = order_header + "SKU-A;ART-A;1;Доставлен;1000;Москва;Москва;МОСКВА_РФЦ;2026-07-01T10:00:00;PII_REAL_SHAPE\n"
+    if include_second: orders += "SKU-B;ART-B;1;Доставлен;1000;Москва;Москва;МОСКВА_РФЦ;2026-07-01T10:00:00;PII_REAL_SHAPE\n"
+    product_rows = [["ART-A", "A", 100, 1000, "10%", 1]]
+    if include_second: product_rows.append(["ART-B", "B", 100, 1000, "10%", 1])
+    if obsolete: product_rows.append(["OLD-ARTICLE", "Старый", 100, 1000, "10%", 1])
+    unitka = make_real_unitka(product_rows=product_rows, fbo_complete=fbo_complete,
+                              economics_scheme_fbo=True,
+                              product_available_qty=product_available_qty)
+    return {"availability_file": ("availability.xlsx", availability),
+            "restrictions_file": ("restrictions.xlsx", restrictions),
+            "orders_file": ("orders.csv", orders.encode()), "unitka_file": ("Юнитка OZON.xlsx", unitka)}
 
 
 def test_wire_serializer_preserves_decimal_and_contract_types():
@@ -236,6 +271,58 @@ def test_real_availability_import_endpoint():
     assert payload["api_version"] == 1 and payload["kind"] == "availability"
     assert payload["records"][0]["recommended_quantity"] == 3
     assert {"records", "diagnostics", "meta", "record_sources"} <= payload.keys()
+
+
+def test_real_four_file_mode_fbo_fbs_article_and_sku_specific_caps():
+    response = _post_analysis(files=_real_four_files(obsolete=True))
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload["input_statuses"]) == {"availability_file", "restrictions_file", "orders_file", "unitka_file"}
+    assert payload["input_statuses"]["unitka_file"]["ok"] is True
+    assert payload["complete"] is True
+    assert not {"MISSING_REQUIRED_HEADER", "HEADER_ROW_NOT_FOUND", "TARIFF_SHEET_NOT_FOUND"} & {d["code"] for d in payload["diagnostics"]}
+    assert {(p["sku"], p["ozon_recommended_qty"], p["feasibility"]["max_supply_qty"]) for p in payload["placements"]} == {
+        ("SKU-A", 10, 3), ("SKU-B", 10, 7)}
+    sku_a = next(p for p in payload["placements"] if p["sku"] == "SKU-A")
+    assert sku_a["feasibility"]["eligible_warehouses"] == ["МОСКВА_РФЦ"]
+    assert "PROHIBITED_WAREHOUSE_PRESENT" in sku_a["feasibility"]["reasons"]
+    assert {a["sku"]: a["allocated_qty"] for a in payload["allocations"]} == {"SKU-A": 3, "SKU-B": 7}
+    assert "INVALID_MAX_SUPPLY_QTY" not in {d["code"] for d in payload["diagnostics"]}
+    assert {item["expected_fee"] for item in payload["logistics"]} == {"69"}
+    assert "PII_REAL_SHAPE" not in json.dumps(payload, ensure_ascii=False)
+    obsolete = next(d for d in payload["diagnostics"] if d["code"] == "MISSING_ARTICLE_TO_SKU")
+    assert obsolete["severity"] == "warning"
+
+
+def test_fbs_stock_resolution_zero_positive_all_zero_and_conflict():
+    unique = _post_analysis(files=_real_four_files((0, 0, 84, 0), include_second=False)).json()
+    assert unique["allocations"][0]["available_stock"] == 84
+    assert "CONFLICTING_FBS_AVAILABLE_STOCK" not in {d["code"] for d in unique["diagnostics"]}
+    duplicate = _post_analysis(files=_real_four_files((84, 0, 84), include_second=False)).json()
+    assert duplicate["allocations"][0]["available_stock"] == 84
+    zeros = _post_analysis(files=_real_four_files((0, 0, 0), include_second=False)).json()
+    assert zeros["allocations"][0]["available_stock"] == 0
+    assert "MISSING_SELLER_AVAILABLE_STOCK" not in {d["code"] for d in zeros["diagnostics"]}
+    conflict = _post_analysis(files=_real_four_files((0, 84, 120), include_second=False)).json()
+    assert conflict["allocations"] == []
+    assert "CONFLICTING_FBS_AVAILABLE_STOCK" in {d["code"] for d in conflict["diagnostics"]}
+
+
+def test_all_null_fbs_is_missing_seller_stock():
+    payload = _post_analysis(files=_real_four_files(
+        (None, None), include_second=False, product_available_qty=99,
+    )).json()
+    assert payload["allocations"] == []
+    assert "MISSING_SELLER_AVAILABLE_STOCK" in {d["code"] for d in payload["diagnostics"]}
+
+
+def test_unitka_status_combines_valid_economics_with_invalid_fbo_tariffs():
+    response = _post_analysis(files=_real_four_files(include_second=False, fbo_complete=False))
+
+    assert response.status_code == 200
+    status = response.json()["input_statuses"]["unitka_file"]
+    assert status["ok"] is False
+    assert "UNSUPPORTED_UNITKA_TARIFF_LAYOUT" in {item["code"] for item in status["diagnostics"]}
 
 
 def test_upload_limit_is_enforced(monkeypatch):

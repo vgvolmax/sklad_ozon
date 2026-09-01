@@ -49,7 +49,8 @@ class AnalysisResult:
     diagnostics: tuple[AnalysisDiagnostic, ...]
 
 def analyze(availability, restrictions, orders, tariffs, products, *, as_of: date,
-            economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds) -> AnalysisResult:
+            economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds,
+            availability_fbs_authoritative: bool = False) -> AnalysisResult:
     demand = aggregate_demand(orders, as_of)
     observed = build_route_profile(orders, as_of)
     stockouts = detect_stockouts(observed, availability)
@@ -74,9 +75,14 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
     bad_warehouses = {w for w, clusters in mappings.items() if len(clusters) > 1}
     for warehouse in sorted(bad_warehouses):
         diagnostics.append(AnalysisDiagnostic("error", "CONFLICTING_WAREHOUSE_CLUSTER", f"Warehouse {warehouse} maps to multiple clusters."))
-    warehouses = tuple(WarehouseCapability(r.warehouse, r.cluster, None) for r in sorted(availability, key=lambda x:(x.warehouse,x.cluster)) if r.warehouse not in bad_warehouses)
-    warehouses = tuple(dict.fromkeys(warehouses))
     product_map = {p.sku:p for p in products}
+    fbs = {}
+    for record in availability:
+        if getattr(record, "fbs_quantity", None) is not None: fbs.setdefault(record.sku, set()).add(record.fbs_quantity)
+    positive_fbs = {sku: {value for value in values if value > 0} for sku, values in fbs.items()}
+    conflicting_fbs = {sku for sku, values in positive_fbs.items() if len(values) > 1}
+    for sku in sorted(conflicting_fbs):
+        diagnostics.append(AnalysisDiagnostic("error", "CONFLICTING_FBS_AVAILABLE_STOCK", "Conflicting FBS seller stock values.", sku))
     skus = sorted({c.sku for c in demand.cells} | {r.sku for r in observed.routes} | {k[0] for k in rec_values})
     logistics_results=[]; economics_results=[]; candidates=[]
     for sku in skus:
@@ -114,13 +120,25 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             sources.append(PlacementSource.RECOMMENDED if qty>0 else PlacementSource.COUNTERFACTUAL)
             distortion=next((d for d in distortions if d.sku==sku and d.recommended_cluster_id==cluster),None)
             candidates.append(PlacementInput(sku,cluster,qty,tuple(sources),econ,distortion,confidence))
-    placements=compare_placements(candidates, restrictions, warehouses)
+    placements_list = []
+    for sku in skus:
+        sku_restrictions = tuple(r for r in restrictions if r.sku == sku)
+        mapped = tuple(WarehouseCapability(r.warehouse, r.cluster, r.max_supply_qty)
+                       for r in sku_restrictions if getattr(r, "cluster", ""))
+        if not mapped:
+            mapped = tuple(WarehouseCapability(r.warehouse, r.cluster, None)
+                           for r in sorted(availability, key=lambda x:(x.warehouse,x.cluster))
+                           if r.sku == sku and r.warehouse not in bad_warehouses)
+        placements_list.extend(compare_placements((c for c in candidates if c.sku == sku), sku_restrictions, tuple(dict.fromkeys(mapped))))
+    placements=tuple(sorted(placements_list, key=lambda item: (item.sku, item.cluster_id)))
     allocations=[]
     for sku in skus:
         product=product_map.get(sku); group=tuple(p for p in placements if p.sku==sku)
-        if product and product.available_qty is not None and group:
-            allocations.append(optimize_allocations(group, product.available_qty, optimizer_thresholds))
-        elif product and product.available_qty is None:
+        stock = ((next(iter(positive_fbs[sku])) if positive_fbs.get(sku) else 0) if sku in fbs and sku not in conflicting_fbs else
+                 (product.available_qty if product and sku not in fbs and not availability_fbs_authoritative else None))
+        if product and stock is not None and group:
+            allocations.append(optimize_allocations(group, stock, optimizer_thresholds))
+        elif product and sku not in conflicting_fbs:
             diagnostics.append(AnalysisDiagnostic("error","MISSING_SELLER_AVAILABLE_STOCK","Missing seller available stock.",sku))
     allocations = tuple(allocations)
     summary = build_analysis_summary(placements, allocations)

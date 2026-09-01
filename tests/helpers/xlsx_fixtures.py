@@ -49,6 +49,53 @@ def make_multisheet_xlsx(sheets: list[tuple[str, list[object], list[list[object]
     return _normalize_zip_metadata(stream.getvalue())
 
 
+def make_real_unitka(*, product_rows=None, tariff_rows=None, fbo_complete=True,
+                     product_available_qty=None, economics_scheme_fbo=False,
+                     extra_fbo_data_sheets=0, duplicate_tariff_section=False) -> bytes:
+    """Build the sanitized two-sheet shape used by operational Unitka files."""
+    workbook = Workbook()
+    economics = workbook.active
+    economics.title = "Расчёт юнит-экономики"
+    for _ in range(8):
+        economics.append([])
+    product_headers = ["Артикул", "Название товара", "Себестоимость единицы",
+                       "Цена поставщика до скидок OZON", "Комиссия OZON %", "Объём товара (л)"]
+    if economics_scheme_fbo:
+        product_headers.append("Схема работы")
+    if product_available_qty is not None:
+        product_headers.append("Доступный остаток")
+    economics.append(product_headers)
+    for row in product_rows or [["ART-1", "Товар", 100, 1000, "10%", 1]]:
+        values = [*row, "FBO"] if economics_scheme_fbo else list(row)
+        economics.append([*values, product_available_qty] if product_available_qty is not None else values)
+    for index in range(extra_fbo_data_sheets):
+        reference = workbook.create_sheet(f"Справочник {index + 1}")
+        reference.append(["Схема работы", "Комментарий"])
+        reference.append(["FBO", "обычное значение"])
+    tariffs = workbook.create_sheet("Логистика с 28 августа 2026г.")
+    tariffs.cell(2, 2, "FBO"); tariffs.cell(2, 12, "FBS"); tariffs.cell(2, 23, "Базовый тариф")
+    headers = ["Диапазон объёма ОТ", "RANG", "key", "Объём товара", "Кластер поставки",
+               "Кластер доставки", "Для товаров до 300 руб.", "Для товаров свыше 300 руб."]
+    for start in (2, 12, 23):
+        for offset, header in enumerate(headers): tariffs.cell(4, start + offset, header)
+    if not fbo_complete:
+        tariffs.cell(4, 9).value = None
+    rows = tariff_rows or [(0, "0-0,200 л", "Москва", "Москва", 18, 69)]
+    for index, (minimum, label, origin, destination, low, high) in enumerate(rows, 5):
+        values = [minimum, "", "", label, origin, destination, low, high]
+        for offset, value in enumerate(values): tariffs.cell(index, 2 + offset, value)
+        fallback_volume = minimum if not fbo_complete else label
+        for offset, value in enumerate([minimum + 1000, "", "", fallback_volume, origin, destination, low + 100, high + 100]): tariffs.cell(index, 12 + offset, value)
+        for offset, value in enumerate([minimum, "", "", fallback_volume, origin, destination, 5, 15]): tariffs.cell(index, 23 + offset, value)
+    if duplicate_tariff_section:
+        duplicate = workbook.create_sheet("Логистика (копия)")
+        for row in tariffs.iter_rows():
+            for cell in row:
+                duplicate.cell(cell.row, cell.column, cell.value)
+    stream = BytesIO(); workbook.save(stream); workbook.close()
+    return _normalize_zip_metadata(stream.getvalue())
+
+
 def worksheet_xml(payload: bytes) -> bytes:
     """Expose worksheet XML so tests can independently prove fixture shape."""
     with ZipFile(BytesIO(payload)) as archive:

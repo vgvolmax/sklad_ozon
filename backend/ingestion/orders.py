@@ -10,6 +10,8 @@ _REQUIRED = {"sku", "количество", "цена продавца", "кла
 
 def import_orders(data: bytes, report_context: ReportMeta) -> ImportResult[OrderRecord]:
     source = read_source_rows(data); diagnostics = list(source.diagnostics)
+    if source.rows and "ваша цена" in source.rows[0][1]:
+        source = type(source)(tuple((n, {**r, "цена продавца": r.get("ваша цена")}) for n,r in source.rows), source.diagnostics)
     missing = _REQUIRED - source.rows[0][1].keys() if source.rows else (_REQUIRED if not diagnostics else set())
     if missing:
         diagnostics.append(_diag("MISSING_REQUIRED_HEADER", f"Missing order headers: {', '.join(sorted(missing))}"))
@@ -43,7 +45,7 @@ def import_orders(data: bytes, report_context: ReportMeta) -> ImportResult[Order
             sku=sku, quantity=int(quantity_number), origin_cluster=origin,
             destination_cluster=destination, lifecycle=lifecycle,
             accepted_at=normalize_text(row.get("принят в обработку")), raw_status=raw_status,
-            article=normalize_text(row.get("артикул продавца")),
+            article=normalize_text(row.get("артикул продавца") or row.get("артикул")),
             product_name=normalize_text(row.get("название товара")), seller_price=price,
             origin_warehouse=normalize_text(row.get("склад отгрузки")) or None,
         )); sources.append(row_number)
