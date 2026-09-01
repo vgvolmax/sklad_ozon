@@ -1,6 +1,8 @@
 """End-to-end Task 17 API regressions over the real ASGI application."""
 
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, getcontext
 from enum import Enum
 import json
@@ -93,6 +95,13 @@ def _allocation(payload, cluster):
 
 def _placement(payload, cluster):
     return next(item for item in payload["placements"] if item["cluster_id"] == cluster)
+
+
+def _without_import_timestamps(payload):
+    normalized = deepcopy(payload)
+    for metadata in normalized.get("metadata", {}).values():
+        metadata.pop("imported_at", None)
+    return normalized
 
 
 def _real_four_files(fbs_a=(0, 0, 84, 0), *, include_second=True, obsolete=False,
@@ -365,3 +374,34 @@ def test_upload_limit_and_thin_frontend_contract():
     assert "parseFloat(data.summary.objective_profit" not in source
     assert "data.input_statuses" in source
     assert all(label in source for label in ("Выбран", "Проверено", "Есть ошибки"))
+
+
+def test_analysis_stream_emits_ordered_progress_and_equivalent_result_without_pii():
+    files = _analysis_files(pii=True)
+    ordinary = CLIENT.post('/api/analysis', files=files, data=_analysis_data()).json()
+    streamed = CLIENT.post('/api/analysis/stream', files=_analysis_files(pii=True), data=_analysis_data())
+    assert streamed.status_code == 200
+    assert streamed.headers['content-type'].startswith('application/x-ndjson')
+    events = [json.loads(line) for line in streamed.text.splitlines()]
+    progress = [event for event in events if event['type'] == 'progress']
+    results = [event for event in events if event['type'] == 'result']
+    assert progress and len(results) == 1
+    assert [event['stage_index'] for event in progress] == sorted(event['stage_index'] for event in progress)
+    assert len({event['request_id'] for event in events}) == 1
+    streamed_result = results[0]["data"]
+    for payload in (ordinary, streamed_result):
+        for metadata in payload["metadata"].values():
+            datetime.fromisoformat(metadata["imported_at"])
+    assert _without_import_timestamps(streamed_result) == _without_import_timestamps(ordinary)
+    assert not any(marker in streamed.text for marker in PII_MARKERS)
+
+
+def test_analysis_stream_returns_controlled_error_event(monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError('SECRET TRACEBACK VALUE')
+    monkeypatch.setattr(api_module, 'run_analysis_pipeline', fail)
+    response = CLIENT.post('/api/analysis/stream', files=_analysis_files(), data=_analysis_data())
+    events = [json.loads(line) for line in response.text.splitlines()]
+    assert events[-1]['type'] == 'error'
+    assert events[-1]['error']['code'] == 'ANALYSIS_FAILED'
+    assert 'SECRET' not in response.text

@@ -3,9 +3,16 @@ from dataclasses import asdict, is_dataclass, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from enum import Enum
+import asyncio
+import json
+import logging
 from pathlib import PurePath
+from queue import Queue
+from threading import Event, Thread
+from time import perf_counter
+from uuid import uuid4
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from backend.application import analyze
 from backend.domain.contracts import ReportMeta, ImportDiagnostic
 from backend.ingestion.availability import import_availability
@@ -16,6 +23,16 @@ from backend.ingestion.product_economics import import_product_economics
 from backend.project import EconomicsSettings, OptimizerThresholds
 MAX_UPLOAD_BYTES=64*1024*1024
 router=APIRouter()
+logger=logging.getLogger(__name__)
+DECIMAL_NAMES=['acquiring_rate','advertising_rate','buyout_rate','fixed_fbo_fee','income_tax_rate','vat_rate','co_invest_rate','min_profit_per_unit','min_margin_rate','min_roi']
+STAGES={
+    "preparing":(1,"Подготовка файлов"), "reports":(2,"Чтение отчётов"),
+    "demand":(3,"Анализ спроса"), "routes":(4,"Анализ маршрутов"),
+    "distortions":(5,"Поиск искажений остатков"),
+    "logistics_economics":(6,"Расчёт логистики и экономики"),
+    "placements":(7,"Проверка размещений"), "optimizer":(8,"Оптимизация поставки"),
+    "serialization":(9,"Подготовка результата"),
+}
 
 def _decimal_string(value: Decimal) -> str:
     text = format(value, "f")
@@ -76,8 +93,7 @@ async def import_unitka(request:Request):
             "diagnostics":wire(products.diagnostics+tariffs.diagnostics),"meta":wire(context),
             "record_sources":{"product_economics":list(products.record_sources),"tariffs":list(tariffs.record_sources)}}
 
-@router.post('/api/analysis')
-async def analysis(request:Request):
+async def prepare_analysis(request:Request):
     form=await request.form(); common=['availability_file','restrictions_file','orders_file']
     for field in common:
         if form.get(field) is None:return error(400,'MISSING_FIELD','Required multipart field is missing.',field)
@@ -87,8 +103,8 @@ async def analysis(request:Request):
     files=common+(['unitka_file'] if unitka is not None else ['tariffs_file','product_economics_file'])
     try: as_of=date.fromisoformat(str(form.get('as_of','')))
     except ValueError:return error(400,'INVALID_DATE','Expected YYYY-MM-DD.','as_of')
-    decimal_names=['acquiring_rate','advertising_rate','buyout_rate','fixed_fbo_fee','income_tax_rate','vat_rate','co_invest_rate','min_profit_per_unit','min_margin_rate','min_roi']; values={}
-    for name in decimal_names:
+    values={}
+    for name in DECIMAL_NAMES:
         try:
             values[name]=Decimal(str(form.get(name,'')))
             if not values[name].is_finite():raise InvalidOperation
@@ -102,6 +118,78 @@ async def analysis(request:Request):
     for field in files:
         try: raw.append((form[field],await read(form[field],field)))
         except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.',field)
+    return raw, unitka, files, values, tax, as_of
+
+@router.post('/api/analysis')
+async def analysis(request:Request):
+    prepared=await prepare_analysis(request)
+    if isinstance(prepared,JSONResponse): return prepared
+    return run_analysis_pipeline(*prepared)
+
+@router.post('/api/analysis/stream')
+async def analysis_stream(request:Request):
+    prepared=await prepare_analysis(request)
+    if isinstance(prepared,JSONResponse): return prepared
+    request_id=uuid4().hex[:8]
+    events=Queue()
+    cancelled=Event()
+    started=perf_counter()
+    last_stage={"name":"preparing","started":started,"percent":-1}
+
+    def emit(stage,current=None,total=None):
+        if cancelled.is_set(): raise AnalysisCancelled
+        now=perf_counter(); index,message=STAGES[stage]
+        percent=(current*100//total) if current is not None and total else None
+        if stage==last_stage["name"] and percent is not None and percent not in {0,100} and percent < last_stage["percent"]+1:
+            return
+        if stage!=last_stage["name"]:
+            logger.info("[analysis %s] %s done %.3fs",request_id,last_stage["name"],now-last_stage["started"])
+            last_stage.update(name=stage,started=now,percent=-1)
+        if percent is not None:last_stage["percent"]=percent
+        event={"type":"progress","request_id":request_id,"stage":stage,"stage_index":index,
+               "stage_count":len(STAGES),"message":message,"elapsed_ms":round((now-started)*1000)}
+        if current is not None:event.update(current=current,total=total)
+        events.put(event)
+
+    def worker():
+        logger.info("[analysis %s] started",request_id)
+        try:
+            emit("preparing",0,len(prepared[2]))
+            result=run_analysis_pipeline(*prepared,progress_callback=emit)
+            now=perf_counter()
+            logger.info("[analysis %s] complete total=%.3fs",request_id,now-started)
+            events.put({"type":"result","request_id":request_id,"elapsed_ms":round((now-started)*1000),"data":result})
+        except AnalysisCancelled:
+            logger.info("[analysis %s] cancelled",request_id)
+        except Exception:
+            logger.exception("[analysis %s] failed at %s",request_id,last_stage["name"])
+            events.put({"type":"error","request_id":request_id,"stage":last_stage["name"],
+                        "error":{"code":"ANALYSIS_FAILED","message":"Не удалось выполнить анализ."}})
+        finally: events.put(None)
+
+    async def stream():
+        thread=Thread(target=worker,name=f"analysis-{request_id}");thread.start()
+        try:
+            while True:
+                item=await asyncio.to_thread(events.get)
+                if item is None:break
+                yield json.dumps(item,ensure_ascii=False,separators=(",",":"))+"\n"
+        finally:
+            cancelled.set()
+            await asyncio.shield(asyncio.to_thread(thread.join))
+    return StreamingResponse(stream(),media_type="application/x-ndjson")
+
+class AnalysisCancelled(Exception):
+    """Internal cooperative cancellation at progress boundaries."""
+
+
+def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_callback=None):
+    """Run imports, joins, domain analysis and serialization for both transports."""
+    def progress(stage, current=None, total=None):
+        if progress_callback is not None:
+            progress_callback(stage, current, total)
+
+    progress("reports")
     availability=import_availability(raw[0][1],meta(raw[0][0])); restrictions=import_restrictions(raw[1][1],meta(raw[1][0])); orders=import_orders(raw[2][1],meta(raw[2][0]))
     if unitka is not None:
         tariffs=import_tariffs(raw[3][1],meta(raw[3][0])); products=import_product_economics(raw[3][1],meta(raw[3][0]))
@@ -130,8 +218,9 @@ async def analysis(request:Request):
         else:join_diags.append(ImportDiagnostic('warning','MISSING_ARTICLE_TO_SKU','Unitka article is outside the current SKU universe.'))
     products=replace(products,records=tuple(joined),diagnostics=products.diagnostics+tuple(join_diags))
     imported=[availability,restrictions,orders,tariffs,products]
-    settings=EconomicsSettings(*(values[n] for n in decimal_names[:4]),tax,*(values[n] for n in decimal_names[4:7])); thresholds=OptimizerThresholds(*(values[n] for n in decimal_names[7:]))
-    result=analyze(availability.records,restrictions.records,orders.records,tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None)
+    settings=EconomicsSettings(*(values[n] for n in DECIMAL_NAMES[:4]),tax,*(values[n] for n in DECIMAL_NAMES[4:7])); thresholds=OptimizerThresholds(*(values[n] for n in DECIMAL_NAMES[7:]))
+    result=analyze(availability.records,restrictions.records,orders.records,tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,progress_callback=progress_callback)
+    progress("serialization")
     coverage={key:0 for key in ('complete','partial','none','no_profile')}
     for item in result.logistics:coverage[item.coverage_status.value]+=1
     diagnostics=tuple(d for item in imported for d in item.diagnostics)+result.diagnostics
