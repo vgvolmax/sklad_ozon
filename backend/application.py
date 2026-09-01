@@ -1,4 +1,5 @@
 """Pure application orchestration for one stateless analysis request."""
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
@@ -50,9 +51,16 @@ class AnalysisResult:
 
 def analyze(availability, restrictions, orders, tariffs, products, *, as_of: date,
             economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds,
-            availability_fbs_authoritative: bool = False) -> AnalysisResult:
+            availability_fbs_authoritative: bool = False, progress_callback=None) -> AnalysisResult:
+    def progress(stage, current=None, total=None):
+        if progress_callback is not None:
+            progress_callback(stage, current, total)
+
+    progress("demand")
     demand = aggregate_demand(orders, as_of)
+    progress("routes")
     observed = build_route_profile(orders, as_of)
+    progress("distortions")
     stockouts = detect_stockouts(observed, availability)
     distortions = detect_recommendation_distortion(stockouts, observed)
     clean = build_clean_route_profile(observed, stockouts)
@@ -84,21 +92,44 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
     for sku in sorted(conflicting_fbs):
         diagnostics.append(AnalysisDiagnostic("error", "CONFLICTING_FBS_AVAILABLE_STOCK", "Conflicting FBS seller stock values.", sku))
     skus = sorted({c.sku for c in demand.cells} | {r.sku for r in observed.routes} | {k[0] for k in rec_values})
+    def grouped(items, key):
+        result = defaultdict(list)
+        for item in items:
+            result[key(item)].append(item)
+        return {group: tuple(values) for group, values in result.items()}
+    demand_by_sku = grouped(demand.cells, lambda item: item.sku)
+    observed_by_sku = grouped(observed.routes, lambda item: item.sku)
+    clean_by_origin = grouped(clean.clean_routes, lambda item: (item.sku, item.origin_cluster_id))
+    observed_by_origin = grouped(clean.observed_routes, lambda item: (item.sku, item.origin_cluster_id))
+    stockouts_by_sku = grouped(stockouts, lambda item: item.sku)
+    distortions_by_sku = grouped(distortions, lambda item: item.sku)
+    distortion_by_cluster = {}
+    for item in distortions:
+        distortion_by_cluster.setdefault((item.sku, item.recommended_cluster_id), item)
+    restrictions_by_sku = grouped(restrictions, lambda item: item.sku)
+    availability_by_sku = grouped(availability, lambda item: item.sku)
+    recommendations_by_sku = grouped(
+        tuple((sku, cluster, value) for (sku, cluster), value in rec_values.items()),
+        lambda item: item[0],
+    )
     logistics_results=[]; economics_results=[]; candidates=[]
-    for sku in skus:
-        clusters = {c.destination_cluster_id for c in demand.cells if c.sku==sku}
-        clusters |= {r.origin_cluster_id for r in observed.routes if r.sku==sku}
-        clusters |= {k[1] for k,v in rec_values.items() if k[0]==sku and v>0}
-        clusters |= {s.destination_cluster_id for s in stockouts if s.sku==sku}
-        clusters |= {s.recommended_cluster_id for s in distortions if s.sku==sku}
+    progress("logistics_economics", 0, len(skus))
+    for sku_index, sku in enumerate(skus, 1):
+        clusters = {c.destination_cluster_id for c in demand_by_sku.get(sku, ())}
+        clusters |= {r.origin_cluster_id for r in observed_by_sku.get(sku, ())}
+        clusters |= {item[1] for item in recommendations_by_sku.get(sku, ()) if item[2]>0}
+        clusters |= {s.destination_cluster_id for s in stockouts_by_sku.get(sku, ())}
+        clusters |= {s.recommended_cluster_id for s in distortions_by_sku.get(sku, ())}
         product=product_map.get(sku)
         if product is None:
-            diagnostics.append(AnalysisDiagnostic("error","MISSING_PRODUCT_ECONOMICS","Missing product economics.",sku)); continue
+            diagnostics.append(AnalysisDiagnostic("error","MISSING_PRODUCT_ECONOMICS","Missing product economics.",sku))
+            progress("logistics_economics", sku_index, len(skus)); continue
         if product.volume_liters is None:
-            diagnostics.append(AnalysisDiagnostic("error","MISSING_PRODUCT_VOLUME","Missing product volume.",sku)); continue
+            diagnostics.append(AnalysisDiagnostic("error","MISSING_PRODUCT_VOLUME","Missing product volume.",sku))
+            progress("logistics_economics", sku_index, len(skus)); continue
         for cluster in sorted(clusters):
-            clean_profile=tuple(r for r in clean.clean_routes if r.sku==sku and r.origin_cluster_id==cluster)
-            observed_profile=tuple(r for r in clean.observed_routes if r.sku==sku and r.origin_cluster_id==cluster)
+            clean_profile=clean_by_origin.get((sku, cluster), ())
+            observed_profile=observed_by_origin.get((sku, cluster), ())
             profile=clean_profile or observed_profile
             source=RouteProfileSource.CLEAN if clean_profile else RouteProfileSource.OBSERVED
             confidence=RouteConfidence.MEDIUM if clean_profile else RouteConfidence.LOW
@@ -118,28 +149,35 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             sources=[]
             if observed_profile: sources.append(PlacementSource.OBSERVED)
             sources.append(PlacementSource.RECOMMENDED if qty>0 else PlacementSource.COUNTERFACTUAL)
-            distortion=next((d for d in distortions if d.sku==sku and d.recommended_cluster_id==cluster),None)
+            distortion=distortion_by_cluster.get((sku, cluster))
             candidates.append(PlacementInput(sku,cluster,qty,tuple(sources),econ,distortion,confidence))
+        progress("logistics_economics", sku_index, len(skus))
+    candidates_by_sku = grouped(candidates, lambda item: item.sku)
+    progress("placements", 0, len(skus))
     placements_list = []
-    for sku in skus:
-        sku_restrictions = tuple(r for r in restrictions if r.sku == sku)
+    for sku_index, sku in enumerate(skus, 1):
+        sku_restrictions = restrictions_by_sku.get(sku, ())
         mapped = tuple(WarehouseCapability(r.warehouse, r.cluster, r.max_supply_qty)
                        for r in sku_restrictions if getattr(r, "cluster", ""))
         if not mapped:
             mapped = tuple(WarehouseCapability(r.warehouse, r.cluster, None)
-                           for r in sorted(availability, key=lambda x:(x.warehouse,x.cluster))
-                           if r.sku == sku and r.warehouse not in bad_warehouses)
-        placements_list.extend(compare_placements((c for c in candidates if c.sku == sku), sku_restrictions, tuple(dict.fromkeys(mapped))))
+                           for r in sorted(availability_by_sku.get(sku, ()), key=lambda x:(x.warehouse,x.cluster))
+                           if r.warehouse not in bad_warehouses)
+        placements_list.extend(compare_placements(candidates_by_sku.get(sku, ()), sku_restrictions, tuple(dict.fromkeys(mapped))))
+        progress("placements", sku_index, len(skus))
     placements=tuple(sorted(placements_list, key=lambda item: (item.sku, item.cluster_id)))
+    placements_by_sku = grouped(placements, lambda item: item.sku)
+    progress("optimizer", 0, len(skus))
     allocations=[]
-    for sku in skus:
-        product=product_map.get(sku); group=tuple(p for p in placements if p.sku==sku)
+    for sku_index, sku in enumerate(skus, 1):
+        product=product_map.get(sku); group=placements_by_sku.get(sku, ())
         stock = ((next(iter(positive_fbs[sku])) if positive_fbs.get(sku) else 0) if sku in fbs and sku not in conflicting_fbs else
                  (product.available_qty if product and sku not in fbs and not availability_fbs_authoritative else None))
         if product and stock is not None and group:
             allocations.append(optimize_allocations(group, stock, optimizer_thresholds))
         elif product and sku not in conflicting_fbs:
             diagnostics.append(AnalysisDiagnostic("error","MISSING_SELLER_AVAILABLE_STOCK","Missing seller available stock.",sku))
+        progress("optimizer", sku_index, len(skus))
     allocations = tuple(allocations)
     summary = build_analysis_summary(placements, allocations)
     return AnalysisResult(demand,observed,clean,stockouts,distortions,tuple(logistics_results),tuple(economics_results),placements,allocations,summary,tuple(diagnostics))
