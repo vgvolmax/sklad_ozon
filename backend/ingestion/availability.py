@@ -23,10 +23,11 @@ class AvailabilityRecord:
 
 
 def import_availability(data: bytes, report_context: ReportMeta) -> ImportResult[AvailabilityRecord]:
-    source = read_source_rows(data)
-    if data.startswith(b"PK") and not (source.rows and _REQUIRED <= source.rows[0][1].keys()):
-        source = read_xlsx_tables(data, lambda h: _REQUIRED <= set(h) or ({"sku", "кластер", "артикул"} <= set(h) and
-                                 any("рекомендуемая поставка" in x for x in h)))
+    # Operational XLSX headers may be shifted. Scan them in the first and only
+    # workbook open instead of first assuming row one and reopening on fallback.
+    source = (read_xlsx_tables(data, lambda h: _REQUIRED <= set(h) or ({"sku", "кластер", "артикул"} <= set(h) and
+                               any("рекомендуемая поставка" in x for x in h)), read_only=True)
+              if data.startswith(b"PK") else read_source_rows(data))
     diagnostics = list(source.diagnostics)
     if source.rows:
         keys = source.rows[0][1].keys()

@@ -102,10 +102,12 @@ def _import_fbo(worksheet, header_row, binding, report_context):
     return ImportResult(tuple(records), tuple(diagnostics), report_context, tuple(sources))
 
 
-def import_tariffs(data: bytes, report_context: ReportMeta) -> ImportResult[TariffRow]:
+def import_tariffs(data: bytes, report_context: ReportMeta, *, workbook=None) -> ImportResult[TariffRow]:
     if not data.startswith(b"PK"):
         return ImportResult((), (_diag("TARIFF_SHEET_NOT_FOUND", "Tariffs require an XLSX workbook with a recognizable tariff sheet."),), report_context)
-    workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
+    owns_workbook = workbook is None
+    if owns_workbook:
+        workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
     fbo_sections = [
         (worksheet, marker)
         for worksheet in workbook.worksheets
@@ -115,17 +117,17 @@ def import_tariffs(data: bytes, report_context: ReportMeta) -> ImportResult[Tari
                    if (block := _find_fbo_block(worksheet, marker)) is not None]
     if fbo_sections:
         if len(fbo_sections) > 1:
-            workbook.close()
+            if owns_workbook: workbook.close()
             return ImportResult((), (_diag("AMBIGUOUS_TARIFF_SHEETS", "Multiple sheets contain an FBO tariff section."),), report_context)
         if not fbo_matches:
-            workbook.close()
+            if owns_workbook: workbook.close()
             return ImportResult((), (_diag(
                 "UNSUPPORTED_UNITKA_TARIFF_LAYOUT",
                 "The marked FBO tariff section is incomplete or unsupported.",
             ),), report_context)
         worksheet, (header_row, binding) = fbo_matches[0]
         result = _import_fbo(worksheet, header_row, binding, report_context)
-        workbook.close()
+        if owns_workbook: workbook.close()
         return result
     matches = []
     for worksheet in workbook.worksheets:
@@ -134,7 +136,7 @@ def import_tariffs(data: bytes, report_context: ReportMeta) -> ImportResult[Tari
             mapped = tuple(_ALIASES.get(name, "") for name in names)
             if _REQUIRED <= set(mapped): matches.append((worksheet.title, mapped, header_row)); break
     if len(matches) != 1:
-        workbook.close()
+        if owns_workbook: workbook.close()
         code = "TARIFF_SHEET_NOT_FOUND" if not matches else "AMBIGUOUS_TARIFF_SHEETS"
         return ImportResult((), (_diag(code, "No tariff sheet matched required columns." if not matches else "Multiple sheets matched tariff columns."),), report_context)
     name, mapped, header_row = matches[0]; worksheet = workbook[name]
@@ -157,5 +159,5 @@ def import_tariffs(data: bytes, report_context: ReportMeta) -> ImportResult[Tari
         if max_price is not None and (max_price < 0 or min_price is not None and max_price < min_price):
             diagnostics.append(_diag("INVALID_PRICE_INTERVAL", "Maximum price must be non-negative and not below minimum price.", row=row_number)); continue
         records.append(TariffRow(origin, destination, min_volume, max_volume, min_price, max_price, fee)); sources.append(row_number)
-    workbook.close()
+    if owns_workbook: workbook.close()
     return ImportResult(tuple(records), tuple(diagnostics), report_context, tuple(sources))

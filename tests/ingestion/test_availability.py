@@ -79,3 +79,20 @@ def test_real_shape_repeated_clusters_preserve_article_recommendation_and_stock(
     assert [r.fbs_quantity for r in result.records] == [0, 0, 84, 0]
     assert all(r.article == "ART-X" and r.recommended_quantity == 10 and r.fbo_quantity == 2 for r in result.records)
     assert not {"HEADER_ROW_NOT_FOUND", "MISSING_REQUIRED_HEADER"} & {d.code for d in result.diagnostics}
+
+
+def test_shifted_operational_xlsx_is_opened_once(monkeypatch):
+    import openpyxl
+    from tests.helpers.xlsx_fixtures import make_xlsx
+    headers = ["SKU", "Артикул", "Кластер", "Остаток FBO, шт", "Остаток FBS, шт", "Рекомендуемая поставка по FBO"]
+    data = make_xlsx(headers=[None], rows=[[None]] * 4 + [headers, ["1", "A1", "Москва", 2, 1, 7]])
+    opens = 0
+    original = openpyxl.load_workbook
+    def counted(*args, **kwargs):
+        nonlocal opens
+        opens += 1
+        return original(*args, **kwargs)
+    monkeypatch.setattr(openpyxl, "load_workbook", counted)
+    result = import_availability(data, META)
+    assert len(result.records) == 1
+    assert opens == 1

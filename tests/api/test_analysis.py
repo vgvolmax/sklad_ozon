@@ -405,3 +405,17 @@ def test_analysis_stream_returns_controlled_error_event(monkeypatch):
     assert events[-1]['type'] == 'error'
     assert events[-1]['error']['code'] == 'ANALYSIS_FAILED'
     assert 'SECRET' not in response.text
+
+
+def test_analysis_stream_reports_current_import_in_order():
+    files = _analysis_files()
+    files.pop("tariffs_file")
+    files.pop("product_economics_file")
+    files["unitka_file"] = ("unitka.xlsx", make_real_unitka())
+    response = CLIENT.post('/api/analysis/stream', files=files, data=_analysis_data())
+    events = [json.loads(line) for line in response.text.splitlines()]
+    details = [event["detail"] for event in events
+               if event.get("type") == "progress" and event.get("stage") == "reports" and event.get("detail")]
+    assert details == ["availability", "restrictions", "orders", "unitka"]
+    report_events = [event for event in events if event.get("stage") == "reports" and event.get("detail")]
+    assert [(event["current"], event["total"]) for event in report_events] == [(1, 4), (2, 4), (3, 4), (4, 4)]

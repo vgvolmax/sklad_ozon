@@ -32,12 +32,18 @@ def read_source_rows(data: bytes) -> SourceRows:
     return SourceRows(tuple((row.source_row, row.values) for row in adapted.rows), adapted.diagnostics)
 
 
-def read_xlsx_tables(data: bytes, signature, *, all_sheets=False, scan_rows=30) -> SourceRows:
+def read_xlsx_tables(data: bytes, signature, *, all_sheets=False, scan_rows=30,
+                     workbook=None, read_only=False) -> SourceRows:
     """Find logical XLSX headers by signature instead of assuming row one."""
     from openpyxl import load_workbook
-    workbook = load_workbook(BytesIO(data), read_only=False, data_only=True)
+    owns_workbook = workbook is None
+    if owns_workbook:
+        workbook = load_workbook(BytesIO(data), read_only=read_only, data_only=True)
     output, diagnostics = [], []
     for worksheet in workbook.worksheets:
+        if read_only and worksheet.calculate_dimension() == "A1:A1":
+            worksheet.reset_dimensions()
+            diagnostics.append(_diag("WORKSHEET_DIMENSION_REPAIRED", "Worksheet declared range was repaired before row iteration.", severity="warning"))
         header = None
         for number, values in enumerate(worksheet.iter_rows(max_row=scan_rows, values_only=True), 1):
             names = [normalize_header(value) for value in values]
@@ -52,7 +58,8 @@ def read_xlsx_tables(data: bytes, signature, *, all_sheets=False, scan_rows=30) 
                 output.append((row_number, dict(zip(names, values, strict=False))))
         if not all_sheets:
             break
-    workbook.close()
+    if owns_workbook:
+        workbook.close()
     if not output and header is None:
         diagnostics.append(_diag("HEADER_ROW_NOT_FOUND", "No worksheet contained the required logical headers."))
     return SourceRows(tuple(output), tuple(diagnostics))

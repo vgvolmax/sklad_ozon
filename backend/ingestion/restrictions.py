@@ -29,7 +29,7 @@ class RestrictionRecord:
 
 
 def import_restrictions(data: bytes, report_context: ReportMeta) -> ImportResult[RestrictionRecord]:
-    source = (read_xlsx_tables(data, lambda h: _REQUIRED <= set(h) or {"sku","кластер","склад","возможно ли поставить товар","максимальный размер поставки"} <= set(h), all_sheets=True)
+    source = (read_xlsx_tables(data, lambda h: _REQUIRED <= set(h) or {"sku","кластер","склад","возможно ли поставить товар","максимальный размер поставки"} <= set(h), all_sheets=True, read_only=True)
               if data.startswith(b"PK") else read_source_rows(data)); diagnostics = list(source.diagnostics)
     real = bool(source.rows and "возможно ли поставить товар" in source.rows[0][1])
     if real:
