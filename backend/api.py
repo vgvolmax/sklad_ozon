@@ -14,6 +14,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from backend.application import analyze
+from backend.ingestion.cluster_resolution import resolve_analysis_clusters
 from backend.domain.contracts import ReportMeta, ImportDiagnostic
 from backend.ingestion.availability import import_availability
 from backend.ingestion.restrictions import import_restrictions
@@ -217,6 +218,13 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_ca
         tariffs,products=bundle.tariffs,bundle.product_economics
     else:
         tariffs=timed("tariffs_import",import_tariffs,raw[3][1],meta(raw[3][0])); products=timed("product_economics_import",import_product_economics,raw[4][1],meta(raw[4][0]))
+    resolution = resolve_analysis_clusters(
+        availability.records, restrictions.records, orders.records, tariffs.records, {}
+    )
+    availability = replace(availability, records=resolution.availability)
+    restrictions = replace(restrictions, records=resolution.restrictions)
+    orders = replace(orders, records=resolution.orders)
+    tariffs = replace(tariffs, records=resolution.tariffs)
     join_started=perf_counter()
     primary={}; primary_conflicts=set()
     for item in availability.records:
@@ -248,7 +256,8 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_ca
     progress("serialization")
     coverage={key:0 for key in ('complete','partial','none','no_profile')}
     for item in result.logistics:coverage[item.coverage_status.value]+=1
-    diagnostics=tuple(d for item in imported for d in item.diagnostics)+result.diagnostics
+    diagnostics=(tuple(d for item in imported for d in item.diagnostics)
+                 + resolution.diagnostics + result.diagnostics)
     complete=not any(d.severity=='error' for d in diagnostics) and all(item.complete for item in result.economics)
     statuses=([availability,restrictions,orders,products] if unitka is not None else imported)
     input_statuses={field:input_status(item) for field,item in zip(files,statuses)}
