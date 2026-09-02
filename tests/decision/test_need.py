@@ -1,5 +1,5 @@
 from dataclasses import FrozenInstanceError
-from decimal import Decimal
+from decimal import Context, Decimal, getcontext, localcontext
 
 import pytest
 
@@ -15,6 +15,9 @@ BASE = dict(
     ozon_recommended_qty=8, ozon_horizon_days=10,
 )
 
+with localcontext(Context(prec=40)):
+    EXPECTED_FORECAST = Decimal("100") / Decimal("7")
+
 
 def need(**changes):
     return calculate_need(**(BASE | changes))
@@ -22,12 +25,32 @@ def need(**changes):
 
 def test_need_rounds_only_after_stock_and_inbound_subtraction():
     result = need()
-    assert result.raw_demand_forecast == Decimal("100") / Decimal("7")
+    assert result.raw_demand_forecast == EXPECTED_FORECAST
     assert result.calculated_need_qty == 10
 
 
+@pytest.mark.parametrize("precision", [2, 10])
+def test_need_is_independent_of_global_decimal_context(precision):
+    context = getcontext()
+    original_precision = context.prec
+    original_rounding = context.rounding
+
+    try:
+        context.prec = precision
+
+        result = need()
+
+        assert result.raw_demand_forecast == EXPECTED_FORECAST
+        assert result.calculated_need_qty == 10
+        assert context.prec == precision
+        assert context.rounding == original_rounding
+    finally:
+        context.prec = original_precision
+        context.rounding = original_rounding
+
+
 def test_forecast_is_decimal_and_has_no_buffer():
-    assert forecast_horizon(Decimal("10"), 10) == Decimal("100") / Decimal("7")
+    assert forecast_horizon(Decimal("10"), 10) == EXPECTED_FORECAST
 
 
 def test_inbound_switch_changes_need_but_preserves_visible_quantity():
