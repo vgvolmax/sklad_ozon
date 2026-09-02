@@ -26,6 +26,11 @@ class PlacementSource(str, Enum):
     COUNTERFACTUAL = "counterfactual"
 
 
+class AllocationObjective(str, Enum):
+    MAX_PROFIT = "max_profit"
+    MAX_MARGIN = "max_margin"
+
+
 class RouteConfidence(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
