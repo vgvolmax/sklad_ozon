@@ -132,11 +132,16 @@ def test_availability_only_corroborates_and_never_creates_or_erases():
     assert zero[0].historical_evidence_strength is SignalConfidence.HIGH
     assert zero[0].route_cleaning_eligible is True
     assert zero[0].confidence is SignalConfidence.HIGH
-    assert zero[0].availability_corroboration is AvailabilityCorroboration.SUPPORTS
+    assert zero[0].availability_corroboration is AvailabilityCorroboration.NEUTRAL
     positive = detect_stockouts(routes, [AvailabilityRecord("SKU-1", "W", "Москва", 12)])
     assert positive[0].historical_evidence_strength is SignalConfidence.HIGH
     assert positive[0].route_cleaning_eligible is True
     assert positive[0].availability_corroboration is AvailabilityCorroboration.NEUTRAL
+
+    recent_oos = detect_stockouts(routes, [
+        AvailabilityRecord("SKU-1", "W", "Москва", 4, days_without_stock=2)
+    ])
+    assert recent_oos[0].availability_corroboration is AvailabilityCorroboration.SUPPORTS
     assert positive[0].confidence is SignalConfidence.HIGH
     no_pattern = _profile(("S","2026-08-10","D","D",100),("S","2026-08-17","D","D",100))
     assert detect_stockouts(no_pattern, [AvailabilityRecord("S", "W", "D", 0)]) == ()

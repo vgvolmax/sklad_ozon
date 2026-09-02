@@ -85,10 +85,11 @@ def detect_stockouts(
     thresholds: StockoutThresholds = StockoutThresholds(),
 ) -> tuple[StockoutSignal, ...]:
     """Return route-pattern hypotheses; current availability only corroborates."""
-    availability_totals: dict[tuple[str, str], Decimal] = {}
+    availability_support: set[tuple[str, str]] = set()
     for record in availability or ():
         key = (record.sku, record.cluster)
-        availability_totals[key] = availability_totals.get(key, Decimal(0)) + Decimal(str(record.available_quantity))
+        if record.days_without_stock is not None and record.days_without_stock > 0:
+            availability_support.add(key)
 
     metrics = _metrics(weekly_profiles)
     grouped: dict[tuple[str, str], list[tuple[int, int, _Metrics]]] = {}
@@ -124,11 +125,12 @@ def detect_stockouts(
                 continue
             historical_evidence_strength = SignalConfidence.HIGH
             route_cleaning_eligible = True
-            available = availability_totals.get((sku, destination))
-            corroboration = AvailabilityCorroboration.SUPPORTS if available == 0 else AvailabilityCorroboration.NEUTRAL
+            corroboration = (AvailabilityCorroboration.SUPPORTS
+                              if (sku, destination) in availability_support
+                              else AvailabilityCorroboration.NEUTRAL)
             codes = ["BASELINE_LOCAL_SHARE_HIGH", "LOCAL_SHARE_DROP", "EXTERNAL_REPLACEMENT_RISE", "DEMAND_RETAINED"]
             if corroboration is AvailabilityCorroboration.SUPPORTS:
-                codes.append("CURRENT_AVAILABILITY_ZERO")
+                codes.append("RECENT_DAYS_WITHOUT_STOCK")
             signals.append(StockoutSignal(
                 sku, destination,
                 historical_evidence_strength,

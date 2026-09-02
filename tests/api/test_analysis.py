@@ -105,7 +105,8 @@ def _without_import_timestamps(payload):
 
 
 def _real_four_files(fbs_a=(0, 0, 84, 0), *, include_second=True, obsolete=False,
-                     fbo_complete=True, product_available_qty=None):
+                     fbo_complete=True, product_available_qty=None,
+                     tariff_clusters=None):
     availability_headers = ["SKU", "Артикул", "Название товара", "Рекомендуемая поставка, шт на 56 дней",
                             "Рекомендация", "Кластер", "Схема продаж", "Дней без остатка за 28 дней",
                             "Доля локальных продаж", "Среднесуточные продажи, руб. за 28дн", "Признак товара",
@@ -131,7 +132,13 @@ def _real_four_files(fbs_a=(0, 0, 84, 0), *, include_second=True, obsolete=False
     product_rows = [["ART-A", "A", 100, 1000, "10%", 1]]
     if include_second: product_rows.append(["ART-B", "B", 100, 1000, "10%", 1])
     if obsolete: product_rows.append(["OLD-ARTICLE", "Старый", 100, 1000, "10%", 1])
-    unitka = make_real_unitka(product_rows=product_rows, fbo_complete=fbo_complete,
+    canonical_clusters = tariff_clusters or clusters
+    tariff_rows = [
+        (0, "0-0,200 л", cluster, cluster, 18, 69)
+        for cluster in canonical_clusters
+    ]
+    unitka = make_real_unitka(product_rows=product_rows, tariff_rows=tariff_rows,
+                              fbo_complete=fbo_complete,
                               economics_scheme_fbo=True,
                               product_available_qty=product_available_qty)
     return {"availability_file": ("availability.xlsx", availability),
@@ -220,6 +227,26 @@ def test_analysis_import_error_is_visible_in_file_status_without_short_circuitin
     status = response.json()["input_statuses"]["availability_file"]
     assert status["ok"] is False
     assert any(item["severity"] == "error" for item in status["diagnostics"])
+
+
+def test_import_status_count_is_raw_when_cluster_resolution_omits_a_row():
+    files = _analysis_files(recommendations=(1, 2, 3, 4))
+    files["availability_file"] = (
+        "availability.xlsx",
+        make_xlsx(headers=AVAILABILITY_HEADERS, rows=[
+            ["SKU-1", "W1", "Москва", 999, 1],
+            ["SKU-1", "W2", "Москва", 999, 1],
+            ["SKU-1", "W3", "Москва", 999, 1],
+            ["SKU-1", "W4", "Неизвестный", 999, 1],
+        ]),
+    )
+
+    payload = _post_analysis(files=files).json()
+
+    assert payload["input_statuses"]["availability_file"]["ok"] is True
+    assert payload["input_statuses"]["availability_file"]["record_count"] == 4
+    assert "UNRESOLVED_CLUSTER" in {item["code"] for item in payload["diagnostics"]}
+    assert payload["complete"] is False
 
 
 def test_seller_stock_not_ozon_availability_is_hard_limit():
@@ -315,6 +342,17 @@ def test_fbs_stock_resolution_zero_positive_all_zero_and_conflict():
     conflict = _post_analysis(files=_real_four_files((0, 84, 120), include_second=False)).json()
     assert conflict["allocations"] == []
     assert "CONFLICTING_FBS_AVAILABLE_STOCK" in {d["code"] for d in conflict["diagnostics"]}
+
+
+def test_unresolved_availability_does_not_hide_raw_fbs_stock_conflict():
+    payload = _post_analysis(files=_real_four_files(
+        (0, 84, 120), include_second=False,
+        tariff_clusters=("Новосибирск", "Москва", "Уфа"),
+    )).json()
+
+    assert payload["allocations"] == []
+    assert "UNRESOLVED_CLUSTER" in {item["code"] for item in payload["diagnostics"]}
+    assert "CONFLICTING_FBS_AVAILABLE_STOCK" in {item["code"] for item in payload["diagnostics"]}
 
 
 def test_all_null_fbs_is_missing_seller_stock():

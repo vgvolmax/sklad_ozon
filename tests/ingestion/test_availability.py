@@ -114,3 +114,46 @@ def test_shifted_operational_xlsx_is_opened_once(monkeypatch):
     result = import_availability(data, META)
     assert len(result.records) == 1
     assert opens == 1
+
+
+def test_real_operational_evidence_and_horizon_are_retained():
+    headers = ["SKU", "Артикул", "Название товара", "Кластер",
+               "Рекомендуемая поставка, шт на 56 дней", "Остаток FBO, шт",
+               "Остаток FBS, шт", "Дней без остатка за 28 дней",
+               "Товары в пути на склад озон, шт"]
+    result = import_availability(make_xlsx(headers=headers, rows=[
+        ["1", "A", "Товар", "Москва", 11, 3, 0, 2, None],
+        ["2", "B", "Другой", "Москва", 0, 0, 1, 0, 0],
+    ]), META)
+    assert result.meta.recommendation_horizon_days == 56
+    assert [(r.product_name, r.fbo_quantity, r.fbs_quantity,
+             r.days_without_stock, r.inbound_quantity, r.recommended_quantity)
+            for r in result.records] == [
+        ("Товар", 3, 0, 2, None, 11), ("Другой", 0, 1, 0, 0, 0),
+    ]
+
+
+def test_malformed_optional_integer_evidence_skips_rows_with_field_diagnostics():
+    headers = ["SKU", "Артикул", "Кластер", "Остаток FBO, шт",
+               "Дней без остатка за 28 дней", "Товары в пути на склад озон, шт",
+               "Рекомендуемая поставка по FBO"]
+    result = import_availability(make_xlsx(headers=headers, rows=[
+        ["1", "A", "Москва", 1, -1, 0, 1],
+        ["2", "B", "Москва", 1, 0, "abc", 1],
+        ["3", "C", "Москва", 1, 0, 1.5, 1],
+    ]), META)
+    assert result.records == ()
+    assert [d.field for d in result.diagnostics if d.code == "INVALID_NUMBER"] == [
+        "days_without_stock", "inbound_quantity", "inbound_quantity"
+    ]
+
+
+def test_conflicting_recommendation_horizons_fail_metadata_closed():
+    result = import_availability(make_xlsx(
+        headers=["SKU", "Артикул", "Кластер", "Остаток FBO, шт",
+                 "Рекомендуемая поставка, шт на 56 дней",
+                 "Рекомендуемая поставка, шт на 84 дня"],
+        rows=[["1", "A", "Москва", 1, 10, 12]],
+    ), META)
+    assert result.meta.recommendation_horizon_days is None
+    assert "CONFLICTING_RECOMMENDATION_HORIZON" in {d.code for d in result.diagnostics}
