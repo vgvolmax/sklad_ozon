@@ -221,18 +221,18 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_ca
     resolution = resolve_analysis_clusters(
         availability.records, restrictions.records, orders.records, tariffs.records, {}
     )
-    availability = replace(availability, records=resolution.availability)
-    restrictions = replace(restrictions, records=resolution.restrictions)
-    orders = replace(orders, records=resolution.orders)
-    tariffs = replace(tariffs, records=resolution.tariffs)
+    analysis_availability = resolution.availability
+    analysis_restrictions = resolution.restrictions
+    analysis_orders = resolution.orders
+    analysis_tariffs = replace(tariffs, records=resolution.tariffs)
     join_started=perf_counter()
     primary={}; primary_conflicts=set()
-    for item in availability.records:
+    for item in analysis_availability:
         if not item.article: continue
         if item.article in primary and primary[item.article]!=item.sku: primary_conflicts.add(item.article)
         else: primary[item.article]=item.sku
     fallback={}
-    for item in orders.records:
+    for item in analysis_orders:
         if item.article:fallback.setdefault(item.article,set()).add(item.sku)
     joined=[]; join_diags=[]
     for product in products.records:
@@ -252,7 +252,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_ca
     logger.info("[analysis %s] reports done %.3fs",request_id,perf_counter()-reports_started)
     imported=[availability,restrictions,orders,tariffs,products]
     settings=EconomicsSettings(*(values[n] for n in DECIMAL_NAMES[:4]),tax,*(values[n] for n in DECIMAL_NAMES[4:7])); thresholds=OptimizerThresholds(*(values[n] for n in DECIMAL_NAMES[7:]))
-    result=analyze(availability.records,restrictions.records,orders.records,tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,progress_callback=progress_callback)
+    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=availability.records,progress_callback=progress_callback)
     progress("serialization")
     coverage={key:0 for key in ('complete','partial','none','no_profile')}
     for item in result.logistics:coverage[item.coverage_status.value]+=1

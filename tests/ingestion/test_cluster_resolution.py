@@ -35,6 +35,20 @@ def test_unresolved_records_fail_closed_without_fuzzy_matching():
     assert {d.field for d in result.diagnostics} == {"cluster", "origin_cluster", "destination_cluster"}
 
 
+def test_blank_optional_restriction_cluster_is_preserved():
+    restriction = RestrictionRecord(
+        "S", "W", RestrictionState.ALLOWED, "", "разрешено", ""
+    )
+
+    result = resolve_analysis_clusters([], [restriction], [], [tariff()], {})
+
+    assert result.restrictions == (restriction,)
+    assert not any(
+        diagnostic.code == "UNRESOLVED_CLUSTER" and diagnostic.field == "cluster"
+        for diagnostic in result.diagnostics
+    )
+
+
 def test_invalid_manual_target_is_reported_and_not_applied():
     result = resolve_analysis_clusters([], [], [OrderRecord("S", 1, "СПб", "Москва")],
                                        [tariff()], {"СПб": "Питер"})
