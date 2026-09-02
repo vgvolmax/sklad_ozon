@@ -51,7 +51,8 @@ class AnalysisResult:
 
 def analyze(availability, restrictions, orders, tariffs, products, *, as_of: date,
             economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds,
-            availability_fbs_authoritative: bool = False, progress_callback=None) -> AnalysisResult:
+            availability_fbs_authoritative: bool = False, operational_availability=None,
+            progress_callback=None) -> AnalysisResult:
     def progress(stage, current=None, total=None):
         if progress_callback is not None:
             progress_callback(stage, current, total)
@@ -84,8 +85,9 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
     for warehouse in sorted(bad_warehouses):
         diagnostics.append(AnalysisDiagnostic("error", "CONFLICTING_WAREHOUSE_CLUSTER", f"Warehouse {warehouse} maps to multiple clusters."))
     product_map = {p.sku:p for p in products}
+    seller_stock_evidence = tuple(operational_availability) if operational_availability is not None else tuple(availability)
     fbs = {}
-    for record in availability:
+    for record in seller_stock_evidence:
         if getattr(record, "fbs_quantity", None) is not None: fbs.setdefault(record.sku, set()).add(record.fbs_quantity)
     positive_fbs = {sku: {value for value in values if value > 0} for sku, values in fbs.items()}
     conflicting_fbs = {sku for sku, values in positive_fbs.items() if len(values) > 1}

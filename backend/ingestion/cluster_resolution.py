@@ -70,6 +70,9 @@ def resolve_analysis_clusters(
 
     resolved_restrictions = []
     for record in restrictions:
+        if not normalize_cluster_label(record.cluster):
+            resolved_restrictions.append(record)
+            continue
         cluster = resolved(record.cluster, "restrictions", "cluster")
         if cluster is not None:
             resolved_restrictions.append(replace(record, cluster=cluster))
