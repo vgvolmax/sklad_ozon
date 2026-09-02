@@ -27,6 +27,8 @@ class CleanRouteFallbackStatus(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class CleanRoutePolicy:
+    """Deprecated compatibility settings; eligibility controls exclusions."""
+
     minimum_exclusion_confidence: SignalConfidence = SignalConfidence.HIGH
 
 
@@ -127,6 +129,8 @@ def build_clean_route_profile(
     signals: dict[tuple[str, str, int, int], tuple[SignalConfidence, str]] = {}
     for signal in stockouts:
         year, week = _parse_week(signal.observed_week)
+        if not signal.route_cleaning_eligible:
+            continue
         key = (signal.sku, signal.destination_cluster_id, year, week)
         previous = signals.get(key)
         if previous is None or _CONFIDENCE_RANK[signal.confidence] > _CONFIDENCE_RANK[previous[0]]:
@@ -134,7 +138,6 @@ def build_clean_route_profile(
 
     clean_weekly: list[RouteCell] = []
     excluded: list[ExcludedRouteEvidence] = []
-    threshold = _CONFIDENCE_RANK[policy.minimum_exclusion_confidence]
     for route in observed.routes:
         identity = (
             route.sku,
@@ -143,7 +146,7 @@ def build_clean_route_profile(
             route.iso_week,
         )
         signal = signals.get(identity)
-        if signal is not None and _CONFIDENCE_RANK[signal[0]] >= threshold:
+        if signal is not None:
             excluded.append(
                 ExcludedRouteEvidence(
                     sku=route.sku,

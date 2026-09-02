@@ -8,7 +8,6 @@ import pytest
 
 from backend.analytics.clean_routes import (
     CleanRouteFallbackStatus,
-    CleanRoutePolicy,
     build_clean_route_profile,
 )
 from backend.analytics.routes import RouteProfile, build_route_profile
@@ -49,10 +48,19 @@ def _canonical():
     )
 
 
-def _signal(confidence=SignalConfidence.HIGH, *, sku="SKU-1", destination="Москва", week="2026-W34"):
+def _signal(
+    confidence=SignalConfidence.HIGH,
+    *,
+    eligible=True,
+    sku="SKU-1",
+    destination="Москва",
+    week="2026-W34",
+):
     return StockoutSignal(
         sku=sku,
         destination_cluster_id=destination,
+        historical_evidence_strength=SignalConfidence.HIGH,
+        route_cleaning_eligible=eligible,
         confidence=confidence,
         baseline_week="2026-W33",
         observed_week=week,
@@ -119,26 +127,20 @@ def test_every_donor_into_contaminated_destination_week_is_excluded():
             for row in result.clean_routes] == [("Казань", "Казань")]
 
 
-def test_confidence_threshold_is_conservative_and_configurable():
+def test_explicit_eligibility_controls_exclusion_independently_of_confidence():
     observed = _canonical()
-    medium_default = build_clean_route_profile(
-        observed, [_signal(SignalConfidence.MEDIUM)]
+    eligible_low = build_clean_route_profile(
+        observed, [_signal(SignalConfidence.LOW, eligible=True)]
     )
-    assert medium_default.excluded_routes == ()
-    assert medium_default.clean_routes == medium_default.observed_routes
+    assert len(eligible_low.excluded_routes) == 2
+    assert all(row.stockout_confidence is SignalConfidence.LOW
+               for row in eligible_low.excluded_routes)
 
-    medium_custom = build_clean_route_profile(
-        observed,
-        [_signal(SignalConfidence.MEDIUM)],
-        CleanRoutePolicy(SignalConfidence.MEDIUM),
+    ineligible_high = build_clean_route_profile(
+        observed, [_signal(SignalConfidence.HIGH, eligible=False)]
     )
-    assert len(medium_custom.excluded_routes) == 2
-    low_custom = build_clean_route_profile(
-        observed,
-        [_signal(SignalConfidence.LOW)],
-        CleanRoutePolicy(SignalConfidence.MEDIUM),
-    )
-    assert low_custom.excluded_routes == ()
+    assert ineligible_high.excluded_routes == ()
+    assert ineligible_high.clean_routes == ineligible_high.observed_routes
 
 
 def test_no_clean_history_reports_observed_fallback_without_fake_cell():
