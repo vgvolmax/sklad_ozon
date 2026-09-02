@@ -8,6 +8,7 @@ from backend.analytics.routes import build_route_profile, RouteProfile
 from backend.analytics.stockout import detect_stockouts
 from backend.analytics.distortion import detect_recommendation_distortion
 from backend.analytics.clean_routes import build_clean_route_profile, CleanRouteResult
+from backend.analytics.route_profiles import select_route_profile
 from backend.economics import expected_logistics, LogisticsContext, RouteProfileSource, calculate_unit_economics
 from backend.project import EconomicsSettings, OptimizerThresholds
 from backend.supply import (WarehouseCapability, PlacementInput, PlacementSource, RouteConfidence,
@@ -101,7 +102,6 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         return {group: tuple(values) for group, values in result.items()}
     demand_by_sku = grouped(demand.cells, lambda item: item.sku)
     observed_by_sku = grouped(observed.routes, lambda item: item.sku)
-    clean_by_origin = grouped(clean.clean_routes, lambda item: (item.sku, item.origin_cluster_id))
     observed_by_origin = grouped(clean.observed_routes, lambda item: (item.sku, item.origin_cluster_id))
     stockouts_by_sku = grouped(stockouts, lambda item: item.sku)
     distortions_by_sku = grouped(distortions, lambda item: item.sku)
@@ -130,12 +130,10 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             diagnostics.append(AnalysisDiagnostic("error","MISSING_PRODUCT_VOLUME","Missing product volume.",sku))
             progress("logistics_economics", sku_index, len(skus)); continue
         for cluster in sorted(clusters):
-            clean_profile=clean_by_origin.get((sku, cluster), ())
             observed_profile=observed_by_origin.get((sku, cluster), ())
-            profile=clean_profile or observed_profile
-            source=RouteProfileSource.CLEAN if clean_profile else RouteProfileSource.OBSERVED
-            confidence=RouteConfidence.MEDIUM if clean_profile else RouteConfidence.LOW
-            log=expected_logistics(profile, tariffs, LogisticsContext(sku,cluster,product.volume_liters,product.price,source))
+            selection=select_route_profile(sku, cluster, clean, observed)
+            confidence=RouteConfidence(selection.confidence.value)
+            log=expected_logistics(selection.profile, tariffs, LogisticsContext(sku,cluster,product.volume_liters,product.price,selection.source))
             econ=calculate_unit_economics(product,cluster,log,economics_settings)
             logistics_results.append(log); economics_results.append(econ)
             diagnostics.extend(

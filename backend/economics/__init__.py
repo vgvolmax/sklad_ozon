@@ -17,6 +17,7 @@ from .unit import (
     UnitEconomicsResult,
     calculate_unit_economics,
 )
+from .route_opportunity import RouteOpportunity, calculate_route_opportunity
 
 __all__ = (
     "ExpectedLogisticsResult",
@@ -32,4 +33,6 @@ __all__ = (
     "RoundingMetadata",
     "UnitEconomicsResult",
     "calculate_unit_economics",
+    "RouteOpportunity",
+    "calculate_route_opportunity",
 )
