@@ -1,7 +1,7 @@
 """Explainable current-demand estimates by customer destination."""
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
 from enum import Enum
 from statistics import median
 
@@ -14,6 +14,7 @@ ZERO = Decimal("0")
 TEN_PERCENT = Decimal("0.10")
 TWENTY_PERCENT = Decimal("0.20")
 HALF = Decimal("0.5")
+_BUSINESS_DECIMAL_CONTEXT = Context(prec=40, rounding=ROUND_HALF_EVEN)
 
 
 class DemandRegime(str, Enum):
@@ -45,7 +46,9 @@ def _median(values: list[Decimal]) -> Decimal:
     return median(values)
 
 
-def _estimate(sku: str, destination: str, series: list[Decimal]) -> DemandEstimate:
+def _estimate_with_business_context(
+    sku: str, destination: str, series: list[Decimal],
+) -> DemandEstimate:
     count = len(series)
     if not series:
         return DemandEstimate(
@@ -100,6 +103,11 @@ def _estimate(sku: str, destination: str, series: list[Decimal]) -> DemandEstima
         sku, destination, count, m1, m2, latest, regime, confirmed,
         raw, applied, m2 + applied, SignalConfidence.HIGH, tuple(codes),
     )
+
+
+def _estimate(sku: str, destination: str, series: list[Decimal]) -> DemandEstimate:
+    with localcontext(_BUSINESS_DECIMAL_CONTEXT):
+        return _estimate_with_business_context(sku, destination, series)
 
 
 def estimate_destination_demand(demand: DemandResult) -> tuple[DemandEstimate, ...]:

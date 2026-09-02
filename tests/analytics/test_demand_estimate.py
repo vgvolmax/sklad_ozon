@@ -1,5 +1,5 @@
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, getcontext
 
 import pytest
 
@@ -66,10 +66,47 @@ def test_stable_confirmation_band_is_inclusive(latest):
 ])
 def test_short_history_uses_all_week_median(values, confidence, code):
     result = estimate_destination_demand(demand(values))[0]
-    assert result.current_weekly_rate == Decimal("5") if len(values) == 5 else Decimal("3")
+    expected = Decimal("5") if len(values) == 5 else Decimal("3")
+    assert result.current_weekly_rate == expected
     assert result.m1 is None
     assert result.confidence is confidence
     assert result.explanation_codes == (code,)
+
+
+def test_very_short_history_uses_complete_low_confidence_fallback():
+    result = estimate_destination_demand(demand([1, 9, 3]))[0]
+
+    assert result.current_weekly_rate == Decimal("3")
+    assert result.confidence is SignalConfidence.LOW
+    assert result.regime is DemandRegime.INCOMPLETE
+    assert result.applied_adjustment == Decimal("0")
+
+
+@pytest.mark.parametrize("precision", [2, 10])
+def test_demand_estimate_is_independent_of_global_decimal_context(precision):
+    context = getcontext()
+    original_precision = context.prec
+    original_rounding = context.rounding
+
+    try:
+        context.prec = precision
+
+        result = estimate_destination_demand(
+            demand([100] * 4 + [123, 123, 123, 140])
+        )[0]
+
+        assert result.m1 == Decimal("100")
+        assert result.m2 == Decimal("123")
+        assert result.latest_week_qty == Decimal("140")
+        assert result.regime is DemandRegime.GROWTH
+        assert result.raw_adjustment == Decimal("8.5")
+        assert result.applied_adjustment == Decimal("8.5")
+        assert result.current_weekly_rate == Decimal("131.5")
+        assert context.prec == precision
+        assert context.rounding == original_rounding
+    finally:
+        context.prec = original_precision
+        context.rounding = original_rounding
 
 
 def test_zero_baseline_becomes_medium_confidence_transition():

@@ -1,8 +1,11 @@
 """Pure arbitrary-horizon need and original-Ozon-value comparison."""
 
-from decimal import Decimal, ROUND_CEILING
+from decimal import Context, Decimal, ROUND_CEILING, ROUND_HALF_EVEN, localcontext
 
 from .contracts import HorizonComparability, NeedComparison
+
+
+_BUSINESS_DECIMAL_CONTEXT = Context(prec=40, rounding=ROUND_HALF_EVEN)
 
 
 def _validate_horizon(horizon_days: int) -> None:
@@ -16,7 +19,8 @@ def forecast_horizon(weekly_rate: Decimal, horizon_days: int) -> Decimal:
     _validate_horizon(horizon_days)
     if not isinstance(weekly_rate, Decimal):
         raise TypeError("weekly_rate must be a Decimal")
-    return weekly_rate * Decimal(horizon_days) / Decimal(7)
+    with localcontext(_BUSINESS_DECIMAL_CONTEXT):
+        return weekly_rate * Decimal(horizon_days) / Decimal(7)
 
 
 def _comparability(recommendation: int | None, ozon_days: int | None,
@@ -40,28 +44,29 @@ def calculate_need(
     if not isinstance(include_inbound, bool):
         raise TypeError("include_inbound must be a bool")
 
-    blockers = []
-    if weekly_rate is None:
-        forecast = None
-        blockers.append("MISSING_DEMAND_ESTIMATE")
-    else:
-        forecast = forecast_horizon(weekly_rate, horizon_days)
-    if fbo_stock is None:
-        blockers.append("MISSING_FBO_STOCK")
-    if include_inbound and inbound_qty is None:
-        blockers.append("MISSING_INBOUND_QTY")
+    with localcontext(_BUSINESS_DECIMAL_CONTEXT):
+        blockers = []
+        if weekly_rate is None:
+            forecast = None
+            blockers.append("MISSING_DEMAND_ESTIMATE")
+        else:
+            forecast = forecast_horizon(weekly_rate, horizon_days)
+        if fbo_stock is None:
+            blockers.append("MISSING_FBO_STOCK")
+        if include_inbound and inbound_qty is None:
+            blockers.append("MISSING_INBOUND_QTY")
 
-    need = None
-    if not blockers:
-        raw_need = forecast - Decimal(fbo_stock)
-        if include_inbound:
-            raw_need -= Decimal(inbound_qty)
-        need = max(0, int(raw_need.to_integral_value(rounding=ROUND_CEILING)))
+        need = None
+        if not blockers:
+            raw_need = forecast - Decimal(fbo_stock)
+            if include_inbound:
+                raw_need -= Decimal(inbound_qty)
+            need = max(0, int(raw_need.to_integral_value(rounding=ROUND_CEILING)))
 
-    delta = None if need is None or ozon_recommended_qty is None else need - ozon_recommended_qty
-    delta_pct = None
-    if delta is not None and ozon_recommended_qty > 0:
-        delta_pct = Decimal(delta) / Decimal(ozon_recommended_qty)
+        delta = None if need is None or ozon_recommended_qty is None else need - ozon_recommended_qty
+        delta_pct = None
+        if delta is not None and ozon_recommended_qty > 0:
+            delta_pct = Decimal(delta) / Decimal(ozon_recommended_qty)
 
     return NeedComparison(
         sku=sku, destination_cluster_id=destination_cluster_id,
