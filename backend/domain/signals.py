@@ -28,6 +28,8 @@ class ReplacementOriginEvidence:
 class StockoutSignal:
     sku: str
     destination_cluster_id: str
+    historical_evidence_strength: SignalConfidence
+    route_cleaning_eligible: bool
     confidence: SignalConfidence
     baseline_week: str
     observed_week: str

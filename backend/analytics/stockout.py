@@ -68,6 +68,17 @@ def _metrics(profile: RouteProfile) -> dict[tuple[str, str, int, int], _Metrics]
     return result
 
 
+def _display_confidence(
+    historical: SignalConfidence,
+    corroboration: AvailabilityCorroboration,
+) -> SignalConfidence:
+    if historical is SignalConfidence.HIGH:
+        return SignalConfidence.HIGH
+    if corroboration is AvailabilityCorroboration.SUPPORTS:
+        return SignalConfidence.HIGH
+    return historical
+
+
 def detect_stockouts(
     weekly_profiles: RouteProfile,
     availability: Iterable[AvailabilityRecord] | None = None,
@@ -111,6 +122,8 @@ def detect_stockouts(
             replacements.sort(key=lambda item: (-(item.share_after - item.share_before), item.origin_cluster_id))
             if not replacements:
                 continue
+            historical_evidence_strength = SignalConfidence.HIGH
+            route_cleaning_eligible = True
             available = availability_totals.get((sku, destination))
             corroboration = AvailabilityCorroboration.SUPPORTS if available == 0 else AvailabilityCorroboration.NEUTRAL
             codes = ["BASELINE_LOCAL_SHARE_HIGH", "LOCAL_SHARE_DROP", "EXTERNAL_REPLACEMENT_RISE", "DEMAND_RETAINED"]
@@ -118,7 +131,9 @@ def detect_stockouts(
                 codes.append("CURRENT_AVAILABILITY_ZERO")
             signals.append(StockoutSignal(
                 sku, destination,
-                SignalConfidence.HIGH if corroboration is AvailabilityCorroboration.SUPPORTS else SignalConfidence.MEDIUM,
+                historical_evidence_strength,
+                route_cleaning_eligible,
+                _display_confidence(historical_evidence_strength, corroboration),
                 _week_id(baseline[0], baseline[1]), _week_id(observed[0], observed[1]),
                 before.local_share, after.local_share, retention, corroboration,
                 tuple(replacements), tuple(codes),

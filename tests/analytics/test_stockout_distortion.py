@@ -124,13 +124,20 @@ def test_missing_observed_local_route_is_zero_not_missing():
 def test_availability_only_corroborates_and_never_creates_or_erases():
     routes = _canonical()
     neutral = detect_stockouts(routes)
-    assert neutral[0].confidence is SignalConfidence.MEDIUM
+    assert neutral[0].historical_evidence_strength is SignalConfidence.HIGH
+    assert neutral[0].route_cleaning_eligible is True
+    assert neutral[0].confidence is SignalConfidence.HIGH
     assert neutral[0].availability_corroboration is AvailabilityCorroboration.NEUTRAL
     zero = detect_stockouts(routes, [AvailabilityRecord("SKU-1", "W", "Москва", 0)])
+    assert zero[0].historical_evidence_strength is SignalConfidence.HIGH
+    assert zero[0].route_cleaning_eligible is True
     assert zero[0].confidence is SignalConfidence.HIGH
     assert zero[0].availability_corroboration is AvailabilityCorroboration.SUPPORTS
     positive = detect_stockouts(routes, [AvailabilityRecord("SKU-1", "W", "Москва", 12)])
-    assert positive[0].confidence is SignalConfidence.MEDIUM
+    assert positive[0].historical_evidence_strength is SignalConfidence.HIGH
+    assert positive[0].route_cleaning_eligible is True
+    assert positive[0].availability_corroboration is AvailabilityCorroboration.NEUTRAL
+    assert positive[0].confidence is SignalConfidence.HIGH
     no_pattern = _profile(("S","2026-08-10","D","D",100),("S","2026-08-17","D","D",100))
     assert detect_stockouts(no_pattern, [AvailabilityRecord("S", "W", "D", 0)]) == ()
 
