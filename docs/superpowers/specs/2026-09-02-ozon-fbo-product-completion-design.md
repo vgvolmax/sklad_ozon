@@ -7,368 +7,380 @@
 
 This document is the canonical Product Completion design for `sklad_ozon`.
 
-It **does not replace** the canonical runtime architecture in `2026-08-20-scoz-lite-portable-architecture-design.md`. The existing local Python + FastAPI + committed vanilla HTML/CSS/JavaScript boundary remains unchanged by this design.
+It **does not replace** the canonical runtime architecture in `2026-08-20-scoz-lite-portable-architecture-design.md`. The existing local Python + FastAPI + committed vanilla HTML/CSS/JavaScript boundary remains unchanged.
 
-It extends and, where explicitly stated below, supersedes business/product limits from `2026-08-19-ozon-fbo-unit-economics-optimizer-design.md`.
+It extends and, where explicitly stated below, supersedes product/business limits from `2026-08-19-ozon-fbo-unit-economics-optimizer-design.md`.
 
-The most important intentional changes are:
+Intentional changes:
 
-1. the product now computes its **own explainable demand estimate** instead of only consuming the Ozon recommendation;
-2. the Ozon recommendation becomes a comparison/control signal rather than the only quantity ceiling;
-3. the product exposes two plan families: **Safe Plan** and **Calculated Plan**;
-4. route economics becomes a first-class analytical layer, including cost as `% of realization`, margin impact in percentage points, and profit opportunity in rubles;
-5. the frontend becomes a decision tool with a dedicated visual `Потоки спроса` mode rather than a debug-style table/JSON surface.
+1. the application computes its own explainable demand estimate;
+2. Ozon recommendation becomes a comparison/control signal, not the only quantity ceiling;
+3. the product exposes **Safe Plan** and **Calculated Plan** side by side;
+4. route economics is first-class: ₽, `% of realization`, final margin impact in p.p., and profit opportunity;
+5. the frontend becomes a decision tool with a dedicated visual `Потоки спроса` mode.
 
 Business invariants not changed here remain in force.
 
 ## 2. Product goal
 
-The application must answer, for each relevant `SKU × destination cluster`:
+For every relevant `SKU × destination cluster`, the application must answer:
 
-1. where customer demand actually arose;
+1. where customer demand arose;
 2. from which origin clusters that demand was fulfilled;
-3. whether the observed fulfillment geography is likely distorted by stockout/substitution;
-4. what the cleaned recent demand level is and how it is changing;
+3. whether fulfillment geography was probably distorted by stockout/substitution;
+4. what the recent destination-demand level is and how it is changing;
 5. how many units are needed for a user-selected horizon;
-6. what Ozon recommends for the same SKU/cluster and whether that recommendation is directly comparable;
-7. how much the current origin→destination route costs in rubles and as a share of realization;
-8. what margin/profit effect an alternative local placement would have;
+6. what Ozon recommends and whether the two quantities are directly comparable;
+7. what each origin→destination route costs in ₽ and as `% of realization`;
+8. what margin/profit effect a feasible local placement would have;
 9. how limited seller stock should be allocated under the chosen objective;
-10. why the application reached that recommendation.
+10. why the application reached its recommendation.
 
-The main decision sequence is:
+Decision sequence:
 
-`Where demand arose → who fulfilled it → what that routing cost → cleaned demand → our need → Ozon comparison → allocation plan`.
+`Where demand arose → who fulfilled it → what that routing costs → current demand regime → our need → Ozon comparison → allocation plan`.
 
-## 3. Non-negotiable domain semantics
+## 3. Non-negotiable semantics
 
-- `destination_cluster` is the geography of customer demand.
-- `origin_cluster` is the physical fulfillment/dispatch source.
-- `Казань → Москва` means Moscow demand fulfilled from Kazan; it is never Kazan demand.
-- economics may change **where stock is placed**, but may not fabricate or increase demand.
-- current availability is corroborating evidence for historical stockout inference, never proof of a historical event by itself.
-- frontend code must not contain demand, stockout, route-economics, unit-economics or optimizer formulas.
+- `destination_cluster` = customer-demand geography.
+- `origin_cluster` = physical fulfillment/dispatch source.
+- `Казань → Москва` is Moscow demand fulfilled from Kazan, never Kazan demand.
+- economics changes placement priority, not demand quantity.
+- current availability corroborates historical stockout inference; it does not prove historical stock state.
+- frontend code contains no demand, stockout, route-economics, unit-economics or optimizer formulas.
 
-## 4. Product architecture: Decision Layer over the existing core
+## 4. Product architecture
 
-Do not rewrite the existing ingestion/analytics/economics/supply core without cause. Product Completion adds/repairs five explicit decision-layer responsibilities:
+Do not rewrite working ingestion/analytics/economics/supply modules without cause. Product Completion adds or repairs five decision-layer responsibilities:
 
-1. **Demand Estimate Engine** — cleaned recent demand and dynamic weekly rate.
-2. **Ozon Comparison** — Ozon recommendation vs our need with horizon/comparability status.
-3. **Route Economics** — actual origin→destination cost and counterfactual local effect.
-4. **Need Engine** — forecast minus stock/inbound according to user scenario.
-5. **Scenario Allocator** — Safe vs Calculated ceilings and `Макс. прибыль`/`Макс. маржа` allocation.
+1. **Demand Estimate Engine** — recent destination demand and three-level dynamic.
+2. **Ozon Comparison** — Ozon vs our need with horizon/comparability state.
+3. **Route Economics** — actual origin→destination model economics and local counterfactual.
+4. **Need Engine** — demand forecast minus cluster stock/inbound according to scenario.
+5. **Scenario Allocator** — Safe/Calculated allocations under `Макс. прибыль` or `Макс. маржа`.
 
-The application/API returns an immutable analysis snapshot containing enough aggregated evidence for all UI surfaces. Raw order rows do not need to be sent to the browser.
+A successful run returns an immutable aggregated analysis snapshot. Raw orders are not required in the browser.
 
-## 5. Repair stockout cleaning before using it for forecasting
-
-The current implementation ties HIGH confidence too strongly to current availability. Product Completion separates **historical cleaning eligibility** from current corroboration.
+## 5. Repair historical stockout/route cleaning
 
 ### 5.1 Historical route evidence
 
-The existing strong route-shift conditions remain the starting thresholds unless a later approved statistical redesign changes them:
+Existing strong route-shift thresholds remain the starting policy:
 
 - prior local share >= 60%;
-- local share drop >= 30 percentage points;
-- external replacement rise >= 20 percentage points;
+- local share drop >= 30 p.p.;
+- external replacement rise >= 20 p.p.;
 - fulfilled weekly quantity >= 10;
 - destination demand retention >= 60% of baseline;
-- comparison only across completed periods.
+- completed periods only.
 
-When historical route evidence meets the strong criteria, the affected historical period is **eligible for cleaning** independently of the current availability snapshot.
+When historical route evidence meets the strong criteria, that **route period is cleaning-eligible independently of current availability**.
 
-### 5.2 Availability corroboration
-
-Current availability evidence can be `supports`, `neutral`, or `contradicts` and affects displayed confidence/explanation. It must not be a required condition for excluding a historically contaminated route period.
-
-A contradictory current snapshot may lower confidence but cannot automatically restore a strong historical substitution week to clean history.
-
-The stockout output therefore needs an explicit historical field such as:
+The stockout output must keep separate concepts equivalent to:
 
 ```text
 historical_evidence_strength
-cleaning_eligible
+route_cleaning_eligible
 availability_corroboration
 confidence
 ```
 
-The exact names may follow existing Python conventions, but the concepts must remain separate.
+Current availability can raise/lower displayed confidence but is not required to clean a historically contaminated route period. A contradictory current snapshot cannot automatically put a strong historical substitution route back into clean route history.
 
-### 5.3 Availability importer enrichment
+### 5.2 Demand history is not route history
 
-Where the source report provides them, retain and normalize evidence including `daysWithoutStock`, report date, current FBO quantity and other availability fields needed by the approved historical/corroboration rules. Missing source evidence remains `null`/unknown, never zero by assumption.
+A route-substitution week is **not automatically removed from destination-demand history**.
 
-## 6. Clean route fallback hierarchy
+If Moscow demand was fulfilled from Kazan, the Moscow destination orders remain valid Moscow demand. Route cleaning is therefore separate from demand-week eligibility.
 
-Expected-route analytics and placement economics must implement the full fallback hierarchy:
+For Product Completion MVP, a week is eligible for the primary demand median when:
 
-1. `SKU × origin` clean route profile;
-2. `SKU × origin` observed route profile;
+- it is a completed week;
+- the order lifecycle population is valid;
+- destination cluster identity is resolved;
+- the source period is not known incomplete/corrupt.
+
+A probable stockout/route shift may lower demand confidence or add evidence, but does not erase destination demand simply because origin changed. Suppressed demand must not be invented from missing orders without period-specific stock evidence.
+
+This separation is intentional: the robust median protects the demand estimate from ordinary spikes/dips; route cleaning protects logistics/economics from donor substitution.
+
+### 5.3 Availability enrichment
+
+Where the source report provides them, retain normalized fields including `daysWithoutStock`, report date, current FBO quantity and other direct availability evidence. Missing source evidence stays unknown/null, never assumed zero.
+
+## 6. Route-profile fallback hierarchy
+
+Expected logistics must implement the full fallback hierarchy:
+
+1. `SKU × origin` clean profile;
+2. `SKU × origin` observed profile;
 3. origin profile across all SKUs;
 4. global fulfilled route profile.
 
-Every returned route profile records source level, sample size and confidence. The frontend must be able to expose the fallback source in diagnostics/detail.
-
-Uncovered tariff share is not renormalized away.
+Every profile carries source level, sample size and confidence. Uncovered tariff share is never renormalized away.
 
 ## 7. Own demand estimate
 
 ### 7.1 Source population
 
-Demand is attributed by destination only.
+Demand is attributed exclusively by destination.
 
-For weekly demand estimation use full completed weeks from the net-demand population (`fulfilled + in_progress`, excluding cancelled). The current incomplete ISO week is not part of the base or trend calculation.
+Use completed weekly net demand (`fulfilled + in_progress`, excluding cancelled). The current incomplete ISO week is excluded from the base/trend calculation.
 
-Weeks identified as historically distorted for the relevant `SKU × destination` by the approved cleaning rules are removed from the cleaned series used for the primary estimate.
+The phrase **demand-eligible full week** below means a completed, data-quality-valid destination-demand week as defined in §5.2. It does not mean “every probable stockout week removed”.
 
 ### 7.2 Eight-week three-level model
 
-Use the **latest eight cleaned full weeks** in chronological order when available.
+Use the latest eight demand-eligible full weeks in chronological order.
 
-Let:
+- `M1` = median of weeks 1–4;
+- `M2` = median of weeks 5–8;
+- `L` = latest full week, i.e. week 8.
 
-- `M1` = median of cleaned weeks 1–4 (older half);
-- `M2` = median of cleaned weeks 5–8 (recent half);
-- `L` = quantity in the latest cleaned full week (week 8).
-
-The UI must preserve these three visible levels as a human-readable dynamic:
+The UI exposes the three levels directly:
 
 `M1 → M2 → L`
 
 Example: `19,5 → 24,5 → 29 шт./нед.`.
 
-### 7.3 Regime classification
+### 7.3 Regime
 
-Relative change between `M1` and `M2`:
+For `M1 > 0`:
 
-- growth when `M2 / M1 - 1 > +10%`;
-- stable when change is within `±10%`;
-- decline when change `< -10%`.
+- growth: `M2 / M1 - 1 > +10%`;
+- stable: change within `±10%` inclusive;
+- decline: change `< -10%`.
 
-For `M1 = 0`, do not divide by zero. Treat transition from zero to meaningful positive demand as insufficient/transition evidence and return an explicit reason code; do not fabricate an infinite growth percentage.
+For `M1 = 0`, do not divide by zero or report infinite growth. A transition to positive demand is explicitly marked as a transition/insufficient historical baseline.
 
 ### 7.4 Latest-week confirmation
 
-The latest week confirms the current regime using the same 10% tolerance around `M2`:
+Using the same tolerance around `M2`:
 
-- growth is confirmed when `L > M2 × 1.10`;
-- decline is confirmed when `L < M2 × 0.90`;
-- stability is confirmed when `L` remains within `±10%` of `M2`.
+- growth confirmed when `L > M2 × 1.10`;
+- decline confirmed when `L < M2 × 0.90`;
+- stability confirmed when `L` is inside `M2 ±10%`.
 
-The latest week is evidence of continuation, not an independent forecast baseline.
+The latest week confirms or challenges the regime; it is not the forecast baseline by itself.
 
 ### 7.5 Current weekly rate
 
-Base current rate is `M2`.
+Base = `M2`.
 
-For confirmed growth or confirmed decline:
+For confirmed growth/decline:
 
 ```text
 raw_adjustment = 0.5 × (L - M2)
-adjustment_cap = ±20% of M2
-current_weekly_rate = M2 + clamp(raw_adjustment, -20% × M2, +20% × M2)
+cap = ±20% of M2
+current_weekly_rate = M2 + clamp(raw_adjustment, -0.20 × M2, +0.20 × M2)
 ```
 
-For stable regime or an unconfirmed growth/decline regime:
+For stable regime or unconfirmed growth/decline:
 
 ```text
 current_weekly_rate = M2
 ```
 
-The product must display `base`, `regime`, `latest-week confirmation`, `adjustment`, and final weekly rate separately. The final number may not be a black box.
+Expose separately: `M1`, `M2`, `L`, regime, confirmation, adjustment and final weekly rate.
 
 ### 7.6 Short-history fallback
 
-- **8+ cleaned full weeks:** full three-level model above.
-- **4–7 cleaned full weeks:** median of available cleaned full weeks; no trend adjustment; confidence at most medium.
-- **1–3 cleaned full weeks:** median of available cleaned full weeks; no trend adjustment; confidence low.
-- **0 cleaned full weeks:** fall back to available observed completed-week history if present, explicitly marked `observed_fallback` and low confidence. If no completed demand history exists, own estimate is incomplete rather than zero.
+- 8+ eligible weeks: full model.
+- 4–7: median of all eligible weeks, no trend adjustment, confidence at most medium.
+- 1–3: median of available eligible weeks, no trend adjustment, low confidence.
+- 0: own estimate incomplete; do not fabricate zero.
 
-These fallback rules prevent old/contaminated history from being silently treated as high-confidence current demand.
+Observed-vs-clean route fallbacks remain a separate logistics concept and are not reused as a hidden demand formula.
 
-## 8. User-selected horizon and need calculation
+## 8. Horizon and calculated need
 
-### 8.1 No hidden safety buffer
+### 8.1 No safety buffer
 
-There is no automatic safety stock or hidden buffer.
-
-The user selects the horizon in days. If the user wants extra cover, they increase the horizon, e.g. from 60 to 67 days.
+No automatic safety stock/buffer exists. User-selected days are the entire coverage target.
 
 ```text
-demand_forecast_qty = current_weekly_rate × horizon_days / 7
+raw_demand_forecast = current_weekly_rate × horizon_days / 7
 ```
 
-Rounding policy must be explicit and consistent in backend contracts. The UI should preserve the unrounded rate for explanation and show integer shipment quantities.
+Keep the raw forecast as a decimal for explanation. Shipment quantities are integers.
 
-### 8.2 Current stock and inbound flag
+### 8.2 Inbound flag
 
-Canonical scenario flag:
+Scenario flag:
 
-`Учитывать поставки в пути` — boolean.
-
-Default: enabled.
+`Учитывать поставки в пути` — boolean, default enabled.
 
 Without inbound:
 
 ```text
-calculated_need_qty = max(0, demand_forecast_qty - current_fbo_stock)
+raw_need = raw_demand_forecast - current_fbo_stock
 ```
 
 With inbound:
 
 ```text
-calculated_need_qty = max(0, demand_forecast_qty - current_fbo_stock - inbound_qty)
+raw_need = raw_demand_forecast - current_fbo_stock - inbound_qty
 ```
 
-The UI always shows current FBO stock and inbound quantity separately, regardless of the flag.
+Canonical integer need:
 
-Missing stock/inbound evidence is not silently converted to zero if the source contract cannot prove zero.
+```text
+calculated_need_qty = max(0, ceil(raw_need))
+```
+
+This intentionally rounds upward only after stock/inbound subtraction so the selected horizon is not under-covered because of fractional forecast units.
+
+The UI always shows current FBO stock and inbound separately. Unknown stock/inbound evidence is not coerced to zero unless the importer/source proves zero.
 
 ## 9. Ozon comparison
 
-For every relevant `SKU × destination cluster` expose:
+For each `SKU × destination` expose:
 
 - Ozon recommended quantity;
-- Ozon recommendation horizon when source metadata provides it;
+- Ozon recommendation horizon when known;
 - our selected horizon;
-- our demand forecast;
+- raw demand forecast;
 - calculated need to supply;
-- `Δ units` and `Δ %` where mathematically meaningful;
+- `Δ units` and `Δ %` where meaningful;
 - comparability status;
-- confidence and human-readable reasons for disagreement.
+- confidence and human-readable disagreement reasons.
 
-### 9.1 Different horizons
+Never linearly scale Ozon recommendation to our horizon.
 
-Never linearly rescale the Ozon recommendation to our horizon. The internal Ozon forecast logic is unknown.
+If horizons differ, show both originals and `Горизонты различаются`. Difference may be displayed for orientation, but it must not be presented as a clean like-for-like model error.
 
-If Ozon horizon differs from our selected horizon:
+## 10. Hybrid plan model
 
-- keep both original quantities;
-- show `Горизонты различаются`;
-- mark the comparison as partial/non-like-for-like;
-- do not present `Δ %` as a clean model-error percentage without that warning.
-
-## 10. Hybrid planning model
-
-Ozon recommendation is no longer the only business ceiling.
-
-For each candidate cluster expose two ceilings/plans.
+Both plan families are computed under the same chosen optimization objective and shown side by side.
 
 ### 10.1 Safe Plan
-
-Safe Plan never exceeds Ozon's recommendation and never exceeds our own current need or physical feasibility:
 
 ```text
 safe_ceiling = min(ozon_recommended_qty, calculated_need_qty, physical_ceiling)
 ```
 
-### 10.2 Calculated Plan
+Safe allocation never exceeds Ozon recommendation, our own need or physical feasibility.
 
-Calculated Plan is independent of Ozon quantity but remains bounded by our need and physical feasibility:
+### 10.2 Calculated Plan
 
 ```text
 calculated_ceiling = min(calculated_need_qty, physical_ceiling)
 ```
 
-This allows the product to say, for example:
+Calculated allocation is independent of Ozon quantity.
 
-`Ozon: 72 → Our need: 104`, while still offering a conservative Safe Plan capped at 72.
+### 10.3 Primary recommendation
 
-Recommendation distortion changes trust/explainability; it does not itself create demand.
+**Calculated Plan is the primary “Наш план” recommendation. Safe Plan is the conservative comparison/reference.**
+
+The application does not automatically submit anything to Ozon, so no extra “commit plan” selector is required in this phase. Both allocations remain visible for comparison.
+
+Recommendation distortion changes trust/explanation; it never creates demand.
 
 ## 11. Scenario allocator
 
-Seller stock is not fungible across SKUs. Allocation is performed for each SKU using that SKU's available quantity as the stock ceiling.
+Seller stock is not fungible across SKUs. Allocation runs independently per SKU using that SKU's available seller quantity as the total stock ceiling.
 
-If available seller quantity exceeds total eligible need, the remainder stays unallocated. Do not ship units merely to consume available stock.
+If total eligible need is smaller than seller stock, the remainder is left unallocated.
 
 The user chooses one objective:
 
 ### 11.1 `Макс. прибыль`
 
-Allocate eligible units toward clusters with the highest expected **absolute net profit per incremental unit**, up to the selected plan ceiling.
+Fill eligible cluster ceilings in descending expected absolute net profit per incremental unit.
 
 ### 11.2 `Макс. маржа`
 
-Allocate eligible units toward clusters with the highest **net margin rate after all modeled costs**, up to the selected plan ceiling.
+Fill eligible cluster ceilings in descending net margin rate after all modeled costs.
 
-Tie-breaker order should remain deterministic and may use:
+Deterministic tie-breaks:
 
 1. primary objective;
-2. route/demand confidence;
+2. higher route/demand confidence;
 3. lower distortion risk;
-4. higher demand ceiling;
-5. stable cluster identifier.
+4. larger eligible need;
+5. stable cluster ID.
 
-Exact existing threshold settings for minimum profit/margin/ROI remain available as eligibility constraints unless later removed by an approved decision.
+Existing configurable minimum profit/margin/ROI thresholds remain eligibility constraints unless a later approved decision removes them.
 
-The UI may show a compact comparison of both scenario outcomes so the user can see the cost of choosing margin over absolute profit, but only one scenario is active for the final plan at a time.
+The UI may show a compact outcome comparison for both objectives, but only one objective drives `Наш план` at a time.
 
-There is no `Макс. объём` scenario because the SKU quantity available for allocation is already fixed.
+There is no `Макс. объём` objective because available SKU quantity is already fixed.
 
-## 12. Route economics as a first-class layer
+## 12. Route economics
 
-For each observed relevant `SKU × origin × destination` route calculate and expose:
+For every relevant `SKU × origin × destination` route expose:
 
-- fulfilled quantity;
-- share of destination demand;
-- route logistics cost in rubles;
-- route logistics cost as `% of realization`;
-- current net profit/unit and net margin rate;
-- local destination→destination counterfactual when feasible and complete;
-- local counterfactual route cost `% of realization`;
-- counterfactual net margin;
-- `margin_delta_pp`;
-- `profit_opportunity_rub` for the affected observed/forecast volume;
-- completeness/confidence/reason.
+- observed fulfilled quantity and route share;
+- modeled route logistics cost ₽ under the imported/current tariff/economics inputs;
+- route cost as `% of realization`;
+- modeled current profit/unit and net margin;
+- feasible local `destination → destination` counterfactual;
+- local route cost `% of realization`;
+- local counterfactual net margin;
+- margin delta p.p.;
+- profit delta per unit;
+- completeness/confidence/reasons.
 
-### 12.1 Counterfactual principle
+This is a **modeled current-economics comparison applied to observed route mix**, not a claim about historical invoice charges unless a source explicitly provides those charges.
 
-For `Казань → Москва`, compare the economics of the actual Kazan-origin fulfillment with the feasible Moscow-local alternative for the same SKU/destination context.
+### 12.1 Counterfactual
 
-Non-route assumptions remain the same for the comparison; route/placement-dependent costs come from the backend's approved economics/tariff contracts.
+For `Казань → Москва`, compare the Kazan-origin economics with a feasible Moscow-local placement for the same SKU and destination context. Hold non-route assumptions constant; change route/placement-dependent costs according to backend tariff/economics contracts.
 
-If the local placement is physically infeasible, tariff coverage is missing, or unit economics is incomplete, the counterfactual is `not computable`. Missing values are never shown as zero benefit.
+If local placement is infeasible, tariff coverage missing or unit economics incomplete, counterfactual = `not computable`, never zero benefit.
 
-### 12.2 Two user-visible economic measures
+### 12.2 Two percentages must both be visible
 
-Both must be shown:
+Example:
 
-1. **route cost difference as a share of realization** — e.g. `10,1% → 7,1%`;
-2. **final net margin effect** — e.g. `18,4% → 21,4% = +3,0 п.п.`.
+- logistics: `10,1% → 7,1% of realization`;
+- final net margin: `18,4% → 21,4% = +3,0 п.п.`.
 
-Also compute absolute profit opportunity in rubles so a small but expensive route can be compared with a large but cheap one.
+### 12.3 Profit opportunity time basis
 
-### 12.3 Economics affects placement, not demand
+Do not use one ambiguous `profit_opportunity_rub` without a period label.
 
-A +3 p.p. local-placement benefit is a reason to prioritize Moscow for a known quantity of Moscow demand. It must never multiply the Moscow demand quantity.
+Canonical values:
 
-## 13. Cluster identity and report freshness
+```text
+observed_profit_opportunity_rub
+  = profit_delta_per_unit × observed_route_qty_in_analysis_period
+```
 
-### 13.1 Cluster resolution
+This is the default ₽ value in `Потоки спроса` because it answers “сколько этот фактический поток стоил бы при текущей экономике”.
 
-All report importers must resolve cluster identity through the canonical normalization/alias/manual-mapping layer rather than treating independently normalized free text as guaranteed identity.
+A projected value may also be computed when the backend has a valid forecast volume and route-share basis:
 
-Ambiguous unresolved clusters remain visibly unresolved and block affected calculations that require identity equality. Manual mappings persist in Project JSON.
+```text
+forecast_profit_opportunity_rub
+```
 
-### 13.2 Freshness
+It must be separately labelled with the selected forecast horizon. Never mix observed-period and forecast-horizon ₽ values.
 
-Populate report metadata where the source provides it:
+### 12.4 Economics does not create demand
+
+A +3 p.p. local benefit changes cluster placement priority for known demand. It never multiplies need.
+
+## 13. Cluster identity and freshness
+
+All importers must resolve cluster identity through one canonical normalization/alias/manual-mapping layer. Independently normalized free text is not guaranteed identity.
+
+Ambiguous unresolved clusters visibly block affected calculations. Manual mappings persist in Project JSON.
+
+Populate report metadata where available:
 
 - generated date;
 - period start/end;
-- recommendation horizon.
+- Ozon recommendation horizon.
 
-The analysis snapshot contains a freshness assessment. Materially mismatched report dates are visible to the user and may lower comparison confidence. An old restored report may not silently appear current.
+Analysis snapshot includes freshness/comparability warnings. Old/restored or materially mismatched reports cannot silently appear current.
 
 ## 14. Immutable analysis snapshot
 
-Each successful calculation produces a self-contained immutable snapshot.
+Every successful calculation produces a self-contained immutable snapshot. Changing source files, mappings, horizon, inbound flag or objective marks the current result as requiring recalculation; only a successful new run atomically replaces it.
 
-Changing horizon, inbound flag, scenario, mappings or source files does not mutate the displayed prior result. It marks the UI as requiring recalculation. Only a successful new calculation replaces the active snapshot.
-
-At minimum a snapshot contains:
+At minimum:
 
 ```text
 snapshot_id
@@ -377,142 +389,124 @@ report_meta + freshness
 scenario_settings
 input_statuses
 summary
-product/cluster decision rows
-demand-estimate evidence
-observed and cleaned route evidence
-stockout/distortion evidence
-route economics
-unit economics
-safe/calculated placement ceilings
-scenario allocations
-flow-view aggregates
+decision_rows
+demand_estimates
+observed_routes
+clean_routes
+stockout_signals
+distortion_signals
+route_economics
+unit_economics
+safe_allocations
+calculated_allocations
+flow_view_aggregates
 diagnostics
 ```
 
-Raw order rows and buyer/customer PII are not part of the browser snapshot.
+No raw order rows or buyer/customer PII are sent as presentation state.
 
-## 15. Product information architecture
+## 15. Information architecture
 
 Top-level sections:
 
-1. **План** — primary decision table and final allocation.
+1. **План** — primary decision and allocation.
 2. **Потоки спроса** — visual demand/fulfillment analysis.
 3. **Экономика** — detailed unit and route economics.
-4. **Данные** — source files, freshness, settings, mappings and diagnostics.
+4. **Данные** — files, freshness, settings, mappings, diagnostics.
 
-The import form must no longer dominate the primary result screen.
+The import form moves out of the primary decision screen.
 
-## 16. `План` screen
+## 16. `План`
 
-### 16.1 Scenario controls
-
-Compact controls above the result:
+Scenario controls:
 
 - horizon days;
-- `Учитывать поставки в пути`;
-- objective: `Макс. прибыль` / `Макс. маржа`;
-- explicit `Пересчитать план` action.
+- inbound flag;
+- objective `Макс. прибыль` / `Макс. маржа`;
+- `Пересчитать план`.
 
-### 16.2 Decision line
+Canonical visual sequence:
 
-Canonical product signature:
+`Ozon → Наша потребность → Наш план`
 
-`Ozon → Наша потребность → План`
+Safe Plan is shown alongside as the conservative reference.
 
-Global and row-level variants may also show `Δ units`, `Δ %`, route opportunity and expected profit.
+Main table default business fields:
 
-### 16.3 Main decision table
-
-Default business columns:
-
-- Article / SKU / product;
+- article / SKU / product;
 - destination cluster;
-- demand dynamic `M1 → M2 → L` and regime;
+- dynamic `M1 → M2 → L` and regime;
 - Ozon recommendation;
-- our calculated need;
+- our need;
 - delta;
-- selected final allocation;
-- route overcost / local opportunity;
+- Safe Plan;
+- Our/Calculated Plan;
+- route overcost/local opportunity;
 - net margin;
 - expected plan profit;
 - confidence/status.
 
-The table must support search, filters, sorting, pagination and column visibility. Do not ship an unbounded table.
+Fast filters:
 
-Primary fast filters:
+- `Все`;
+- `Есть расхождение`;
+- `Вероятный дефицит`;
+- `Дорогая логистика`;
+- `Неполная экономика`;
+- `Заблокировано`.
 
-- all;
-- disagreement;
-- probable stockout;
-- expensive logistics;
-- incomplete economics;
-- blocked.
+Search, sorting, pagination and column visibility are required. No unbounded result table.
 
 ## 17. SKU/cluster detail drawer
 
-A selected decision row opens a wide non-modal right drawer in causal order:
+Wide non-modal right drawer in fixed causal order:
 
 1. Decision.
 2. Demand dynamics.
-3. How the demand is fulfilled.
+3. How demand is fulfilled.
 4. Ozon vs our model.
 5. Economics.
 6. Evidence/diagnostics.
 
-User-facing text translates technical evidence into business conclusions. Raw status/reason codes are restricted to the diagnostic disclosure.
+Raw codes appear only in diagnostic disclosure. Main path uses human-readable Russian explanations.
 
-## 18. Dedicated `Потоки спроса` analytical mode
+## 18. `Потоки спроса`
 
-This is a first-class mode, not a hidden stockout debug screen.
-
-Its purpose is to let a human visually inspect demand→fulfillment relationships and drill from cluster-level imbalance into the SKUs responsible for the flow.
+This is a first-class analytical mode, not a stockout debug screen.
 
 ### 18.1 Modes
 
-1. **По кластеру спроса** — choose a destination and see all origins that fulfill it.
-2. **По кластеру отгрузки** — choose an origin and see all destinations it serves.
-3. **По артикулу** — choose a SKU/article and see its demand and fulfillment geography.
+- **По кластеру спроса** — choose destination; see all origins fulfilling it.
+- **По кластеру отгрузки** — choose origin; see destinations it serves.
+- **По артикулу** — choose SKU/article; see its demand/fulfillment geography.
 
 ### 18.2 Metric selector
 
-The same view switches among:
+- `Штуки`;
+- `Доля спроса, %`;
+- `Потери маржи, п.п.`;
+- `Потери прибыли, ₽`.
 
-- units;
-- destination-demand share %;
-- margin loss/opportunity in percentage points;
-- profit loss/opportunity in rubles.
+For ₽ mode, the default flow screen uses `observed_profit_opportunity_rub`; projected opportunity, if shown, is explicitly labelled with its horizon.
 
 ### 18.3 Cluster overview
 
-Each cluster card shows:
+Each comparison card shows:
 
 - total destination demand;
 - local fulfillment %;
 - external fulfillment %;
 - donor count;
-- economic cost/opportunity of non-local fulfillment where computable.
-
-Cards are ordered/filterable analytical controls, not decorative KPIs.
+- current modeled non-local route cost effect;
+- observed local-placement opportunity ₽ where computable.
 
 ### 18.4 Focused flow visualization
 
-Use a **cluster-centric hub-and-spoke** view as the primary visualization.
+Primary visualization = **cluster-centric hub-and-spoke**, not a global Sankey/chord.
 
-Destination mode example:
+Destination mode centers the selected destination and shows origin connections. Origin mode reverses the viewpoint. SKU mode focuses on one SKU and its relevant clusters without showing the global all-SKU network.
 
-```text
-        Казань 14%
-             \
-              \
-        [ МОСКВА ] —— Самара 8%
-             |
-             |
-        Москва 78%
-```
-
-Connection width encodes the selected metric. The exact value is always present in text and selectable through keyboard/focus interaction.
-
-Do not use a global all-cluster Sankey/chord diagram as the main interface. It becomes unreadable at realistic cluster/SKU counts.
+Connection width encodes the selected metric, but every link has exact text values and keyboard selection. Color/width are never the sole source of meaning.
 
 ### 18.5 Route drill-down
 
@@ -524,174 +518,175 @@ Selecting `Казань → Москва` shows:
 - current net margin;
 - feasible local Moscow→Moscow counterfactual;
 - margin delta p.p.;
-- profit opportunity ₽;
-- stockout/distortion evidence where relevant.
+- observed profit opportunity ₽;
+- stockout/distortion evidence and completeness.
 
-### 18.6 SKU composition inside a route
+### 18.6 SKU composition inside route
 
-Below/alongside the selected route, show ranked horizontal bars by SKU/article.
-
-For each SKU:
+Ranked horizontal bars by SKU/article show:
 
 - units on route;
-- share of selected route;
+- share of route;
 - share of destination demand;
-- route cost effect;
+- route-cost effect;
 - margin/profit opportunity.
 
-This answers the operational question: “14% of Moscow demand comes from Kazan — which articles create those 14%?”
+This directly answers: “14% of Moscow demand comes from Kazan — which articles create those 14%?”
 
-### 18.7 Observed vs cleaned evidence
+### 18.7 Observed vs cleaned route evidence
 
-Where cleaning materially changes the picture, the analytical view can compare `Наблюдаемое` and `Очищенное`. The UI always states which evidence drives the recommendation.
+When route cleaning materially changes interpretation, the user can compare `Наблюдаемое` and `Очищенное`. The UI states which route evidence source drives the recommendation.
 
-## 19. Economics screen
+This observed/clean switch applies to fulfillment/route evidence. It does not retroactively reassign destination demand.
 
-The Plan screen remains decision-dense and does not expand every unit-economics line item.
+## 19. `Экономика`
 
-The Economics section and detail drawer expose the full backend calculation:
+Plan view shows only decision-level economics. Detail/Economics surfaces expose full line items already supported by backend economics:
 
 - realization;
 - commission;
 - acquiring;
-- base delivery/FBO costs;
-- expected route logistics;
+- FBO/delivery;
+- expected logistics;
 - advertising/services;
-- Ozon withholdings/co-invest;
+- withholdings/co-invest;
 - VAT/tax;
 - cost;
 - profit/unit;
 - margin;
 - ROI;
-- completeness/blockers/rounding source.
+- completeness/blockers/rounding.
 
-Route comparison provides `Фактическое исполнение` vs `Локальное размещение` without frontend formulas.
+Route detail compares `Фактическое исполнение` vs `Локальное размещение`; frontend never recalculates the unit economics.
 
 ## 20. Human-readable evidence
 
-The frontend must not present codes such as `RECOMMENDATION_DISTORTION_SIGNAL` as the primary explanation.
+Do not show `RECOMMENDATION_DISTORTION_SIGNAL` as the primary explanation.
 
-Examples of acceptable product copy:
+Acceptable examples:
 
 - `Рекомендация Ozon может быть занижена: часть московского спроса исполнялась из других кластеров во время вероятного дефицита.`
 - `20% спроса Москвы сейчас исполняется нелокально.`
-- `Локальное покрытие этого объёма потенциально улучшает маржу на 2,6 п.п. и добавляет 18 400 ₽.`
+- `На наблюдаемом объёме локальное покрытие улучшило бы маржу на 2,6 п.п. и дало бы +18 400 ₽ при текущей модели затрат.`
 - `Рост спроса подтверждается последней полной неделей.`
 - `Горизонты различаются: Ozon 60 дней, наш расчёт 67 дней.`
 
-Technical codes remain available for diagnostics and tests.
+Technical codes remain available in diagnostics/tests.
 
-## 21. Frontend design and UX contracts
+## 21. Frontend contracts
 
-Product Completion UI is governed by:
+UI is governed by:
 
-- `/DESIGN.md` — visual identity, tokens, density and visualization grammar;
-- `/UX-CONTRACT.md` — interaction, navigation, table, drawer, async, accessibility and `Потоки спроса` behavior.
+- `/DESIGN.md` — visual identity and visualization grammar;
+- `/UX-CONTRACT.md` — behavior, navigation, tables, drawer, async, accessibility and Flow-mode contract.
 
-Implementation must not create screen-local equivalents for recurring controls when a canonical owner is defined in `UX-CONTRACT.md`.
+Implementation must reuse canonical UI owners instead of screen-local equivalents.
 
-## 22. Error handling and incomplete data
+## 22. Error/incomplete behavior
 
-Fail closed for ambiguous/missing data that can change a financial or placement decision.
+Fail closed when missing/ambiguous data can change a financial or placement decision.
 
-Examples:
-
-- unresolved cluster identity → affected comparison blocked/incomplete;
+- unresolved cluster → affected calculations incomplete;
 - missing route tariff → counterfactual not computed;
-- incomplete unit economics → placement may be blocked according to thresholds;
-- missing historical weeks → explicit fallback/confidence reduction;
-- mismatched report horizons/dates → visible warning;
-- no clean demand evidence → observed fallback or incomplete, never fabricated zero.
+- incomplete unit economics → placement blocked according to eligibility rules;
+- insufficient weeks → lower confidence/incomplete estimate per §7.6;
+- different report dates/horizons → visible warning;
+- unknown stock/inbound → no fabricated zero.
 
-Previous successful results remain available after a failed recalculation, clearly labelled as previous snapshot.
+After failed recalculation, previous successful snapshot stays visible and is clearly labelled as previous.
 
 ## 23. Testing strategy
 
-Implementation plan must use TDD and add focused tests for at least:
+Implementation plan must use TDD.
 
-### Demand estimate
+### Demand
 
-- median `M1/M2/L` calculation;
-- >10%, ±10%, <-10% regime boundaries;
+- M1/M2/L medians;
+- ±10% regime boundaries;
 - latest-week confirmation;
 - 50% impulse and ±20% cap;
-- stable/unconfirmed no-adjustment behavior;
-- short-history fallbacks;
-- incomplete current week exclusion;
-- cleaning exclusion.
+- stable/unconfirmed no-adjustment;
+- 4–7 / 1–3 / 0-week behavior;
+- current incomplete week exclusion;
+- route substitution does **not** automatically remove destination demand.
 
-### Stockout/clean routes
+### Stockout/routes
 
-- strong historical evidence remains cleaning-eligible with neutral availability;
-- contradictory current availability does not automatically restore contaminated weeks;
-- full four-level route fallback hierarchy.
+- strong historical evidence remains route-cleaning-eligible with neutral availability;
+- contradictory current availability does not automatically restore contaminated route history;
+- full four-level route fallback.
 
-### Need/Ozon comparison
+### Need/Ozon
 
 - horizon math;
-- inbound flag on/off;
-- no safety buffer;
+- ceil-after-subtraction rounding;
+- inbound on/off;
+- no buffer;
 - zero floor;
 - different-horizon warning without Ozon rescaling;
-- missing-stock evidence behavior.
+- unknown stock evidence.
 
-### Plans/allocator
+### Plans
 
-- Safe Plan Ozon ceiling;
-- Calculated Plan independence from Ozon;
+- Safe ceiling;
+- Calculated independence from Ozon;
 - physical ceiling;
 - max-profit allocation;
 - max-margin allocation;
 - deterministic tie-breaks;
-- unallocated remainder when need < seller stock.
+- unallocated remainder;
+- both Safe/Calculated allocations produced under same objective.
 
 ### Route economics
 
-- route cost ₽ and % realization;
-- local counterfactual p.p. effect;
-- absolute opportunity ₽;
-- infeasible/missing-tariff/incomplete-economics behavior.
+- cost ₽ and `% realization`;
+- local counterfactual margin delta p.p.;
+- observed-period profit opportunity;
+- projected opportunity kept separate when present;
+- infeasible/missing-tariff/incomplete behavior.
 
 ### UI/data contract
 
-- main decision row contains all required values/reasons;
-- flow-view totals reconcile with route aggregates;
-- selected route SKU breakdown sums to route quantity;
-- observed/cleaned evidence label is preserved;
-- raw backend codes are not the only user-facing explanation;
-- table/drawer/flow keyboard behavior and accessible text parity.
+- decision row contains required values/reasons;
+- flow totals reconcile to route aggregates;
+- route SKU breakdown sums to route quantity;
+- observed/clean route source label preserved;
+- flow ₽ value period basis is explicit;
+- raw codes are not the only user-facing explanation;
+- keyboard/accessibility parity for table, drawer, nodes, links and bars.
 
 ## 24. Acceptance criteria
 
-Product Completion is not complete until a user can, with real reports:
+With real reports the user can:
 
-1. see Ozon quantity and our independently calculated need side by side;
-2. see `M1 → M2 → latest week`, regime and confidence behind our estimate;
-3. choose any horizon with no hidden safety-stock multiplier;
-4. toggle whether inbound supply reduces the need;
-5. see Safe Plan and Calculated Plan concepts without conflating them;
-6. allocate limited SKU stock under either `Макс. прибыль` or `Макс. маржа`;
-7. inspect route cost both as `% of realization` and final margin impact in p.p.;
-8. quantify the ruble opportunity of local vs current fulfillment where computable;
-9. open `Потоки спроса`, choose a destination cluster and visually see which origin clusters fulfill it;
-10. click a route and see which SKUs form that route in units and shares;
-11. switch the flow metric among units, share, margin p.p. and profit rubles;
-12. inspect the same problem from destination, origin and SKU modes;
-13. understand a disagreement without reading raw stockout/distortion codes;
-14. see stale/mismatched/incomplete evidence rather than a falsely precise result;
-15. reproduce the result from the immutable snapshot settings and report metadata.
+1. compare Ozon and independently calculated need;
+2. see `M1 → M2 → L`, regime and confidence;
+3. choose any horizon without hidden buffer;
+4. toggle inbound supply;
+5. see Safe Plan and Our/Calculated Plan side by side;
+6. allocate limited SKU stock under max-profit or max-margin;
+7. see route cost as `% realization` and final margin impact in p.p.;
+8. see observed-period ruble opportunity of local vs current fulfillment;
+9. open `Потоки спроса`, choose destination and visually see origin composition;
+10. click a route and see SKU composition in units/shares;
+11. switch flow metric among units, share, margin p.p. and profit ₽;
+12. inspect destination, origin and SKU viewpoints;
+13. understand disagreement without raw stockout/distortion codes;
+14. see stale/mismatched/incomplete evidence instead of false precision;
+15. reproduce a result from snapshot settings/report metadata.
 
-## 25. Explicit non-goals for this phase
+## 25. Non-goals
 
-- Ozon API integration or automatic report download;
-- automatic creation of supply orders in Ozon;
-- ML/black-box demand forecasting;
+- Ozon API/automatic report download;
+- automatic supply-order creation;
+- ML/black-box forecasting;
+- inferred lost demand from stockout without direct evidence;
 - hidden safety-stock optimization;
-- global network visualization for all clusters/SKUs as the primary UX;
+- global all-cluster network as primary UX;
 - cloud/multi-user architecture;
 - unrelated runtime/bootstrap redesign;
-- rewriting working backend modules solely for stylistic consistency.
+- rewriting working backend solely for style.
 
 ## 26. Implementation boundary
 
-The next step after this design is approved is a Superpowers implementation plan. The plan must sequence model corrections before UI surfaces that depend on them, preserve existing working ingestion/economics behavior where possible, and include verification against real/sanitized Ozon fixtures.
+After user review/approval of this written spec, the next Superpowers step is a detailed implementation plan. It must sequence model corrections before UI surfaces that depend on them and preserve working ingestion/economics behavior where possible.
