@@ -2,6 +2,7 @@
 
 from ._weeks import AnalyticsWindow, WeekPolicy
 from .demand import DemandCell, DemandResult, aggregate_demand
+from .demand_estimate import DemandEstimate, DemandRegime, estimate_destination_demand
 from .routes import RouteCell, RouteProfile, build_route_profile
 from .stockout import StockoutThresholds, detect_stockouts
 from .distortion import detect_recommendation_distortion
@@ -22,6 +23,8 @@ __all__ = (
     "CleanRouteResult",
     "DemandCell",
     "DemandResult",
+    "DemandEstimate",
+    "DemandRegime",
     "ExcludedRouteEvidence",
     "RouteCell",
     "RouteDistributionCell",
@@ -33,5 +36,6 @@ __all__ = (
     "build_clean_route_profile",
     "detect_recommendation_distortion",
     "detect_stockouts",
+    "estimate_destination_demand",
     "StockoutThresholds",
 )
