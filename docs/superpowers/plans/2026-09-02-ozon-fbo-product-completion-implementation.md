@@ -366,7 +366,7 @@ Call the existing `normalize_cluster_label()` and `resolve_cluster_id()` utiliti
 
 - [ ] **Step 4: Wire the resolver before analytics**
 
-In `run_analysis_pipeline()`, resolve cluster identities after all reports are parsed and before article joining/application analysis. Start with the mappings loaded by the project-mapping helper introduced in PR6; until PR6, pass an explicit empty mapping so exact operational fixtures remain compatible. Add resolver diagnostics to the existing diagnostic stream.
+In `run_analysis_pipeline()`, resolve cluster identities after all reports are parsed and before article joining/application analysis. In PR2, pass an explicit empty manual mapping so exact operational fixtures remain compatible. PR6 replaces that empty mapping with persisted Project JSON mappings. Add resolver diagnostics to the existing diagnostic stream.
 
 - [ ] **Step 5: Verify existing Project JSON mapping round-trip**
 
@@ -534,7 +534,18 @@ Public functions:
 
 ```text
 forecast_horizon(weekly_rate: Decimal, horizon_days: int) -> Decimal
-calculate_need(...explicit keyword arguments...) -> NeedComparison
+calculate_need(
+    *,
+    sku: str,
+    destination_cluster_id: str,
+    weekly_rate: Decimal | None,
+    horizon_days: int,
+    fbo_stock: int | None,
+    inbound_qty: int | None,
+    include_inbound: bool,
+    ozon_recommended_qty: int | None,
+    ozon_horizon_days: int | None,
+) -> NeedComparison
 ```
 
 - [ ] **Step 1: Add RED exact-math test**
