@@ -52,9 +52,25 @@ Frontend является тонким presentation layer. Формулы, им�
    ограничений и оптимизации.
 
 Отгрузка `Казань → Москва` является московским спросом, закрытым Казанью.
-Миграция runtime не меняет lifecycle, PII boundary, incomplete-week policy,
-stockout/distortion, clean routes, tariffs, tax/VAT/co-invest, feasibility,
-counterfactual placement, recommendation ceilings или optimizer objective.
+Product Completion развивает это разделение в полную цепочку принятия решения:
+
+```text
+Спрос
+→ фактическое исполнение
+→ искажения / stockout evidence
+→ собственная оценка потребности
+→ сравнение с Ozon
+→ маршрутная экономика
+→ Safe Plan / Calculated Plan
+→ распределение по выбранному objective
+```
+
+Ozon recommendation служит внешним сигналом для сравнения и ограничивает
+консервативный Safe Plan. Основной Calculated Plan опирается на собственную
+потребность и физическую допустимость, а пользователь может оптимизировать его
+по максимальной прибыли или максимальной марже. Ограничения recommendation
+ceiling и единственного optimizer objective относились к завершённой runtime
+migration и superseded новым Product Completion design для бизнес-логики.
 
 ## Разработка
 
@@ -78,7 +94,25 @@ smoke, включая первый bootstrap, настоящее offline-пер�
 
 ## Документы
 
-- [Canonical SCOZ-lite architecture](docs/superpowers/specs/2026-08-20-scoz-lite-portable-architecture-design.md)
-- [Canonical implementation plan PR1–PR8](docs/superpowers/plans/2026-08-20-scoz-lite-mvp-implementation.md)
+### Текущий Product Completion
+
+- [Product Completion design](docs/superpowers/specs/2026-09-02-ozon-fbo-product-completion-design.md)
+- [DESIGN — визуальная система и UI](DESIGN.md)
+- [UX-CONTRACT — обязательный UX-контракт](UX-CONTRACT.md)
+
+Новый Product Completion implementation plan будет добавлен отдельно. Старые
+MVP-планы не являются планом реализации Product Completion.
+
+### Runtime architecture
+
+- [Canonical SCOZ-lite portable architecture](docs/superpowers/specs/2026-08-20-scoz-lite-portable-architecture-design.md)
 - [Codex Cloud environment](docs/superpowers/codex-cloud-environment.md)
-- [Historical business/analytical design](docs/superpowers/specs/2026-08-19-ozon-fbo-unit-economics-optimizer-design.md)
+
+SCOZ-lite design остаётся каноническим для runtime/technical architecture и не
+отменяет бизнес-правила Product Completion.
+
+### Historical documents
+
+- [2026-08-19 business/analytical design](docs/superpowers/specs/2026-08-19-ozon-fbo-unit-economics-optimizer-design.md)
+- [2026-08-19 browser-only implementation plan](docs/superpowers/plans/2026-08-19-mvp-implementation.md)
+- [2026-08-20 SCOZ-lite MVP implementation plan PR1–PR8](docs/superpowers/plans/2026-08-20-scoz-lite-mvp-implementation.md)
