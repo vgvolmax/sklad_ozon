@@ -1,11 +1,16 @@
 """Immutable contracts for supply feasibility and placement assessment."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from backend.domain.signals import RecommendationDistortionSignal
-from backend.economics import UnitEconomicsResult
+
+if TYPE_CHECKING:
+    from backend.economics import UnitEconomicsResult
 
 
 def _require_nonblank(value: object, name: str) -> None:
@@ -29,6 +34,11 @@ class PlacementSource(str, Enum):
 class AllocationObjective(str, Enum):
     MAX_PROFIT = "max_profit"
     MAX_MARGIN = "max_margin"
+
+
+class PlanFamily(str, Enum):
+    SAFE = "safe"
+    CALCULATED = "calculated"
 
 
 class RouteConfidence(str, Enum):
@@ -69,8 +79,11 @@ class PlacementInput:
     economics: UnitEconomicsResult
     distortion_signal: RecommendationDistortionSignal | None
     route_confidence: RouteConfidence
+    calculated_need_qty: int | None = None
 
     def __post_init__(self) -> None:
+        from backend.economics import UnitEconomicsResult
+
         _require_nonblank(self.sku, "sku")
         _require_nonblank(self.cluster_id, "cluster_id")
         _require_nonnegative_int(self.ozon_recommended_qty, "ozon_recommended_qty")
@@ -94,6 +107,8 @@ class PlacementInput:
                 raise ValueError("distortion signal identity must match candidate SKU and cluster")
         if not isinstance(self.route_confidence, RouteConfidence):
             raise TypeError("route_confidence must be RouteConfidence")
+        if self.calculated_need_qty is not None:
+            _require_nonnegative_int(self.calculated_need_qty, "calculated_need_qty")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +121,7 @@ class PlacementAssessment:
     distortion_signal: RecommendationDistortionSignal | None
     route_confidence: RouteConfidence
     status_codes: tuple[str, ...]
+    calculated_need_qty: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,3 +146,5 @@ class OptimizationResult:
     objective_profit: Decimal
     decisions: tuple[AllocationDecision, ...]
     binding_reasons: tuple[str, ...]
+    plan_family: PlanFamily
+    objective: AllocationObjective

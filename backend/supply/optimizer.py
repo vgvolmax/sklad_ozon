@@ -7,8 +7,10 @@ from backend.domain.signals import SignalConfidence
 from backend.project import OptimizerThresholds
 
 from .contracts import (
+    AllocationObjective,
     AllocationDecision,
     OptimizationResult,
+    PlanFamily,
     PlacementAssessment,
     RouteConfidence,
 )
@@ -25,6 +27,8 @@ _DISTORTION_RANK = {
 _REASON_ORDER = (
     "PHYSICALLY_INFEASIBLE",
     "PHYSICAL_CEILING_ZERO",
+    "CALCULATED_NEED_MISSING",
+    "CALCULATED_NEED_CEILING_ZERO",
     "OZON_RECOMMENDATION_CEILING_ZERO",
     "ECONOMICS_INCOMPLETE",
     "MARGIN_RATE_UNAVAILABLE",
@@ -52,23 +56,33 @@ def _validate_thresholds(thresholds: object) -> OptimizerThresholds:
     return thresholds
 
 
-def _ceiling(candidate: PlacementAssessment) -> int:
+def _ceiling(candidate: PlacementAssessment, plan_family: PlanFamily) -> int:
     if not candidate.feasibility.allowed:
         return 0
+    if candidate.calculated_need_qty is None:
+        return 0
+    caps = [candidate.calculated_need_qty]
+    if plan_family is PlanFamily.SAFE:
+        caps.append(candidate.ozon_recommended_qty)
     physical = candidate.feasibility.max_supply_qty
-    if physical is None:
-        return candidate.ozon_recommended_qty
-    return min(candidate.ozon_recommended_qty, physical)
+    if physical is not None:
+        caps.append(physical)
+    return min(caps)
 
 
 def _classify(candidate: PlacementAssessment, ceiling: int,
-              thresholds: OptimizerThresholds) -> tuple[bool, set[str]]:
+              thresholds: OptimizerThresholds,
+              plan_family: PlanFamily) -> tuple[bool, set[str]]:
     reasons: set[str] = set()
     if not candidate.feasibility.allowed:
         reasons.add("PHYSICALLY_INFEASIBLE")
     elif candidate.feasibility.max_supply_qty == 0:
         reasons.add("PHYSICAL_CEILING_ZERO")
-    if candidate.ozon_recommended_qty == 0:
+    if candidate.calculated_need_qty is None:
+        reasons.add("CALCULATED_NEED_MISSING")
+    elif candidate.calculated_need_qty == 0:
+        reasons.add("CALCULATED_NEED_CEILING_ZERO")
+    if plan_family is PlanFamily.SAFE and candidate.ozon_recommended_qty == 0:
         reasons.add("OZON_RECOMMENDATION_CEILING_ZERO")
 
     economics = candidate.economics
@@ -105,12 +119,19 @@ def optimize_allocations(
     candidates: Iterable[PlacementAssessment],
     available_stock: int,
     thresholds: OptimizerThresholds,
+    *,
+    plan_family: PlanFamily,
+    objective: AllocationObjective,
 ) -> OptimizationResult:
-    """Maximize absolute profit under recommendation, physical, and stock ceilings."""
+    """Allocate one SKU under the selected alternative plan and objective."""
     if isinstance(available_stock, bool) or not isinstance(available_stock, int):
         raise TypeError("available_stock must be an int")
     if available_stock < 0:
         raise ValueError("available_stock must be nonnegative")
+    if not isinstance(plan_family, PlanFamily):
+        raise TypeError("plan_family must be PlanFamily")
+    if not isinstance(objective, AllocationObjective):
+        raise TypeError("objective must be AllocationObjective")
     thresholds = _validate_thresholds(thresholds)
     items = tuple(candidates)
     if not items:
@@ -125,19 +146,22 @@ def optimize_allocations(
     if len(keys) != len(set(keys)):
         raise ValueError("duplicate SKU and cluster candidate")
 
-    ceilings = {item.cluster_id: _ceiling(item) for item in items}
+    ceilings = {item.cluster_id: _ceiling(item, plan_family) for item in items}
     classified = {
-        item.cluster_id: _classify(item, ceilings[item.cluster_id], thresholds)
+        item.cluster_id: _classify(item, ceilings[item.cluster_id], thresholds, plan_family)
         for item in items
     }
     eligible = [item for item in items if classified[item.cluster_id][0]]
     # Stable least-significant-first sorts avoid doing arithmetic on Decimal keys.
     eligible.sort(key=lambda item: item.cluster_id)
-    eligible.sort(key=lambda item: item.ozon_recommended_qty, reverse=True)
+    eligible.sort(key=lambda item: item.calculated_need_qty, reverse=True)
     eligible.sort(key=lambda item: _DISTORTION_RANK[
         None if item.distortion_signal is None else item.distortion_signal.confidence])
     eligible.sort(key=lambda item: _ROUTE_RANK[item.route_confidence], reverse=True)
-    eligible.sort(key=lambda item: item.economics.profit_per_unit, reverse=True)
+    if objective is AllocationObjective.MAX_PROFIT:
+        eligible.sort(key=lambda item: item.economics.profit_per_unit, reverse=True)
+    else:
+        eligible.sort(key=lambda item: item.economics.margin_rate, reverse=True)
 
     remaining = available_stock
     quantities: dict[str, int] = {}
@@ -168,7 +192,7 @@ def optimize_allocations(
             ))
         eligible_capacity = sum(ceilings[item.cluster_id] for item in eligible)
         allocated = sum(decision.allocation_qty for decision in decisions)
-        objective = sum((decision.expected_profit for decision in decisions), _ZERO)
+        objective_profit = sum((decision.expected_profit for decision in decisions), _ZERO)
 
     if eligible_capacity == 0:
         binding = (("ZERO_AVAILABLE_STOCK", "NO_ELIGIBLE_CAPACITY")
@@ -184,5 +208,6 @@ def optimize_allocations(
 
     return OptimizationResult(
         sku, available_stock, allocated, available_stock - allocated,
-        eligible_capacity, objective, tuple(decisions), binding,
+        eligible_capacity, objective_profit, tuple(decisions), binding,
+        plan_family, objective,
     )

@@ -6,16 +6,19 @@ from itertools import permutations
 
 import pytest
 
+import backend.analytics  # Load analytics contracts before economics' public facade.
 from backend.domain.signals import RecommendationDistortionSignal, SignalConfidence
 from backend.economics import CalculationBases, RoundingMetadata, UnitEconomicsResult
 from backend.project import OptimizerThresholds
 from backend.supply import (
     AllocationDecision,
+    AllocationObjective,
     OptimizationResult,
+    PlanFamily,
     PlacementAssessment,
     RouteConfidence,
     SupplyFeasibility,
-    optimize_allocations,
+    optimize_allocations as _optimize_allocations,
 )
 
 
@@ -23,9 +26,16 @@ def thresholds(profit="10", margin="0.10", roi="0.20"):
     return OptimizerThresholds(Decimal(profit), Decimal(margin), Decimal(roi))
 
 
+def optimize_allocations(candidates, stock, limits, *,
+                         plan_family=PlanFamily.SAFE,
+                         objective=AllocationObjective.MAX_PROFIT):
+    return _optimize_allocations(
+        candidates, stock, limits, plan_family=plan_family, objective=objective)
+
+
 def candidate(cluster="A", *, sku="SKU-1", recommendation=10, physical=None,
               allowed=True, complete=True, profit="30", margin="0.30", roi="0.40",
-              route=RouteConfidence.MEDIUM, distortion=None):
+              route=RouteConfidence.MEDIUM, distortion=None, need=None):
     economics = UnitEconomicsResult(
         sku, cluster, Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"),
         Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"),
@@ -39,7 +49,93 @@ def candidate(cluster="A", *, sku="SKU-1", recommendation=10, physical=None,
     )
     return PlacementAssessment(
         sku, cluster, recommendation, feasibility, economics, distortion, route, (),
+        recommendation if need is None else need,
     )
+
+
+def test_plan_specific_ceilings_and_metadata_are_exact():
+    item = candidate(recommendation=5, need=12, physical=20)
+    safe = optimize_allocations([item], 100, thresholds(), plan_family=PlanFamily.SAFE)
+    calculated = optimize_allocations(
+        [item], 100, thresholds(), plan_family=PlanFamily.CALCULATED)
+    assert safe.decisions[0].automatic_ceiling_qty == 5
+    assert calculated.decisions[0].automatic_ceiling_qty == 12
+    assert safe.plan_family is PlanFamily.SAFE
+    assert calculated.plan_family is PlanFamily.CALCULATED
+    assert safe.objective is calculated.objective is AllocationObjective.MAX_PROFIT
+
+
+@pytest.mark.parametrize("family", list(PlanFamily))
+def test_physical_ceiling_caps_both_plan_families(family):
+    result = optimize_allocations(
+        [candidate(recommendation=20, need=12, physical=7)], 100, thresholds(),
+        plan_family=family,
+    )
+    assert result.decisions[0].automatic_ceiling_qty == 7
+
+
+@pytest.mark.parametrize("recommendation", [0, 5, 500])
+def test_calculated_plan_is_independent_of_ozon(recommendation):
+    item = candidate(recommendation=recommendation, need=12, physical=None)
+    result = optimize_allocations(
+        [item], 100, thresholds(), plan_family=PlanFamily.CALCULATED)
+    assert result.decisions[0].automatic_ceiling_qty == 12
+    assert result.decisions[0].allocation_qty == 12
+
+
+def test_ozon_zero_blocks_only_safe_plan():
+    item = candidate(recommendation=0, need=12)
+    safe = optimize_allocations([item], 20, thresholds())
+    calculated = optimize_allocations(
+        [item], 20, thresholds(), plan_family=PlanFamily.CALCULATED)
+    assert safe.decisions[0].reason_codes == ("OZON_RECOMMENDATION_CEILING_ZERO",)
+    assert calculated.decisions[0].allocation_qty == 12
+
+
+@pytest.mark.parametrize("need,reason", [
+    (None, "CALCULATED_NEED_MISSING"),
+    (0, "CALCULATED_NEED_CEILING_ZERO"),
+])
+@pytest.mark.parametrize("family", list(PlanFamily))
+def test_missing_and_zero_need_are_distinct_blockers(need, reason, family):
+    item = replace(candidate(need=1), calculated_need_qty=need)
+    decision = optimize_allocations(
+        [item], 20, thresholds(), plan_family=family).decisions[0]
+    assert decision.automatic_ceiling_qty == 0
+    assert decision.reason_codes == (reason,)
+
+
+def test_objective_changes_priority_but_profit_remains_modeled_profit():
+    items = [candidate("A", recommendation=10, need=10, profit="50", margin="0.20"),
+             candidate("B", recommendation=10, need=10, profit="40", margin="0.30")]
+    profit = optimize_allocations(items, 5, thresholds())
+    margin = optimize_allocations(
+        items, 5, thresholds(), objective=AllocationObjective.MAX_MARGIN)
+    assert allocations(profit) == {"A": 5, "B": 0}
+    assert allocations(margin) == {"A": 0, "B": 5}
+    assert margin.objective is AllocationObjective.MAX_MARGIN
+    assert margin.objective_profit == Decimal("200")
+    assert margin.objective_profit == sum(
+        (decision.expected_profit for decision in margin.decisions), Decimal("0"))
+
+
+def test_calculated_need_is_only_a_tie_break_after_selected_objective():
+    result = optimize_allocations([
+        candidate("A", recommendation=5, need=5, profit="50"),
+        candidate("B", recommendation=100, need=100, profit="40"),
+    ], 1, thresholds(), plan_family=PlanFamily.CALCULATED)
+    assert allocations(result) == {"A": 1, "B": 0}
+
+
+def test_pure_boundary_rejects_string_plan_and_objective():
+    with pytest.raises(TypeError, match="plan_family"):
+        _optimize_allocations(
+            [candidate()], 1, thresholds(), plan_family="safe",
+            objective=AllocationObjective.MAX_PROFIT)
+    with pytest.raises(TypeError, match="objective"):
+        _optimize_allocations(
+            [candidate()], 1, thresholds(), plan_family=PlanFamily.SAFE,
+            objective="max_profit")
 
 
 def allocations(result):
@@ -73,10 +169,10 @@ def test_recommendation_and_physical_caps_are_hard_ceiling(item, stock, ceiling)
 
 
 @pytest.mark.parametrize("item,ceiling,reasons", [
-    (candidate(recommendation=0, profit="1000", route=RouteConfidence.HIGH),
+    (candidate(recommendation=0, need=10, profit="1000", route=RouteConfidence.HIGH),
      0, ("OZON_RECOMMENDATION_CEILING_ZERO",)),
     (candidate(recommendation=100, physical=0), 0, ("PHYSICAL_CEILING_ZERO",)),
-    (candidate(recommendation=0, physical=0),
+    (candidate(recommendation=0, need=10, physical=0),
      0, ("PHYSICAL_CEILING_ZERO", "OZON_RECOMMENDATION_CEILING_ZERO")),
     (candidate(allowed=False, physical=100), 0, ("PHYSICALLY_INFEASIBLE",)),
     (candidate(complete=False), 10, ("ECONOMICS_INCOMPLETE",)),
@@ -173,17 +269,23 @@ def test_global_binding_reasons_and_eligible_capacity():
 def test_high_precision_decimal_uses_local_context_without_quantization():
     original = getcontext().copy()
     profit = "1.123456789012345678901234567890123456789"
-    result = optimize_allocations([candidate(profit=profit)], 3, thresholds(profit="0"))
-    with localcontext() as context:
-        context.prec = 40
-        context.rounding = ROUND_HALF_EVEN
-        expected = Decimal(profit) * 3
-        quantized = Decimal(profit).quantize(Decimal("0.01"))
-    assert result.objective_profit != quantized
-    assert result.objective_profit == expected
-    assert getcontext().prec == original.prec
-    assert getcontext().rounding == original.rounding
-    assert getcontext().flags == original.flags
+    try:
+        getcontext().prec = 2
+        result = optimize_allocations([candidate(profit=profit)], 3, thresholds(profit="0"))
+        with localcontext() as context:
+            context.prec = 40
+            context.rounding = ROUND_HALF_EVEN
+            expected = Decimal(profit) * 3
+            quantized = Decimal(profit).quantize(Decimal("0.01"))
+        assert result.objective_profit != quantized
+        assert result.objective_profit == expected
+        assert getcontext().prec == 2
+    finally:
+        getcontext().prec = original.prec
+        getcontext().rounding = original.rounding
+        getcontext().clear_flags()
+        for signal, enabled in original.flags.items():
+            getcontext().flags[signal] = enabled
 
 
 @pytest.mark.parametrize("items,stock,error", [

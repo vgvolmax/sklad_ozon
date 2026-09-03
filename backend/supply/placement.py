@@ -44,6 +44,7 @@ def compare_placements(
             candidate.sku, candidate.cluster_id, candidate.ozon_recommended_qty,
             feasibility, candidate.economics, candidate.distortion_signal,
             candidate.route_confidence, statuses,
+            candidate.calculated_need_qty,
         ))
 
     return tuple(sorted(assessments, key=lambda item: (item.sku, item.cluster_id)))
