@@ -61,3 +61,33 @@ def test_frontend_has_no_legacy_business_joins_or_raw_primary_code():
     assert 'data.snapshot' not in js or 'result.snapshot' in js
     assert 'RECOMMENDATION_DISTORTION_SIGNAL' not in js
     assert 'Колонки' in (ROOT/'frontend/assets/js/components.js').read_text()
+    components=(ROOT/'frontend/assets/js/components.js').read_text()
+    app=(ROOT/'frontend/assets/js/app.js').read_text()
+    assert 'data-row-index' in components
+    assert 'data-open=' not in components
+    assert "replace:true,restoreFocus:'#plan-search input'" in app
+    assert "latest_week_qty" in app and ".latest)" not in app
+
+
+def test_demand_wire_contract_and_human_presentation():
+    demand={'m1':'19.5','m2':'24.5','latest_week_qty':'29','regime':'growth','regime_confirmed':True,'current_weekly_rate':'26.75'}
+    model=node(f"SkladOzon.parseDemandPresentation({json.dumps(demand)})")
+    assert model == {'levels':'19,5 → 24,5 → 29','regime':'Рост','confirmation':'подтверждён','weeklyRate':'26,75'}
+    assert node("SkladOzon.parseDemandPresentation({regime_confirmed:false}).confirmation") == 'не подтверждён'
+    assert node("SkladOzon.parseDemandPresentation({regime_confirmed:null}).confirmation") == 'подтверждение недоступно'
+
+
+def test_fraction_percent_pp_and_dom_identity_are_distinct():
+    values=node("[SkladOzon.presentPercentFraction('0.25'),SkladOzon.presentPercentFraction(0),SkladOzon.presentPercentFraction(null),SkladOzon.presentPercentagePoints(2.5)]")
+    assert [x.replace('\xa0',' ') for x in values] == ['25 %','0 %','Не рассчитано','2,5 п.п.']
+    keys=node("[SkladOzon.domDecisionKey('A/B','C'),SkladOzon.domDecisionKey('A','B/C')]")
+    assert keys[0] != keys[1]
+    assert all('\0' not in key for key in keys)
+
+
+def test_drawer_diagnostics_model_keeps_messages_and_technical_codes():
+    row=rows()[0]; row['destination_cluster_id']='Москва'; row['status_codes']=['CODE']
+    snap={'diagnostics':[{'sku':'S0','destination_cluster_id':'Москва','code':'DIAG','message':'Понятное сообщение'}]}
+    data=node(f"SkladOzon.buildDrawerModel({json.dumps(row,ensure_ascii=False)},{json.dumps(snap,ensure_ascii=False)}).sections[5].data")
+    assert data['explanations'] == ['Пояснение']
+    assert data['diagnostics'][0]['message'] == 'Понятное сообщение'

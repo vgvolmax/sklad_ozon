@@ -14,6 +14,7 @@ def test_product_shell_is_local_semantic_and_has_canonical_sections():
         assert label in html
     assert 'id="detail-drawer"' in html
     assert 'id="progress-region" aria-live="polite"' in html
+    assert 'id="global-analysis-status"' in html
     for asset in ("/assets/css/app.css", "/assets/js/core.js", "/assets/js/components.js", "/assets/js/app.js"):
         assert asset in html
     lowered = html.lower()
