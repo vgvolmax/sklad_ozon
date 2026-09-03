@@ -104,6 +104,25 @@ def test_multi_sku_flow_does_not_invent_margin_average_and_reconciles():
     assert sum(item.destination_share for item in view.links) == Decimal("1")
 
 
+def test_clean_breakdown_keeps_observed_audit_value_separate_from_evidence_value():
+    flow = SimpleNamespace(sku="A", origin_cluster_id="Казань",
+                           destination_cluster_id="Москва", quantity=4)
+    opportunity = SimpleNamespace(
+        sku="A", origin_cluster_id="Казань", destination_cluster_id="Москва",
+        complete=True, reason_codes=(), margin_delta_pp=Decimal("10"),
+        observed_qty=10, observed_profit_opportunity_rub=Decimal("1000"),
+        route_cost_rub=Decimal("20"), realization_per_unit=Decimal("80"),
+        price_per_unit=Decimal("100"), current_profit_per_unit=Decimal("10"),
+        local_route_cost_rub=Decimal("10"), local_profit_per_unit=Decimal("110"),
+        profit_delta_per_unit=Decimal("100"),
+    )
+    view = next(v for v in _views((flow,), (), (opportunity,), evidence_source="clean")
+                if v.mode == "destination")
+    item = view.links[0].sku_breakdown[0]
+    assert item.observed_profit_opportunity_rub == Decimal("1000")
+    assert item.profit_opportunity_rub == Decimal("400")
+
+
 def test_identity_fallback_and_incomplete_row_contract_preserve_real_zero():
     assert first_nonblank("  ", " ECON-ARTICLE ", "fallback") == "ECON-ARTICLE"
     need = SimpleNamespace(complete=True)
