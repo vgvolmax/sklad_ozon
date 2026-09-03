@@ -67,6 +67,16 @@ def _is_incomplete_row(row, placement, *, route_required, route_complete):
     )
 
 
+def _signal_status_codes(key, stockout_signals, distortion_signals):
+    """Project already-computed signal identities into a decision-row status."""
+    codes = set()
+    if key in {(item.sku, item.destination_cluster_id) for item in stockout_signals}:
+        codes.add("PROBABLE_STOCKOUT")
+    if key in {(item.sku, item.recommended_cluster_id) for item in distortion_signals}:
+        codes.add("RECOMMENDATION_DISTORTION")
+    return codes
+
+
 def _views(flows, products, opportunities, product_identities=None):
     product_map = {p.sku: p for p in products}
     product_identities = product_identities or {}
@@ -157,6 +167,7 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
         if s is None: codes.add("SAFE_PLAN_UNAVAILABLE")
         if c is None: codes.add("CALCULATED_PLAN_UNAVAILABLE")
         if route_required and not route_complete: codes.add("ROUTE_ECONOMICS_INCOMPLETE")
+        codes.update(_signal_status_codes(key, stockout_signals, distortion_signals))
         status=tuple(sorted(codes))
         identity=product_identities.get(need.sku, ("", ""))
         article=first_nonblank(identity[0], getattr(p,"article", ""))

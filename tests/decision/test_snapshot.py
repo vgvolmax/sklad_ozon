@@ -6,7 +6,8 @@ import pytest
 from backend.decision import FlowView, HorizonComparability, NeedComparison
 from backend.decision.explanations import explain_decision
 from backend.decision.snapshot import (_is_incomplete_row, _route_aggregate,
-                                       _views, first_nonblank)
+                                       _signal_status_codes, _views,
+                                       first_nonblank)
 
 
 def test_flow_view_rejects_non_business_mode():
@@ -110,3 +111,16 @@ def test_identity_fallback_and_incomplete_row_contract_preserve_real_zero():
     missing_row = SimpleNamespace(need=need, safe_plan_qty=None, calculated_plan_qty=0)
     assert _is_incomplete_row(
         missing_row, placement, route_required=False, route_complete=True)
+
+
+def test_signal_status_projection_matches_complete_decision_identity_only():
+    stockout = SimpleNamespace(sku="SKU", destination_cluster_id="Москва")
+    distortion = SimpleNamespace(sku="SKU", recommended_cluster_id="Казань")
+
+    assert _signal_status_codes(("SKU", "Москва"), (stockout,), (distortion,)) == {
+        "PROBABLE_STOCKOUT"
+    }
+    assert _signal_status_codes(("SKU", "Казань"), (stockout,), (distortion,)) == {
+        "RECOMMENDATION_DISTORTION"
+    }
+    assert _signal_status_codes(("OTHER", "Москва"), (stockout,), (distortion,)) == set()

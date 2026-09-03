@@ -20,9 +20,12 @@ def test_committed_frontend_and_assets_are_served():
     index = client.get("/")
     assert index.status_code == 200
     assert index.headers["content-type"].startswith("text/html")
-    assert "Склад Ozon" in index.text
-    assert client.get("/assets/css/app.css").status_code == 200
+    assert "Sklad Ozon" in index.text
+    assert "План" in index.text
+    assert client.get("/assets/js/core.js").status_code == 200
+    assert client.get("/assets/js/components.js").status_code == 200
     assert client.get("/assets/js/app.js").status_code == 200
+    assert client.get("/assets/css/app.css").status_code == 200
 
 
 def test_loopback_configuration_is_exact():

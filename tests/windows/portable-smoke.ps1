@@ -62,9 +62,10 @@ function Assert-WebApplication {
     $health = Invoke-WebRequest "http://127.0.0.1:17843/api/health" -TimeoutSec 5 -UseBasicParsing
     if ($health.StatusCode -ne 200) { throw "Health HTTP status was $($health.StatusCode)" }
     $index = Invoke-WebRequest "http://127.0.0.1:17843/" -TimeoutSec 5 -UseBasicParsing
-    $expectedTitle = (-join @([char]0x0421, [char]0x043A, [char]0x043B, [char]0x0430, [char]0x0434)) + " Ozon"
-    if ($index.StatusCode -ne 200 -or $index.Content -notmatch [regex]::Escape($expectedTitle)) { throw "Application UI identity was not served" }
-    foreach ($asset in @("/assets/css/app.css", "/assets/js/app.js")) {
+    $expectedTitle = "Sklad Ozon"
+    $expectedSection = -join @([char]0x041F, [char]0x043B, [char]0x0430, [char]0x043D)
+    if ($index.StatusCode -ne 200 -or $index.Content -notmatch [regex]::Escape($expectedTitle) -or $index.Content -notmatch [regex]::Escape($expectedSection)) { throw "Application UI identity was not served" }
+    foreach ($asset in @("/assets/css/app.css", "/assets/js/core.js", "/assets/js/components.js", "/assets/js/app.js")) {
         $response = Invoke-WebRequest "http://127.0.0.1:17843$asset" -TimeoutSec 5 -UseBasicParsing
         if ($response.StatusCode -ne 200) { throw "Asset $asset was not served" }
     }
