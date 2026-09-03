@@ -55,6 +55,24 @@ def test_section_route_serializes_the_current_plan_view_for_history_restoration(
     assert route == '#data?q=39439&filter=blocked&size=100'
 
 
+def test_section_navigation_action_preserves_complete_plan_view_and_serializes_it():
+    result = node("""(()=>{let state={...SkladOzon.createInitialState(),section:'plan',planView:{...SkladOzon.createInitialState().planView,search:'39439',quickFilter:'blocked',sort:{key:'profit',direction:'desc'},page:2,pageSize:100}};const data=SkladOzon.navigateSectionState(state,'data');const plan=SkladOzon.navigateSectionState(data,'plan');return {data,plan,dataHash:SkladOzon.serializeRoute(data),planHash:SkladOzon.serializeRoute(plan)};})()""")
+    expected_view = {
+        'search': '39439',
+        'quickFilter': 'blocked',
+        'sort': {'key': 'profit', 'direction': 'desc'},
+        'page': 2,
+        'pageSize': 100,
+        'columns': [],
+    }
+    assert result['data']['section'] == 'data'
+    assert result['data']['planView'] == expected_view
+    assert result['dataHash'] == '#data?q=39439&filter=blocked&sort=profit%3Adesc&page=2&size=100'
+    assert result['plan']['section'] == 'plan'
+    assert result['plan']['planView'] == expected_view
+    assert result['planHash'] == '#plan?q=39439&filter=blocked&sort=profit%3Adesc&page=2&size=100'
+
+
 def test_mapping_draft_rows_are_independent_and_only_saved_changes_revision():
     result = node("(()=>{let s=SkladOzon.initializeMappings(SkladOzon.createInitialState(),{});s=SkladOzon.addMappingDraft(SkladOzon.addMappingDraft(s));const ids=s.mappingDraftRows.map(x=>x.id);s=SkladOzon.updateMappingDraft(s,ids[0],{source:' Alias ',target:' Canonical '});const revision=s.inputRevision;const completed=SkladOzon.commitMappings(s,{Alias:'Canonical'});return {count:s.mappingDraftRows.length,ids,dirty:s.mappingDirty,draft:s.mappingDraftRows[0],revision,committedRevision:completed.inputRevision,committedDirty:completed.mappingDirty,stale:completed.staleSnapshot};})()")
     assert result['count'] == 2
