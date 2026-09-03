@@ -676,16 +676,24 @@ def test_negative_optimizer_threshold_is_accepted_by_transport():
 
 def test_upload_limit_and_thin_frontend_contract():
     assert MAX_UPLOAD_BYTES == 64 * 1024 * 1024
-    source = Path("frontend/assets/js/app.js").read_text(encoding="utf-8")
-    assert "fetch(" in source and "FormData" in source and "/api/" in source
-    assert not any(token in source for token in ("calculate_unit_economics", "function expectedLogistics(", "calculateExpectedLogistics(", "calculateRouteEconomics(", "calculateMargin(", "SheetJS", "FileReader", "ArrayBuffer", "JSZip"))
-    assert "result.snapshot" in source
-    assert "snap.summary" in source and "snap.input_statuses" in source
-    assert not any(field in source for field in (
+    app_source = Path("frontend/assets/js/app.js").read_text(encoding="utf-8")
+    core_source = Path("frontend/assets/js/core.js").read_text(encoding="utf-8")
+    frontend_source = app_source + "\n" + core_source
+    assert "fetch(" in app_source
+    assert "/api/" in app_source
+    assert "S.buildAnalysisRequestBody(" in app_source
+    assert "new FormData" not in app_source
+    assert "buildAnalysisRequestBody" in core_source
+    assert "FormData" in core_source
+    assert "FormDataCtor" in core_source
+    assert not any(token in frontend_source for token in ("calculate_unit_economics", "function expectedLogistics(", "calculateExpectedLogistics(", "calculateRouteEconomics(", "calculateMargin(", "SheetJS", "FileReader", "ArrayBuffer", "JSZip"))
+    assert "result.snapshot" in app_source
+    assert "snap.summary" in app_source and "snap.input_statuses" in app_source
+    assert not any(field in frontend_source for field in (
         "data.placements", "data.allocations", "data.safe_allocations",
         "data.logistics", "data.economics",
     ))
-    assert all(label in source for label in ("Выбран", "Проверено", "Есть ошибки"))
+    assert all(label in app_source for label in ("Выбран", "Проверено", "Есть ошибки"))
 
 
 def test_analysis_stream_emits_ordered_progress_and_equivalent_result_without_pii():
