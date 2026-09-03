@@ -94,6 +94,24 @@ class RouteSkuBreakdown:
     route_share: Decimal; destination_demand_share: Decimal
     margin_delta_pp: Decimal | None
     observed_profit_opportunity_rub: Decimal | None
+    profit_opportunity_rub: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class FlowEconomicsAggregate:
+    """UI-ready economics for one evidence-weighted flow group."""
+    quantity: int
+    route_cost_rub_per_unit: Decimal | None
+    route_cost_pct_of_realization: Decimal | None
+    current_margin_rate: Decimal | None
+    local_route_cost_rub_per_unit: Decimal | None
+    local_route_cost_pct_of_realization: Decimal | None
+    local_margin_rate: Decimal | None
+    margin_delta_pp: Decimal | None
+    profit_delta_per_unit: Decimal | None
+    profit_opportunity_rub: Decimal | None
+    complete: bool
+    reason_codes: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,17 +123,21 @@ class FlowLinkView:
     route_economics_complete: bool
     route_reason_codes: tuple[str, ...]
     sku_breakdown: tuple[RouteSkuBreakdown, ...]
+    economics: FlowEconomicsAggregate
 
 
 @dataclass(frozen=True, slots=True)
 class FlowView:
-    mode: str; key: str; total_quantity: int
+    mode: str; key: str; evidence_source: str; total_quantity: int
     local_share: Decimal | None; external_share: Decimal | None; donor_count: int
+    external_economics: FlowEconomicsAggregate | None
     links: tuple[FlowLinkView, ...]
 
     def __post_init__(self) -> None:
         if self.mode not in {"destination", "origin", "sku"}:
             raise ValueError("mode must be destination, origin, or sku")
+        if self.evidence_source not in {"observed", "clean"}:
+            raise ValueError("evidence_source must be observed or clean")
 
 
 @dataclass(frozen=True, slots=True)

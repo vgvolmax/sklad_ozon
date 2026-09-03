@@ -12,7 +12,7 @@ from backend.decision.snapshot import (_is_incomplete_row, _route_aggregate,
 
 def test_flow_view_rejects_non_business_mode():
     with pytest.raises(ValueError):
-        FlowView("global", "all", 0, None, None, 0, ())
+        FlowView("global", "all", "observed", 0, None, None, 0, None, ())
 
 
 def test_horizon_explanation_is_localized_and_keeps_exact_values():
@@ -84,15 +84,21 @@ def test_multi_sku_flow_does_not_invent_margin_average_and_reconciles():
         sku=sku, origin_cluster_id="Казань", destination_cluster_id="Москва",
         complete=True, reason_codes=(), margin_delta_pp=margin,
         observed_profit_opportunity_rub=rubles,
-    ) for sku, margin, rubles in (
-        ("A", Decimal("0"), Decimal("9")),
-        ("B", Decimal("10"), Decimal("2")),
+        route_cost_rub=cost, realization_per_unit=realization,
+        price_per_unit=price, current_profit_per_unit=current_profit,
+        local_route_cost_rub=local_cost, local_profit_per_unit=local_profit,
+        profit_delta_per_unit=local_profit-current_profit,
+    ) for sku, margin, rubles, cost, realization, price, current_profit, local_cost, local_profit in (
+        ("A", Decimal("10"), Decimal("90"), Decimal("20"), Decimal("80"), Decimal("100"), Decimal("10"), Decimal("10"), Decimal("20")),
+        ("B", Decimal("10"), Decimal("20"), Decimal("40"), Decimal("160"), Decimal("200"), Decimal("20"), Decimal("20"), Decimal("40")),
     ))
     view = next(item for item in _views(flows, (), opportunities)
                 if item.mode == "destination")
     link = view.links[0]
-    assert link.margin_delta_pp is None
-    assert link.observed_profit_opportunity_rub == Decimal("11")
+    assert link.margin_delta_pp == Decimal("10")
+    assert link.observed_profit_opportunity_rub == Decimal("110")
+    assert link.economics.route_cost_rub_per_unit == Decimal("22")
+    assert link.economics.route_cost_pct_of_realization == Decimal("0.25")
     assert sum(item.quantity for item in link.sku_breakdown) == link.quantity == view.total_quantity
     assert sum(item.route_share for item in link.sku_breakdown) == Decimal("1")
     assert sum(item.destination_share for item in view.links) == Decimal("1")

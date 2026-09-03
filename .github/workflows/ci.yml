@@ -19,6 +19,7 @@ jobs:
       - run: python -m pytest -q
       - run: node --check frontend/assets/js/core.js
       - run: node --check frontend/assets/js/components.js
+      - run: node --check frontend/assets/js/flow.js
       - run: node --check frontend/assets/js/app.js
 
   windows-portable-smoke:

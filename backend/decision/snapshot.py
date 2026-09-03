@@ -8,7 +8,7 @@ from uuid import uuid4
 from backend.analytics.flows import aggregate_clean_flows, aggregate_observed_flows
 from backend.domain.signals import SignalConfidence
 from .contracts import (AnalysisSnapshot, DecisionRow, DecisionSummary, DiagnosticView,
-                        FlowLinkView, FlowView, FlowViewAggregates, RouteSkuBreakdown)
+                        FlowEconomicsAggregate, FlowLinkView, FlowView, FlowViewAggregates, RouteSkuBreakdown)
 from .explanations import explain_decision
 
 _CTX = Context(prec=40, rounding=ROUND_HALF_EVEN)
@@ -77,54 +77,120 @@ def _signal_status_codes(key, stockout_signals, distortion_signals):
     return codes
 
 
-def _views(flows, products, opportunities, product_identities=None):
+def _flow_economics(rows, opportunities):
+    """Aggregate calculated per-unit economics with selected evidence quantities."""
+    quantity = sum(row.quantity for row in rows)
+    pairs = [(row, opportunities.get((row.sku, row.origin_cluster_id,
+                                      row.destination_cluster_id))) for row in rows]
+    reasons = tuple(sorted({code for _, item in pairs if item
+                            for code in item.reason_codes}))
+    complete = bool(pairs) and quantity > 0 and all(
+        item is not None and item.complete
+        and item.route_cost_rub is not None
+        and item.realization_per_unit is not None
+        and item.price_per_unit is not None
+        and item.current_profit_per_unit is not None
+        and item.local_route_cost_rub is not None
+        and item.local_profit_per_unit is not None
+        and item.profit_delta_per_unit is not None
+        for _, item in pairs)
+    if not complete:
+        return FlowEconomicsAggregate(
+            quantity, None, None, None, None, None, None, None, None, None,
+            False, reasons or ("ROUTE_ECONOMICS_INCOMPLETE",))
+    with localcontext(_CTX):
+        q = Decimal(quantity)
+        route_total = sum((item.route_cost_rub * Decimal(row.quantity)
+                           for row, item in pairs), Decimal("0"))
+        realization_total = sum((item.realization_per_unit * Decimal(row.quantity)
+                                 for row, item in pairs), Decimal("0"))
+        price_total = sum((item.price_per_unit * Decimal(row.quantity)
+                           for row, item in pairs), Decimal("0"))
+        current_profit = sum((item.current_profit_per_unit * Decimal(row.quantity)
+                              for row, item in pairs), Decimal("0"))
+        local_route_total = sum((item.local_route_cost_rub * Decimal(row.quantity)
+                                 for row, item in pairs), Decimal("0"))
+        local_profit = sum((item.local_profit_per_unit * Decimal(row.quantity)
+                            for row, item in pairs), Decimal("0"))
+        opportunity = sum((item.profit_delta_per_unit * Decimal(row.quantity)
+                           for row, item in pairs), Decimal("0"))
+        if realization_total <= 0 or price_total <= 0:
+            return FlowEconomicsAggregate(
+                quantity, None, None, None, None, None, None, None, None, None,
+                False, ("MISSING_OR_ZERO_REALIZATION",))
+        current_margin = current_profit / price_total
+        local_margin = local_profit / price_total
+        return FlowEconomicsAggregate(
+            quantity, route_total / q, route_total / realization_total,
+            current_margin, local_route_total / q,
+            local_route_total / realization_total, local_margin,
+            (local_margin - current_margin) * Decimal("100"), opportunity / q,
+            opportunity, True, ())
+
+
+def _views(flows, products, opportunities, product_identities=None,
+           *, evidence_source="observed"):
     product_map = {p.sku: p for p in products}
     product_identities = product_identities or {}
-    opp = {(x.sku, x.origin_cluster_id, x.destination_cluster_id): x for x in opportunities}
+    opp = {(x.sku, x.origin_cluster_id, x.destination_cluster_id): x
+           for x in opportunities}
     destination_totals = defaultdict(int)
-    for f in flows: destination_totals[f.destination_cluster_id] += f.quantity
+    for flow in flows:
+        destination_totals[flow.destination_cluster_id] += flow.quantity
 
     def build(mode, key, selected):
         route_groups = defaultdict(list)
-        for f in selected: route_groups[(f.origin_cluster_id, f.destination_cluster_id)].append(f)
-        total = sum(f.quantity for f in selected)
+        for flow in selected:
+            route_groups[(flow.origin_cluster_id,
+                          flow.destination_cluster_id)].append(flow)
+        total = sum(flow.quantity for flow in selected)
         links = []
         with localcontext(_CTX):
             for (origin, destination), rows in sorted(route_groups.items()):
-                qty = sum(x.quantity for x in rows)
-                breakdown=[]
-                for f in sorted(rows, key=lambda x:x.sku):
-                    p=product_map.get(f.sku); o=opp.get((f.sku,origin,destination))
-                    identity=product_identities.get(f.sku, ("", ""))
-                    article=first_nonblank(identity[0], getattr(p,"article", ""))
-                    name=first_nonblank(identity[1], getattr(p,"product_name", ""))
+                quantity = sum(row.quantity for row in rows)
+                economics = _flow_economics(rows, opp)
+                breakdown = []
+                for flow in sorted(rows, key=lambda item: item.sku):
+                    product = product_map.get(flow.sku)
+                    opportunity = opp.get((flow.sku, origin, destination))
+                    identity = product_identities.get(flow.sku, ("", ""))
+                    article = first_nonblank(identity[0], getattr(product, "article", ""))
+                    name = first_nonblank(identity[1], getattr(product, "product_name", ""))
                     breakdown.append(RouteSkuBreakdown(
-                        f.sku, article, name,
-                        f.quantity, Decimal(f.quantity)/Decimal(qty),
-                        Decimal(f.quantity)/Decimal(destination_totals[destination]),
-                        None if o is None else o.margin_delta_pp,
-                        None if o is None else o.observed_profit_opportunity_rub))
-                os=[opp.get((f.sku,origin,destination)) for f in rows]
-                complete=bool(os) and all(o is not None and o.complete for o in os)
-                reasons=tuple(sorted({c for o in os if o for c in o.reason_codes}))
-                if not complete and not reasons:
-                    reasons=("ROUTE_ECONOMICS_INCOMPLETE",)
-                margins=[o.margin_delta_pp for o in os if o and o.margin_delta_pp is not None]
-                rubles=[o.observed_profit_opportunity_rub for o in os if o and o.observed_profit_opportunity_rub is not None]
-                link_margin = margins[0] if complete and len(rows) == 1 else None
-                links.append(FlowLinkView(origin,destination,qty,
-                    Decimal(qty)/Decimal(destination_totals[destination]),
-                    link_margin,
-                    sum(rubles,Decimal("0")) if complete else None,complete,reasons,tuple(breakdown)))
-            local=sum(f.quantity for f in selected if f.origin_cluster_id==f.destination_cluster_id)
-            external=total-local
-            return FlowView(mode,key,total,Decimal(local)/Decimal(total) if total else None,
-                Decimal(external)/Decimal(total) if total else None,
-                len({f.origin_cluster_id for f in selected if f.origin_cluster_id!=f.destination_cluster_id}),tuple(links))
-    result=[]
-    for mode, attr in (("destination","destination_cluster_id"),("origin","origin_cluster_id"),("sku","sku")):
-        for key in sorted({getattr(f,attr) for f in flows}):
-            result.append(build(mode,key,[f for f in flows if getattr(f,attr)==key]))
+                        flow.sku, article, name, flow.quantity,
+                        Decimal(flow.quantity) / Decimal(quantity),
+                        Decimal(flow.quantity) / Decimal(destination_totals[destination]),
+                        None if opportunity is None else opportunity.margin_delta_pp,
+                        None if opportunity is None or opportunity.profit_delta_per_unit is None
+                        else opportunity.profit_delta_per_unit * Decimal(flow.quantity),
+                        None if opportunity is None or opportunity.profit_delta_per_unit is None
+                        else opportunity.profit_delta_per_unit * Decimal(flow.quantity)))
+                links.append(FlowLinkView(
+                    origin, destination, quantity,
+                    Decimal(quantity) / Decimal(destination_totals[destination]),
+                    economics.margin_delta_pp, economics.profit_opportunity_rub,
+                    economics.complete, economics.reason_codes, tuple(breakdown),
+                    economics))
+            local = sum(flow.quantity for flow in selected
+                        if flow.origin_cluster_id == flow.destination_cluster_id)
+            external_rows = [flow for flow in selected
+                             if flow.origin_cluster_id != flow.destination_cluster_id]
+            external = total - local
+            external_economics = (_flow_economics(external_rows, opp)
+                                  if mode == "destination" and external_rows else None)
+            return FlowView(
+                mode, key, evidence_source, total,
+                Decimal(local) / Decimal(total) if total else None,
+                Decimal(external) / Decimal(total) if total else None,
+                len({flow.origin_cluster_id for flow in external_rows}),
+                external_economics, tuple(links))
+
+    result = []
+    for mode, attribute in (("destination", "destination_cluster_id"),
+                            ("origin", "origin_cluster_id"), ("sku", "sku")):
+        for key in sorted({getattr(flow, attribute) for flow in flows}):
+            result.append(build(mode, key, [flow for flow in flows
+                                           if getattr(flow, attribute) == key]))
     return tuple(result)
 
 
@@ -204,7 +270,11 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
         dict(input_statuses),summary,tuple(rows),tuple(sorted(demand_estimates,key=lambda x:(x.sku,x.destination_cluster_id))),
         observed_routes,clean_routes,tuple(stockout_signals),tuple(distortion_signals),tuple(route_economics),
         tuple(unit_economics),tuple(safe_allocations),tuple(calculated_allocations),
-        FlowViewAggregates(_views(observed_flows,products,route_economics,product_identities),_views(clean_flows,products,route_economics,product_identities)),
+        FlowViewAggregates(
+            _views(observed_flows, products, route_economics, product_identities,
+                   evidence_source="observed"),
+            _views(clean_flows, products, route_economics, product_identities,
+                   evidence_source="clean")),
         tuple(sorted(diagnostics,key=lambda x:(x.sku or "",x.cluster_id or "",
                                                 x.destination_cluster_id or "",
                                                 x.code,x.message))))
