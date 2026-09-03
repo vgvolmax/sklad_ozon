@@ -30,3 +30,10 @@ def test_css_has_accessibility_modes_and_semantic_tokens():
     assert "prefers-reduced-motion:reduce" in css
     assert "forced-colors:active" in css
     assert "overflow-x:hidden" not in css.replace(" ", "")
+
+
+def test_analysis_busy_state_is_scoped_to_request_affecting_controls():
+    app = (ROOT / "frontend/assets/js/app.js").read_text()
+    assert "#analysis-form input,#analysis-form select,#analysis-form button[type=submit],#mapping-rows input,#mapping-rows button,#add-mapping,#save-mappings" in app
+    assert "analysisActive?'disabled':''" in app
+    assert "#plan-search" not in app[app.index("function updateRequestControls"):app.index("function renderMappings")]

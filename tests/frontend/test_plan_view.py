@@ -77,12 +77,14 @@ def test_demand_wire_contract_and_human_presentation():
     assert node("SkladOzon.parseDemandPresentation({regime_confirmed:null}).confirmation") == 'подтверждение недоступно'
 
 
-def test_fraction_percent_pp_and_dom_identity_are_distinct():
+def test_fraction_percent_pp_and_rows_do_not_create_business_derived_dom_ids():
     values=node("[SkladOzon.presentPercentFraction('0.25'),SkladOzon.presentPercentFraction(0),SkladOzon.presentPercentFraction(null),SkladOzon.presentPercentagePoints(2.5)]")
     assert [x.replace('\xa0',' ') for x in values] == ['25 %','0 %','Не рассчитано','2,5 п.п.']
-    keys=node("[SkladOzon.domDecisionKey('A/B','C'),SkladOzon.domDecisionKey('A','B/C')]")
-    assert keys[0] != keys[1]
-    assert all('\0' not in key for key in keys)
+    built=node("SkladOzon.buildPlanRows({decision_rows:[{sku:'A/B',destination_cluster_id:'C'},{sku:'A_2FB',destination_cluster_id:'C'}]})")
+    assert all('domKey' not in row for row in built)
+    components=(ROOT/'frontend/assets/js/components.js').read_text()
+    assert 'plan-row-open-${index}' in components
+    assert 'row.domKey' not in components
 
 
 def test_drawer_diagnostics_model_keeps_messages_and_technical_codes():
