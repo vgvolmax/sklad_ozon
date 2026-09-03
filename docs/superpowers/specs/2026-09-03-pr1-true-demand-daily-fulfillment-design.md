@@ -50,12 +50,24 @@ class DailyFulfillmentCell:
     observation_count: int
 
 @dataclass(frozen=True, slots=True)
+class DailyDemandResult:
+    cells: tuple[DailyDemandCell, ...]
+    excluded_future_observations: int
+    excluded_undated_observations: int
+
+@dataclass(frozen=True, slots=True)
+class DailyFulfillmentResult:
+    cells: tuple[DailyFulfillmentCell, ...]
+    excluded_future_observations: int
+    excluded_undated_observations: int
+
+@dataclass(frozen=True, slots=True)
 class DailyOrderFacts:
-    demand: tuple[DailyDemandCell, ...]
-    fulfillment: tuple[DailyFulfillmentCell, ...]
-    excluded_future: int
-    excluded_undated: int
+    demand: DailyDemandResult
+    fulfillment: DailyFulfillmentResult
 ```
+
+Demand and fulfillment need separate exclusion counters because they use different lifecycle populations. An `IN_PROGRESS` undated/future order can affect demand exclusions without affecting fulfilled-route exclusions.
 
 Field names may only change if the implementation plan and tests are updated consistently before coding begins. The concepts must not change.
 
@@ -71,7 +83,9 @@ def build_daily_order_facts(
     ...
 ```
 
-Each order is validated once and then evaluated independently for the two populations.
+Each order is validated once. Determine demand eligibility with `is_net_demand(order)` and fulfillment eligibility with `is_fulfilled_route(order)`.
+
+If an order belongs to neither population, do not parse/count its date for either population. If it belongs to either population, parse `accepted_at` once and apply the result independently to each eligible population.
 
 ### 4.1 Demand population
 
@@ -111,78 +125,98 @@ The two datasets answer different questions.
 
 Use the same canonical source event timestamp currently used by weekly analytics: `accepted_at`, parsed through the existing date parser.
 
-Rules:
+For each eligible population independently:
 
-- unparseable/undated order: excluded from daily facts and counted in `excluded_undated`;
-- event date `> as_of`: excluded and counted in `excluded_future`;
-- event date `<= as_of`: eligible for a daily fact if lifecycle population allows it.
+- unparseable/undated order: no daily cell; increment that population's `excluded_undated_observations`;
+- event date `> as_of`: no daily cell; increment that population's `excluded_future_observations`;
+- event date `<= as_of`: include in that population's daily cell.
 
 PR1 does not decide whether the current partial ISO week is valid stockout evidence. That belongs to PR2.
 
-Weekly compatibility layers continue to exclude the current incomplete ISO week exactly as today.
+Daily facts retain current-week days. Weekly compatibility layers continue to exclude the current incomplete ISO week exactly as today and derive `excluded_current_week_observations` by summing the relevant daily cells' `observation_count`.
 
 ## 6. Weekly demand must derive from daily demand
 
-Add an explicit daily-to-weekly function, for example:
+Add the exact public helper:
 
 ```python
 def aggregate_weekly_demand(
-    daily: DailyOrderFacts,
+    daily: DailyDemandResult,
     as_of: date,
     week_policy: WeekPolicy = WeekPolicy.COMPLETED_ISO_WEEKS,
 ) -> DemandResult:
     ...
 ```
 
-or equivalently accept `Iterable[DailyDemandCell]` plus exclusion metadata.
+Behavior:
 
-The dedicated implementation plan fixes the exact signature used in code.
+- require completed ISO weeks as today;
+- exclude daily cells in `as_of`'s current ISO week;
+- `excluded_current_week_observations` is the sum of excluded current-week daily `observation_count`;
+- carry `excluded_future_observations` and `excluded_undated_observations` from `DailyDemandResult`;
+- aggregate remaining cells by `ISO year × ISO week × SKU × destination`.
 
 Required outcome:
 
 ```text
 old aggregate_demand(orders, as_of)
 ==
-new build_daily_order_facts(orders, as_of) → weekly demand
+aggregate_weekly_demand(build_daily_order_facts(orders, as_of).demand, as_of)
 ```
 
 for every existing acceptance fixture.
 
-The public `aggregate_demand(orders, as_of)` API may remain as a compatibility wrapper, but application orchestration should build daily facts once and reuse them.
+Keep the existing public API as a compatibility wrapper:
+
+```python
+def aggregate_demand(orders, as_of, week_policy=...):
+    daily = build_daily_order_facts(orders, as_of)
+    return aggregate_weekly_demand(daily.demand, as_of, week_policy)
+```
+
+Application orchestration must not use that wrapper because it would rebuild daily facts.
 
 ## 7. Weekly routes must derive from daily fulfillment
 
-Add an explicit daily-to-weekly route function, for example:
+Add the exact public helper:
 
 ```python
 def build_weekly_route_profile(
-    daily: DailyOrderFacts,
+    daily: DailyFulfillmentResult,
     as_of: date,
     week_policy: WeekPolicy = WeekPolicy.COMPLETED_ISO_WEEKS,
 ) -> RouteProfile:
     ...
 ```
 
+Behavior:
+
+- exclude current ISO-week daily fulfillment cells;
+- `excluded_current_week_observations` is the sum of their `observation_count`;
+- carry fulfillment-specific future/undated counters;
+- aggregate by `ISO year × ISO week × SKU × origin × destination`;
+- recompute `share_of_destination` and `share_of_origin` from the weekly quantities exactly as today.
+
 Required outcome:
 
 ```text
 old build_route_profile(orders, as_of)
 ==
-new daily fulfillment → weekly route profile
+build_weekly_route_profile(build_daily_order_facts(orders, as_of).fulfillment, as_of)
 ```
 
 for existing fixtures.
 
-Existing `build_route_profile()` may remain as a compatibility wrapper.
+Keep existing `build_route_profile()` as a compatibility wrapper. Application orchestration must use the already-built daily facts.
 
 ## 8. Application orchestration
 
-`backend/application.py` should perform one daily-facts build near the start of analysis:
+`backend/application.py` performs one daily-facts build near the start of analysis:
 
 ```python
-daily = build_daily_order_facts(orders, as_of)
-demand = aggregate_weekly_demand(daily, as_of)
-observed = build_weekly_route_profile(daily, as_of)
+daily_facts = build_daily_order_facts(orders, as_of)
+demand = aggregate_weekly_demand(daily_facts.demand, as_of)
+observed = build_weekly_route_profile(daily_facts.fulfillment, as_of)
 ```
 
 Then continue through the existing pipeline:
@@ -202,9 +236,7 @@ No downstream quantity formula is changed in PR1.
 
 ## 9. AnalysisResult boundary
 
-Extend the internal `AnalysisResult` with daily facts only if required for PR2 continuity.
-
-Preferred contract:
+Extend the internal `AnalysisResult` with the canonical daily facts so PR2 can consume them without rebuilding raw-order aggregates:
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -215,11 +247,13 @@ class AnalysisResult:
     ...
 ```
 
+Return `daily_facts` from `analyze()` before the existing demand/route fields. Update direct constructor/call-site tests accordingly.
+
 This is an internal backend result, not a browser payload requirement.
 
 ## 10. Snapshot/browser boundary
 
-PR1 must **not** add raw daily facts to `AnalysisSnapshot` or API presentation JSON.
+PR1 must **not** add `daily_facts`, `DailyDemandResult` or `DailyFulfillmentResult` to `AnalysisSnapshot` or API presentation JSON.
 
 Reason:
 
@@ -318,14 +352,16 @@ destination demand = 15
 fulfilled routing = 10
 ```
 
+Future/undated counters must also remain population-specific for an in-progress order.
+
 ## 12. Weekly equivalence proofs
 
-Run existing analytics fixtures through old and new paths while implementing PR1.
+Run existing analytics fixtures through the compatibility wrappers and the explicit daily path.
 
 At merge, all expected weekly outputs must remain unchanged:
 
 - included weeks;
-- excluded current/future/undated counts where applicable;
+- excluded current/future/undated counts per population;
 - DemandCell identities and quantities;
 - RouteCell identities, quantities, observation counts and shares;
 - DemandEstimate M1/M2/L/regime/current_weekly_rate;
@@ -360,7 +396,7 @@ O(n) aggregation + O(k log k) deterministic output sort
 
 No all-pairs joins, nested route scans by order or repeated full-order traversal for each SKU/cluster.
 
-The application should not perform separate full raw-order aggregation passes for demand and routes after PR1.
+The application must not perform separate full raw-order aggregation passes for demand and routes after PR1.
 
 ## 15. Data identity and privacy
 
@@ -391,7 +427,7 @@ Expected test scope:
 CREATE tests/analytics/test_daily_facts.py
 MODIFY tests/analytics/test_demand_routes.py
 MODIFY tests/analytics/test_demand_estimate.py only if needed for equivalence proof
-MODIFY tests/api/test_product_completion_acceptance.py only if needed for end-to-end invariant proof
+MODIFY tests/api/test_product_completion_acceptance.py for end-to-end origin-invariance/snapshot proof
 ```
 
 ## 17. Files/systems explicitly out of scope
@@ -416,25 +452,27 @@ Do not add dependencies.
 PR1 is mergeable only when all are true:
 
 1. daily demand and fulfillment contracts exist;
-2. one canonical daily build is used by application orchestration;
-3. donor dispatch does not inflate donor demand;
-4. externally fulfilled demand remains owned by destination;
-5. origin permutation leaves daily demand unchanged;
-6. origin permutation leaves weekly demand unchanged;
-7. origin permutation leaves demand estimate unchanged;
-8. origin permutation leaves need unchanged;
-9. origin permutation changes fulfillment/routes as expected;
-10. fulfilled/in-progress/cancelled populations remain distinct;
-11. existing weekly demand outputs are identical;
-12. existing weekly route outputs are identical;
-13. current incomplete ISO-week policy for weekly analytics is unchanged;
-14. no daily matrix is added to browser snapshot;
-15. no PII is added to analytical contracts;
-16. focused tests pass;
-17. full pytest passes;
-18. existing JS syntax checks pass even though frontend is untouched;
-19. Windows portable smoke passes;
-20. no unrelated refactor or UI change is included.
+2. demand and fulfillment have separate future/undated exclusion counters;
+3. one canonical daily build is used by application orchestration;
+4. donor dispatch does not inflate donor demand;
+5. externally fulfilled demand remains owned by destination;
+6. origin permutation leaves daily demand unchanged;
+7. origin permutation leaves weekly demand unchanged;
+8. origin permutation leaves demand estimate unchanged;
+9. origin permutation leaves need unchanged;
+10. origin permutation changes fulfillment/routes as expected;
+11. fulfilled/in-progress/cancelled populations remain distinct;
+12. population-specific current/future/undated counts match existing behavior;
+13. existing weekly demand outputs are identical;
+14. existing weekly route outputs are identical;
+15. current incomplete ISO-week policy for weekly analytics is unchanged;
+16. no daily matrix is added to browser snapshot;
+17. no PII is added to analytical contracts;
+18. focused tests pass;
+19. full pytest passes;
+20. existing JS syntax checks pass even though frontend is untouched;
+21. Windows portable smoke passes;
+22. no unrelated refactor or UI change is included.
 
 ## 19. What PR1 intentionally does not solve
 
