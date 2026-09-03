@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 
+import backend.analytics  # Load analytics contracts before economics' public facade.
 from backend.domain.signals import RecommendationDistortionSignal, SignalConfidence
 from backend.economics import CalculationBases, RoundingMetadata, UnitEconomicsResult
 from backend.ingestion.restrictions import RestrictionRecord, RestrictionState
@@ -35,9 +36,25 @@ def economics(sku="SKU-1", cluster="Moscow", *, complete=True, profit="10"):
 
 
 def candidate(cluster="Moscow", *, sku="SKU-1", quantity=0,
-              sources=(PlacementSource.COUNTERFACTUAL,), result=None, distortion=None):
+              sources=(PlacementSource.COUNTERFACTUAL,), result=None, distortion=None,
+              calculated_need=None):
     return PlacementInput(sku, cluster, quantity, sources, result or economics(sku, cluster),
-                          distortion, RouteConfidence.MEDIUM)
+                          distortion, RouteConfidence.MEDIUM, calculated_need)
+
+
+@pytest.mark.parametrize("need", [None, 0, 17])
+def test_calculated_need_is_preserved_without_changing_feasibility(need):
+    assessed = compare_placements(
+        [candidate(calculated_need=need)],
+        [restriction("SKU-1", "M", RestrictionState.ALLOWED)],
+        [WarehouseCapability("M", "Moscow", 23)],
+    )[0]
+    assert assessed.calculated_need_qty == need
+    assert assessed.feasibility == assess_feasibility(
+        "SKU-1", "Moscow",
+        [restriction("SKU-1", "M", RestrictionState.ALLOWED)],
+        [WarehouseCapability("M", "Moscow", 23)],
+    )
 
 
 def test_one_allowed_one_prohibited_is_feasible_and_reason_coded():
@@ -177,6 +194,8 @@ def test_candidate_identity_duplicates_and_validation():
     {"sku": " "}, {"cluster_id": ""}, {"ozon_recommended_qty": -1},
     {"ozon_recommended_qty": 1.5}, {"ozon_recommended_qty": True}, {"sources": ()},
     {"sources": (PlacementSource.OBSERVED, PlacementSource.OBSERVED)},
+    {"calculated_need_qty": -1}, {"calculated_need_qty": 1.5},
+    {"calculated_need_qty": True},
 ])
 def test_malformed_placement_input_is_rejected(changes):
     values = dict(sku="SKU-1", cluster_id="Moscow", ozon_recommended_qty=0,

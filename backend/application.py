@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
 from backend.analytics.demand import aggregate_demand, DemandResult
+from backend.analytics.demand_estimate import estimate_destination_demand
 from backend.analytics.routes import build_route_profile, RouteProfile
 from backend.analytics.stockout import detect_stockouts
 from backend.analytics.distortion import detect_recommendation_distortion
@@ -11,8 +12,15 @@ from backend.analytics.clean_routes import build_clean_route_profile, CleanRoute
 from backend.analytics.route_profiles import select_route_profile
 from backend.economics import expected_logistics, LogisticsContext, RouteProfileSource, calculate_unit_economics
 from backend.project import EconomicsSettings, OptimizerThresholds
-from backend.supply import (WarehouseCapability, PlacementInput, PlacementSource, RouteConfidence,
+from backend.decision import ScenarioSettings, calculate_need
+from backend.supply import (AllocationObjective, PlanFamily, WarehouseCapability, PlacementInput, PlacementSource, RouteConfidence,
                             compare_placements, optimize_allocations)
+
+_DEFAULT_SCENARIO = ScenarioSettings(
+    horizon_days=56,
+    include_inbound=True,
+    objective=AllocationObjective.MAX_PROFIT,
+)
 
 @dataclass(frozen=True, slots=True)
 class AnalysisDiagnostic:
@@ -47,19 +55,26 @@ def build_analysis_summary(placements: tuple, allocations: tuple) -> AnalysisSum
 class AnalysisResult:
     demand: DemandResult; observed_routes: RouteProfile; clean_routes: CleanRouteResult
     stockouts: tuple; distortions: tuple; logistics: tuple; economics: tuple
-    placements: tuple; allocations: tuple; summary: AnalysisSummary
+    placements: tuple; allocations: tuple; safe_allocations: tuple; summary: AnalysisSummary
     diagnostics: tuple[AnalysisDiagnostic, ...]
 
 def analyze(availability, restrictions, orders, tariffs, products, *, as_of: date,
             economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds,
             availability_fbs_authoritative: bool = False, operational_availability=None,
-            progress_callback=None) -> AnalysisResult:
+            progress_callback=None,
+            scenario_settings: ScenarioSettings = _DEFAULT_SCENARIO) -> AnalysisResult:
+    if not isinstance(scenario_settings, ScenarioSettings):
+        raise TypeError("scenario_settings must be ScenarioSettings")
     def progress(stage, current=None, total=None):
         if progress_callback is not None:
             progress_callback(stage, current, total)
 
     progress("demand")
     demand = aggregate_demand(orders, as_of)
+    demand_estimates = estimate_destination_demand(demand)
+    demand_estimates_by_identity = {
+        (item.sku, item.destination_cluster_id): item for item in demand_estimates
+    }
     progress("routes")
     observed = build_route_profile(orders, as_of)
     progress("distortions")
@@ -87,6 +102,15 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         diagnostics.append(AnalysisDiagnostic("error", "CONFLICTING_WAREHOUSE_CLUSTER", f"Warehouse {warehouse} maps to multiple clusters."))
     product_map = {p.sku:p for p in products}
     seller_stock_evidence = tuple(operational_availability) if operational_availability is not None else tuple(availability)
+    availability_by_identity = defaultdict(list)
+    for record in availability:
+        availability_by_identity[(record.sku, record.cluster)].append(record)
+
+    def conservative_quantity(records, field):
+        values = [getattr(record, field, None) for record in records]
+        if not values or any(value is None for value in values):
+            return None
+        return sum(values)
     fbs = {}
     for record in seller_stock_evidence:
         if getattr(record, "fbs_quantity", None) is not None: fbs.setdefault(record.sku, set()).add(record.fbs_quantity)
@@ -146,11 +170,29 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
                     for blocker in econ.blockers
                 )
             qty=0 if (sku,cluster) in conflicts else rec_values.get((sku,cluster),0)
+            operational = availability_by_identity.get((sku, cluster), ())
+            fbo_stock = conservative_quantity(operational, "fbo_quantity")
+            inbound_qty = conservative_quantity(operational, "inbound_quantity")
+            estimate = demand_estimates_by_identity.get((sku, cluster))
+            need = calculate_need(
+                sku=sku,
+                destination_cluster_id=cluster,
+                weekly_rate=(estimate.current_weekly_rate if estimate is not None else None),
+                horizon_days=scenario_settings.horizon_days,
+                fbo_stock=fbo_stock,
+                inbound_qty=inbound_qty,
+                include_inbound=scenario_settings.include_inbound,
+                ozon_recommended_qty=qty,
+                ozon_horizon_days=None,
+            )
             sources=[]
             if observed_profile: sources.append(PlacementSource.OBSERVED)
             sources.append(PlacementSource.RECOMMENDED if qty>0 else PlacementSource.COUNTERFACTUAL)
             distortion=distortion_by_cluster.get((sku, cluster))
-            candidates.append(PlacementInput(sku,cluster,qty,tuple(sources),econ,distortion,confidence))
+            candidates.append(PlacementInput(
+                sku, cluster, qty, tuple(sources), econ, distortion, confidence,
+                need.calculated_need_qty,
+            ))
         progress("logistics_economics", sku_index, len(skus))
     candidates_by_sku = grouped(candidates, lambda item: item.sku)
     progress("placements", 0, len(skus))
@@ -168,16 +210,30 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
     placements=tuple(sorted(placements_list, key=lambda item: (item.sku, item.cluster_id)))
     placements_by_sku = grouped(placements, lambda item: item.sku)
     progress("optimizer", 0, len(skus))
-    allocations=[]
+    allocations=[]; safe_allocations=[]
     for sku_index, sku in enumerate(skus, 1):
         product=product_map.get(sku); group=placements_by_sku.get(sku, ())
         stock = ((next(iter(positive_fbs[sku])) if positive_fbs.get(sku) else 0) if sku in fbs and sku not in conflicting_fbs else
                  (product.available_qty if product and sku not in fbs and not availability_fbs_authoritative else None))
         if product and stock is not None and group:
-            allocations.append(optimize_allocations(group, stock, optimizer_thresholds))
+            safe_allocations.append(optimize_allocations(
+                group, stock, optimizer_thresholds,
+                plan_family=PlanFamily.SAFE,
+                objective=scenario_settings.objective,
+            ))
+            allocations.append(optimize_allocations(
+                group, stock, optimizer_thresholds,
+                plan_family=PlanFamily.CALCULATED,
+                objective=scenario_settings.objective,
+            ))
         elif product and sku not in conflicting_fbs:
             diagnostics.append(AnalysisDiagnostic("error","MISSING_SELLER_AVAILABLE_STOCK","Missing seller available stock.",sku))
         progress("optimizer", sku_index, len(skus))
     allocations = tuple(allocations)
+    safe_allocations = tuple(safe_allocations)
     summary = build_analysis_summary(placements, allocations)
-    return AnalysisResult(demand,observed,clean,stockouts,distortions,tuple(logistics_results),tuple(economics_results),placements,allocations,summary,tuple(diagnostics))
+    return AnalysisResult(
+        demand, observed, clean, stockouts, distortions, tuple(logistics_results),
+        tuple(economics_results), placements, allocations, safe_allocations, summary,
+        tuple(diagnostics),
+    )
