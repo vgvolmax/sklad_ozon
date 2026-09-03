@@ -10,7 +10,7 @@ def fixture():
     view={'mode':'destination','key':'Москва','evidence_source':'clean','total_quantity':100,'local_share':'.78','external_share':'.22','donor_count':2,'external_economics':{'complete':True,'route_cost_rub_per_unit':'20','route_cost_pct_of_realization':'.2','margin_delta_pp':'3','profit_opportunity_rub':'1400'},'links':[link('Москва','Москва',78),link('Казань','Москва',14),link('Самара','Москва',8)]}
     origin={'mode':'origin','key':'Казань','evidence_source':'clean','total_quantity':20,'local_share':'0','external_share':'1','donor_count':1,'external_economics':None,'links':[link('Казань','Москва',14),link('Казань','Самара',6)]}
     sku={'mode':'sku','key':'SKU-A','evidence_source':'clean','total_quantity':98,'local_share':str(78/98),'external_share':str(20/98),'donor_count':1,'external_economics':None,'links':[link('Москва','Москва',78),link('Казань','Москва',14),link('Казань','Самара',6)]}
-    return {'flow_view_aggregates':{'clean_views':[view,origin,sku],'observed_views':[dict(view,total_quantity=115,evidence_source='observed')]}}
+    return {'decision_rows':[{'sku':'SKU-A','article':'39439','product_name':'Коллекторная группа'}],'flow_view_aggregates':{'clean_views':[view,origin,sku],'observed_views':[dict(view,total_quantity=115,evidence_source='observed')]}}
 def test_three_modes_four_metrics_and_route_reconciliation():
     f=json.dumps(fixture(),ensure_ascii=False)
     assert node(f"SkladOzon.FlowView.buildScreenModel({f},{{mode:'destination',metric:'units',evidence:'clean',selectedKey:null,selectedRoute:null}}).links.map(x=>x.quantity)")==[78,14,8]
@@ -26,3 +26,13 @@ def test_none_zero_negative_and_evidence_identity():
     assert node("SkladOzon.FlowView.buildLinkModel({quantity:1,destination_share:1,economics:{margin_delta_pp:'-1.5'},origin_cluster_id:'К',destination_cluster_id:'М'},'margin_pp').metricText").replace('\xa0',' ')=='−1,5 п.п.'
     f=json.dumps(fixture(),ensure_ascii=False)
     assert node(f"[SkladOzon.FlowView.selectView({f},{{mode:'destination',evidence:'clean'}}).total_quantity,SkladOzon.FlowView.selectView({f},{{mode:'destination',evidence:'observed'}}).total_quantity]")==[100,115]
+
+def test_sku_cards_and_hub_use_product_identity_with_safe_fallback():
+    f=json.dumps(fixture(),ensure_ascii=False)
+    model=node(f"(()=>{{const m=SkladOzon.FlowView.buildScreenModel({f},{{mode:'sku',metric:'units',evidence:'clean'}});return {{card:m.views[0].identity,hub:m.hubIdentity}}}})()")
+    assert model == {
+        'card': {'primary':'Коллекторная группа','details':['39439','SKU SKU-A']},
+        'hub': {'primary':'39439','secondary':'Коллекторная группа'},
+    }
+    fallback=node("SkladOzon.FlowView.buildProductIdentityLookup({decision_rows:[{sku:'SKU-X'}]})['SKU-X']")
+    assert fallback == {'sku':'SKU-X','product_name':None,'article':None}
