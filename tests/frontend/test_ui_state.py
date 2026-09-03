@@ -40,9 +40,44 @@ def test_navigation_preserves_plan_state_and_url_only_overrides_present_values()
     assert explicit['pageSize'] == 100
 
 
+def test_initial_and_history_route_hydration_have_distinct_missing_parameter_semantics():
+    preferred = "({...SkladOzon.createInitialState(),planView:{...SkladOzon.createInitialState().planView,search:'39439',quickFilter:'blocked',sort:{key:'profit',direction:'desc'},page:3,pageSize:100}})"
+    initial = node(f"SkladOzon.applyInitialRoute({preferred},SkladOzon.parseRoute('#plan')).planView")
+    assert (initial['search'], initial['quickFilter'], initial['sort'], initial['page'], initial['pageSize']) == ('39439', 'blocked', {'key':'profit','direction':'desc'}, 3, 100)
+    history = node(f"SkladOzon.applyHistoryRoute({preferred},SkladOzon.parseRoute('#plan')).planView")
+    assert (history['search'], history['quickFilter'], history['sort'], history['page'], history['pageSize']) == ('', 'all', None, 1, 50)
+    forward = node(f"SkladOzon.applyHistoryRoute({preferred},SkladOzon.parseRoute('#plan?q=39439&filter=blocked&sort=profit:desc&page=3&size=100')).planView")
+    assert (forward['search'], forward['quickFilter'], forward['sort'], forward['page'], forward['pageSize']) == ('39439', 'blocked', {'key':'profit','direction':'desc'}, 3, 100)
+
+
+def test_section_route_serializes_the_current_plan_view_for_history_restoration():
+    route = node("SkladOzon.serializeRoute({...SkladOzon.createInitialState(),section:'data',planView:{...SkladOzon.createInitialState().planView,search:'39439',quickFilter:'blocked',pageSize:100}})")
+    assert route == '#data?q=39439&filter=blocked&size=100'
+
+
+def test_mapping_draft_rows_are_independent_and_only_saved_changes_revision():
+    result = node("(()=>{let s=SkladOzon.initializeMappings(SkladOzon.createInitialState(),{});s=SkladOzon.addMappingDraft(SkladOzon.addMappingDraft(s));const ids=s.mappingDraftRows.map(x=>x.id);s=SkladOzon.updateMappingDraft(s,ids[0],{source:' Alias ',target:' Canonical '});const revision=s.inputRevision;const completed=SkladOzon.commitMappings(s,{Alias:'Canonical'});return {count:s.mappingDraftRows.length,ids,dirty:s.mappingDirty,draft:s.mappingDraftRows[0],revision,committedRevision:completed.inputRevision,committedDirty:completed.mappingDirty,stale:completed.staleSnapshot};})()")
+    assert result['count'] == 2
+    assert len(set(result['ids'])) == 2
+    assert result['dirty'] is True
+    assert result['draft']['source'] == ' Alias '
+    assert result['revision'] == 0
+    assert result['committedRevision'] == 1
+    assert result['committedDirty'] is False
+    assert result['stale'] is False  # no snapshot exists yet
+
+
+def test_mapping_validation_rejects_blank_and_duplicate_sources_without_mutating_draft():
+    invalid = node("SkladOzon.validateMappingDraft([{id:'1',source:' A ',target:' X '},{id:'2',source:'A',target:'Y'}])")
+    assert invalid['valid'] is False
+    assert 'повторяется' in invalid['error']
+
+
 def test_scenario_draft_input_revision_and_date_only_format():
     for draft in ('0','-1','1.5',''):
         assert node(f"SkladOzon.validateScenarioDraft({json.dumps(draft)}).valid") is False
     assert node("SkladOzon.validateScenarioDraft('67')") == {'valid':True,'value':67,'error':None}
     assert node("SkladOzon.isSnapshotStale({runInputRevision:4,currentInputRevision:5,currentScenario:{horizonDays:56,includeInbound:true,objective:'max_profit'},resultScenario:{horizon_days:56,include_inbound:true,optimization_objective:'max_profit'}})") is True
+    assert node("SkladOzon.canApplyRunInputStatuses(4,5)") is False
+    assert node("SkladOzon.canApplyRunInputStatuses(5,5)") is True
     assert node("SkladOzon.presentIsoDate('2026-09-01')") == '01.09.2026'
