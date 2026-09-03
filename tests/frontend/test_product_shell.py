@@ -22,6 +22,15 @@ def test_product_shell_is_local_semantic_and_has_canonical_sections():
     assert all(word not in lowered for word in ("react", "vue", "angular", "svelte", "stockout / distortion evidence", "<pre"))
 
 
+def test_top_navigation_and_brand_use_the_canonical_navigation_controller():
+    html = (ROOT / "frontend/index.html").read_text()
+    app = (ROOT / "frontend/assets/js/app.js").read_text()
+    assert '<a class="brand" href="#plan" data-nav="plan">' in html
+    assert "document.querySelectorAll('[data-nav]')" in app
+    assert "event.preventDefault()" in app
+    assert "navigate(link.dataset.nav)" in app
+
+
 def test_css_has_accessibility_modes_and_semantic_tokens():
     css = (ROOT / "frontend/assets/css/app.css").read_text()
     assert css.count(":root") == 1
