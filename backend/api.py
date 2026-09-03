@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from backend.application import analyze
 from backend.decision import (DiagnosticView, InputStatusView, ScenarioSettings,
                               assemble_snapshot)
+from backend.decision.snapshot import first_nonblank
 from backend.supply import AllocationObjective
 from backend.ingestion.cluster_resolution import resolve_analysis_clusters
 from backend.domain.contracts import ReportMeta, ImportDiagnostic
@@ -300,13 +301,20 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         warnings.append(f"Горизонты различаются: Ozon {availability.meta.recommendation_horizon_days} дней, наш расчёт {scenario.horizon_days} дней.")
     periods={(m.period_start,m.period_end) for m in report_meta.values() if m.period_start and m.period_end}
     if len(periods)>1:warnings.append("Периоды загруженных отчётов различаются.")
+    product_identities = {}
+    for item in analysis_availability:
+        previous = product_identities.get(item.sku, ("", ""))
+        product_identities[item.sku] = (
+            first_nonblank(previous[0], item.article),
+            first_nonblank(previous[1], item.product_name),
+        )
     snapshot=assemble_snapshot(scenario=scenario,report_meta=report_meta,input_statuses=status_views,
         demand_estimates=result.demand_estimates,needs=result.needs,observed_routes=result.observed_routes,
         clean_routes=result.clean_routes,stockout_signals=result.stockouts,distortion_signals=result.distortions,
         route_economics=result.route_economics,unit_economics=result.economics,placements=result.placements,
         safe_allocations=result.safe_allocations,calculated_allocations=result.allocations,products=products.records,
         diagnostics=diagnostic_views,freshness_warnings=tuple(warnings),
-        product_identities={item.sku:(item.article,item.product_name) for item in analysis_availability})
+        product_identities=product_identities)
     return {"api_version":1,"complete":complete,"snapshot":wire(snapshot),"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"safe_allocations":wire(result.safe_allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}
 
 

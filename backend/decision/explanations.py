@@ -20,8 +20,14 @@ def explain_decision(*, need: NeedComparison, status_codes: tuple[str, ...],
         messages.append("Потребность не рассчитана: недостаточно истории спроса.")
     if "MISSING_FBO_STOCK" in blockers:
         messages.append("Потребность не рассчитана: нет данных об остатке FBO.")
-    if "MISSING_INBOUND" in blockers:
+    if "MISSING_INBOUND_QTY" in blockers:
         messages.append("Потребность не рассчитана: нет данных о товарах в пути.")
+    if "MISSING_PRODUCT_ECONOMICS" in status_codes:
+        messages.append("План не рассчитан: нет данных экономики товара.")
+    if "MISSING_PRODUCT_VOLUME" in status_codes:
+        messages.append("План не рассчитан: не указан объём товара.")
+    if "MISSING_SELLER_AVAILABLE_STOCK" in status_codes:
+        messages.append("План не рассчитан: нет данных о доступном остатке продавца.")
     if route_incomplete:
         messages.append("Экономический эффект локального размещения не рассчитан: не хватает тарифов, экономики или физической доступности маршрута.")
     if not messages:
