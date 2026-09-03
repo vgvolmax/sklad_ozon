@@ -108,3 +108,18 @@ def test_objective_is_not_state_or_persisted_and_legacy_preference_is_ignored():
     assert loaded == {"horizonDays": 28, "includeInbound": False}
     saved = node("(()=>{let value;SkladOzon.savePreferences({setItem:(_,x)=>value=x},SkladOzon.createInitialState());return JSON.parse(value).scenario})()")
     assert saved == {"horizonDays": 56, "includeInbound": True}
+
+
+def test_missing_legacy_partial_and_corrupt_preferences_preserve_scenario_defaults():
+    cases = [
+        ({}, {"horizonDays": 56, "includeInbound": True}),
+        ({"scenario": {"objective": "max_profit"}}, {"horizonDays": 56, "includeInbound": True}),
+        ({"scenario": {"horizonDays": 28}}, {"horizonDays": 28, "includeInbound": True}),
+        ({"scenario": {"includeInbound": False}}, {"horizonDays": 56, "includeInbound": False}),
+        ({"scenario": {"horizonDays": "undefined", "includeInbound": "false"}}, {"horizonDays": 56, "includeInbound": True}),
+    ]
+    for stored, expected in cases:
+        expression = f"(()=>{{const defaults=SkladOzon.createInitialState().scenario;const loaded=SkladOzon.loadPreferences({{getItem:()=>JSON.stringify({json.dumps(stored)})}}).scenario;return {{...defaults,...loaded}};}})()"
+        merged = node(expression)
+        assert merged == expected
+        assert "objective" not in merged
