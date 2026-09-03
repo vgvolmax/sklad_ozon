@@ -50,6 +50,8 @@ components:
 
 ## Overview
 
+Product Completion uses one non-selectable placement strategy: available stock is allocated by margin priority (`MAX_MARGIN`). The Plan scenario controls contain only horizon, inbound inclusion, and recalculation.
+
 ### Creative North Star
 
 Интерфейс должен ощущаться как рабочая консоль планировщика поставок: спокойная инженерная поверхность, где различия между источниками данных и решениями видны без расшифровки. Визуальный язык берётся из мира логистических схем, маршрутных ведомостей и диспетчерских панелей, но без псевдотехнического декора.

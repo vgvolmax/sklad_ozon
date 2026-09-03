@@ -115,10 +115,10 @@ async def prepare_analysis(request:Request, request_id="http"):
     raw_inbound=str(form.get("include_inbound","true")).strip().lower()
     if raw_inbound not in {"true","false"}:
         return error(400,"INVALID_INCLUDE_INBOUND","Expected true or false.","include_inbound")
-    raw_objective=str(form.get("optimization_objective","max_profit")).strip()
-    try: objective=AllocationObjective(raw_objective)
-    except ValueError:
+    raw_objective=str(form.get("optimization_objective","max_margin")).strip()
+    if raw_objective != AllocationObjective.MAX_MARGIN.value:
         return error(400,"INVALID_OPTIMIZATION_OBJECTIVE","Unsupported optimization objective.","optimization_objective")
+    objective=AllocationObjective.MAX_MARGIN
     for field in common:
         if form.get(field) is None:return error(400,'MISSING_FIELD','Required multipart field is missing.',field)
     unitka=form.get('unitka_file'); legacy=(form.get('tariffs_file'),form.get('product_economics_file'))
@@ -209,7 +209,7 @@ class AnalysisCancelled(Exception):
     """Internal cooperative cancellation at progress boundaries."""
 
 
-def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_request=(None,True,AllocationObjective.MAX_PROFIT), *, progress_callback=None, request_id="http"):
+def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_request=(None,True,AllocationObjective.MAX_MARGIN), *, progress_callback=None, request_id="http"):
     """Run imports, joins, domain analysis and serialization for both transports."""
     def progress(stage, current=None, total=None, detail=None):
         if progress_callback is not None:

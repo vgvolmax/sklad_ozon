@@ -32,6 +32,8 @@ class RouteOpportunity:
     margin_delta_pp: Decimal | None
     profit_delta_per_unit: Decimal | None
     observed_profit_opportunity_rub: Decimal | None
+    price_per_unit: Decimal | None
+    realization_per_unit: Decimal | None
     complete: bool
     reason_codes: tuple[str, ...]
 
@@ -49,7 +51,8 @@ def _empty(flow, current, reasons, current_pct=None):
         flow.sku, flow.origin_cluster_id, flow.destination_cluster_id,
         flow.quantity, flow.destination_share, route_cost, current_pct,
         current.profit_per_unit, current.margin_rate,
-        None, None, None, None, None, None, None, False, tuple(reasons),
+        None, None, None, None, None, None, None,
+        current.price, current.realization, False, tuple(reasons),
     )
 
 
@@ -71,6 +74,7 @@ def calculate_route_opportunity(
             flow.sku, flow.origin_cluster_id, flow.destination_cluster_id,
             flow.quantity, flow.destination_share,
             None, None, None, None, None, None, None, None, None, None, None,
+            product.price, None,
             False, ("CURRENT_ROUTE_INCOMPLETE", "CURRENT_ECONOMICS_INCOMPLETE"),
         )
 
@@ -124,7 +128,8 @@ def calculate_route_opportunity(
             flow.sku, flow.origin_cluster_id, destination, flow.quantity,
             flow.destination_share, current.expected_logistics, current_pct,
             current.profit_per_unit, current.margin_rate, None, None, None, None,
-            None, None, None, False, tuple(reasons),
+            None, None, None, current.price, current.realization,
+            False, tuple(reasons),
         )
 
     with localcontext(Context(prec=40, rounding=ROUND_HALF_EVEN)):
@@ -137,5 +142,5 @@ def calculate_route_opportunity(
         flow.destination_share, current.expected_logistics, current_pct,
         current.profit_per_unit, current.margin_rate, local.expected_logistics,
         local_pct, local.profit_per_unit, local.margin_rate, margin_delta,
-        profit_delta, opportunity, True, (),
+        profit_delta, opportunity, current.price, current.realization, True, (),
     )
