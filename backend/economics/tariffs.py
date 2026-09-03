@@ -15,6 +15,8 @@ ZERO = Decimal("0")
 class RouteProfileSource(str, Enum):
     CLEAN = "clean"
     OBSERVED = "observed"
+    ORIGIN_ALL_SKUS = "origin_all_skus"
+    GLOBAL = "global"
 
 
 class TariffLookupStatus(str, Enum):
