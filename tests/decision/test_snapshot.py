@@ -38,6 +38,27 @@ def test_need_blocker_explanations_use_canonical_codes():
     assert "товарах в пути" in text
 
 
+@pytest.mark.parametrize("code, fragment", [
+    ("NON_POSITIVE_PROFIT", "прибыл"),
+    ("BELOW_MIN_PROFIT_PER_UNIT", "прибыл"),
+    ("BELOW_MIN_MARGIN_RATE", "маржа"),
+    ("BELOW_MIN_ROI", "roi"),
+    ("SELLER_STOCK_EXHAUSTED", "распределён"),
+    ("PARTIAL_BY_SELLER_STOCK", "частично"),
+    ("CALCULATED_NEED_CEILING_ZERO", "не требуется"),
+    ("OZON_RECOMMENDATION_CEILING_ZERO", "safe plan"),
+])
+def test_allocator_reason_explanations_are_business_readable(code, fragment):
+    need = NeedComparison(
+        "SKU", "Москва", Decimal("1"), 56, Decimal("8"), 0, 0, True,
+        0, 8, 56, -8, None, HorizonComparability.SAME_HORIZON, True, (),
+    )
+    kwargs = ({"safe_reason_codes": (code,)}
+              if code == "OZON_RECOMMENDATION_CEILING_ZERO" else {})
+    assert fragment in " ".join(explain_decision(
+        need=need, status_codes=(code,), **kwargs)).lower()
+
+
 def test_route_margin_is_quantity_weighted_and_partial_coverage_fails_closed():
     complete = [
         SimpleNamespace(complete=True, observed_qty=90, margin_delta_pp=Decimal("0"),

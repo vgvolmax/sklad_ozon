@@ -148,6 +148,10 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
             opportunities, observed_components)
         route_required = bool(observed_components)
         codes = set(need.blocker_codes + (() if place is None else place.status_codes))
+        if s is not None:
+            codes.update(s.reason_codes)
+        if c is not None:
+            codes.update(c.reason_codes)
         codes.update(diagnostics_by_key.get(key, ()))
         codes.update(diagnostics_by_key.get((need.sku, None), ()))
         if s is None: codes.add("SAFE_PLAN_UNAVAILABLE")
@@ -165,6 +169,7 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
             None if c is None else c.expected_profit,
             SignalConfidence.LOW if demand.get(key) is None else demand[key].confidence,status,
             explain_decision(need=need,status_codes=status,
+                safe_reason_codes=() if s is None else s.reason_codes,
                 demand_codes=() if demand.get(key) is None else demand[key].explanation_codes,
                 distorted=key in distortion,
                 route_incomplete=route_required and not route_complete))
