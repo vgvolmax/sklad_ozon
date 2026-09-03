@@ -721,11 +721,12 @@ def test_upload_limit_and_thin_frontend_contract():
     source = Path("frontend/assets/js/app.js").read_text(encoding="utf-8")
     assert "fetch(" in source and "FormData" in source and "/api/" in source
     assert not any(token in source for token in ("calculate_unit_economics", "expected_logistics", "SheetJS", "FileReader", "ArrayBuffer", "JSZip"))
-    assert all(f"data.summary.{field}" in source for field in ("sku_count", "placement_count", "ozon_recommended_qty", "allocated_qty", "objective_profit"))
-    assert "objective_profit).join" not in source
-    assert "Number(data.summary.objective_profit" not in source
-    assert "parseFloat(data.summary.objective_profit" not in source
-    assert "data.input_statuses" in source
+    assert "result.snapshot" in source
+    assert "snap.summary" in source and "snap.input_statuses" in source
+    assert not any(field in source for field in (
+        "data.placements", "data.allocations", "data.safe_allocations",
+        "data.logistics", "data.economics",
+    ))
     assert all(label in source for label in ("Выбран", "Проверено", "Есть ошибки"))
 
 

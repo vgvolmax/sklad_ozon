@@ -17,6 +17,8 @@ jobs:
       - name: Verify offline runtime assets and repair contract
         run: python -m pytest tests/test_offline_assets.py -q
       - run: python -m pytest -q
+      - run: node --check frontend/assets/js/core.js
+      - run: node --check frontend/assets/js/components.js
       - run: node --check frontend/assets/js/app.js
 
   windows-portable-smoke:
