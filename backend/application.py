@@ -149,7 +149,9 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
     for sku_index, sku in enumerate(skus, 1):
         clusters = {c.destination_cluster_id for c in demand_by_sku.get(sku, ())}
         clusters |= {r.destination_cluster_id for r in observed_by_sku.get(sku, ())}
-        clusters |= {item[1] for item in recommendations_by_sku.get(sku, ()) if item[2] > 0}
+        # A known zero is still recommendation evidence for this decision
+        # identity; only ``None`` means that no recommendation was supplied.
+        clusters |= {item[1] for item in recommendations_by_sku.get(sku, ())}
         clusters |= {s.destination_cluster_id for s in stockouts_by_sku.get(sku, ())}
         clusters |= {s.recommended_cluster_id for s in distortions_by_sku.get(sku, ())}
         product=product_map.get(sku)
@@ -249,7 +251,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
                 plan_family=PlanFamily.CALCULATED,
                 objective=scenario_settings.objective,
             ))
-        elif product and sku not in conflicting_fbs:
+        elif product and stock is None and sku not in conflicting_fbs:
             diagnostics.append(AnalysisDiagnostic("error","MISSING_SELLER_AVAILABLE_STOCK","Missing seller available stock.",sku))
         progress("optimizer", sku_index, len(skus))
     allocations = tuple(allocations)

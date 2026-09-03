@@ -4,6 +4,7 @@ from .contracts import HorizonComparability, NeedComparison
 
 
 def explain_decision(*, need: NeedComparison, status_codes: tuple[str, ...],
+                     safe_reason_codes: tuple[str, ...] = (),
                      demand_codes: tuple[str, ...] = (), distorted: bool = False,
                      route_incomplete: bool = False) -> tuple[str, ...]:
     messages: list[str] = []
@@ -28,6 +29,23 @@ def explain_decision(*, need: NeedComparison, status_codes: tuple[str, ...],
         messages.append("План не рассчитан: не указан объём товара.")
     if "MISSING_SELLER_AVAILABLE_STOCK" in status_codes:
         messages.append("План не рассчитан: нет данных о доступном остатке продавца.")
+    allocator_messages = {
+        "NON_POSITIVE_PROFIT": "Поставка не включена в план: расчётная прибыль на единицу неположительная.",
+        "BELOW_MIN_PROFIT_PER_UNIT": "Поставка не включена в план: прибыль на единицу ниже заданного минимального порога.",
+        "BELOW_MIN_MARGIN_RATE": "Поставка не включена в план: маржа ниже заданного минимального порога.",
+        "BELOW_MIN_ROI": "Поставка не включена в план: ROI ниже заданного минимального порога.",
+        "SELLER_STOCK_EXHAUSTED": "Потребность есть, но доступный остаток продавца уже распределён в более приоритетные кластеры.",
+        "PARTIAL_BY_SELLER_STOCK": "Потребность покрыта частично из-за ограниченного доступного остатка продавца.",
+        "CALCULATED_NEED_CEILING_ZERO": "Дополнительная поставка по нашему расчёту сейчас не требуется.",
+    }
+    for code, message in allocator_messages.items():
+        if code in status_codes:
+            messages.append(message)
+    # This reason belongs only to the conservative plan.  Keeping the source
+    # decision explicit prevents it from being presented as a Calculated Plan
+    # explanation after reason-code unioning on the row.
+    if "OZON_RECOMMENDATION_CEILING_ZERO" in safe_reason_codes:
+        messages.append("Safe Plan равен нулю, потому что Ozon рекомендует не поставлять товар в этот кластер.")
     if route_incomplete:
         messages.append("Экономический эффект локального размещения не рассчитан: не хватает тарифов, экономики или физической доступности маршрута.")
     if not messages:

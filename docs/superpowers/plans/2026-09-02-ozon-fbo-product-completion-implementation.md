@@ -1060,8 +1060,8 @@ class DecisionRow:
     destination_cluster_id: str
     demand: DemandEstimate | None
     need: NeedComparison
-    safe_plan_qty: int
-    calculated_plan_qty: int
+    safe_plan_qty: int | None
+    calculated_plan_qty: int | None
     current_fbo_stock: int | None
     inbound_qty: int | None
     route_external_share: Decimal | None
@@ -1094,6 +1094,10 @@ class AnalysisSnapshot:
     flow_view_aggregates: FlowViewAggregates
     diagnostics: tuple[DiagnosticView, ...]
 ```
+
+For both plan quantities, `None` means that the plan is unavailable and could
+not be calculated from sufficient evidence.  `0` means that calculation
+completed and the resulting plan quantity is genuinely zero.
 
 `FlowView.mode` is restricted by constructor validation to exactly `destination`, `origin`, or `sku`.
 
