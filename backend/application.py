@@ -21,7 +21,7 @@ from backend.supply import (AllocationObjective, PlanFamily, WarehouseCapability
 _DEFAULT_SCENARIO = ScenarioSettings(
     horizon_days=56,
     include_inbound=True,
-    objective=AllocationObjective.MAX_PROFIT,
+    objective=AllocationObjective.MAX_MARGIN,
 )
 
 @dataclass(frozen=True, slots=True)
@@ -244,12 +244,12 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
                 safe_allocations.append(optimize_allocations(
                     safe_group, stock, optimizer_thresholds,
                     plan_family=PlanFamily.SAFE,
-                    objective=scenario_settings.objective,
+                    objective=AllocationObjective.MAX_MARGIN,
                 ))
             allocations.append(optimize_allocations(
                 group, stock, optimizer_thresholds,
                 plan_family=PlanFamily.CALCULATED,
-                objective=scenario_settings.objective,
+                objective=AllocationObjective.MAX_MARGIN,
             ))
         elif product and stock is None and sku not in conflicting_fbs:
             diagnostics.append(AnalysisDiagnostic("error","MISSING_SELLER_AVAILABLE_STOCK","Missing seller available stock.",sku))

@@ -237,8 +237,9 @@ For route analysis the user can compare `Фактическое исполнен
 Canonical scenario inputs:
 
 - horizon in days;
-- `Учитывать поставки в пути` boolean flag;
-- optimization objective: `Макс. прибыль` or `Макс. маржа`.
+- `Учитывать поставки в пути` boolean flag.
+
+The optimization strategy is fixed to margin priority. It is not a user control; the Plan exposes only horizon, inbound inclusion, and recalculation.
 
 No automatic safety-stock/buffer control exists. Users who want extra coverage increase the horizon.
 

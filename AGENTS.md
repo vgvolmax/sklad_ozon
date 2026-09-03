@@ -93,7 +93,7 @@ the persistence boundary.
   physical feasibility.
 - **Calculated Plan** is capped by own calculated need and physical feasibility,
   but not by Ozon recommendation. It is the primary `Наш план` recommendation.
-- The supported allocation objectives are `Макс. прибыль` and `Макс. маржа`.
+- The single supported product allocation objective is `MAX_MARGIN`; it is not user-selectable.
 - Frontend code must not calculate demand, stockout, route economics, unit
   economics, or optimizer formulas.
 - Preserve metadata, lifecycle semantics, the PII boundary, fail-closed

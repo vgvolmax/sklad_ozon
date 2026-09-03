@@ -33,7 +33,7 @@ For every relevant `SKU × destination cluster`, the application must answer:
 6. what Ozon recommends and whether the two quantities are directly comparable;
 7. what each origin→destination route costs in ₽ and as `% of realization`;
 8. what margin/profit effect a feasible local placement would have;
-9. how limited seller stock should be allocated under the chosen objective;
+9. how limited seller stock should be allocated under the fixed margin-priority strategy;
 10. why the application reached its recommendation.
 
 Decision sequence:
@@ -57,7 +57,7 @@ Do not rewrite working ingestion/analytics/economics/supply modules without caus
 2. **Ozon Comparison** — Ozon vs our need with horizon/comparability state.
 3. **Route Economics** — actual origin→destination model economics and local counterfactual.
 4. **Need Engine** — demand forecast minus cluster stock/inbound according to scenario.
-5. **Scenario Allocator** — Safe/Calculated allocations under `Макс. прибыль` or `Макс. маржа`.
+5. **Scenario Allocator** — Safe/Calculated allocations under the fixed `MAX_MARGIN` strategy.
 
 A successful run returns an immutable aggregated analysis snapshot. Raw orders are not required in the browser.
 
@@ -251,7 +251,7 @@ If horizons differ, show both originals and `Горизонты различаю
 
 ## 10. Hybrid plan model
 
-Both plan families are computed under the same chosen optimization objective and shown side by side.
+Both plan families are computed under the fixed `MAX_MARGIN` optimization strategy and shown side by side.
 
 ### 10.1 Safe Plan
 
@@ -283,27 +283,19 @@ Seller stock is not fungible across SKUs. Allocation runs independently per SKU 
 
 If total eligible need is smaller than seller stock, the remainder is left unallocated.
 
-The user chooses one objective:
+Product Completion uses one margin-priority objective: `MAX_MARGIN`. The user does not select an optimization objective. Fill eligible cluster ceilings in descending net margin rate after all modeled costs.
 
-### 11.1 `Макс. прибыль`
-
-Fill eligible cluster ceilings in descending expected absolute net profit per incremental unit.
-
-### 11.2 `Макс. маржа`
-
-Fill eligible cluster ceilings in descending net margin rate after all modeled costs.
+Within one SKU, price is constant across destinations, so ordering by profit per unit and by `margin_rate = profit_per_unit / price` is equivalent. The single strategy removes a redundant operator decision without introducing portfolio optimization.
 
 Deterministic tie-breaks:
 
-1. primary objective;
+1. higher margin rate;
 2. higher route/demand confidence;
 3. lower distortion risk;
 4. larger eligible need;
 5. stable cluster ID.
 
 Existing configurable minimum profit/margin/ROI thresholds remain eligibility constraints unless a later approved decision removes them.
-
-The UI may show a compact outcome comparison for both objectives, but only one objective drives `Наш план` at a time.
 
 There is no `Макс. объём` objective because available SKU quantity is already fixed.
 
@@ -378,7 +370,7 @@ Analysis snapshot includes freshness/comparability warnings. Old/restored or mat
 
 ## 14. Immutable analysis snapshot
 
-Every successful calculation produces a self-contained immutable snapshot. Changing source files, mappings, horizon, inbound flag or objective marks the current result as requiring recalculation; only a successful new run atomically replaces it.
+Every successful calculation produces a self-contained immutable snapshot. Changing source files, mappings, horizon or inbound flag marks the current result as requiring recalculation; only a successful new run atomically replaces it.
 
 At minimum:
 
@@ -422,7 +414,7 @@ Scenario controls:
 
 - horizon days;
 - inbound flag;
-- objective `Макс. прибыль` / `Макс. маржа`;
+- fixed margin-priority allocation (informational, not a control);
 - `Пересчитать план`.
 
 Canonical visual sequence:
@@ -631,11 +623,10 @@ Implementation plan must use TDD.
 - Safe ceiling;
 - Calculated independence from Ozon;
 - physical ceiling;
-- max-profit allocation;
-- max-margin allocation;
+- fixed max-margin allocation and higher-margin priority under limited stock;
 - deterministic tie-breaks;
 - unallocated remainder;
-- both Safe/Calculated allocations produced under same objective.
+- both Safe/Calculated allocations produced under the fixed margin-priority strategy.
 
 ### Route economics
 
@@ -664,7 +655,7 @@ With real reports the user can:
 3. choose any horizon without hidden buffer;
 4. toggle inbound supply;
 5. see Safe Plan and Our/Calculated Plan side by side;
-6. allocate limited SKU stock under max-profit or max-margin;
+6. allocate limited SKU stock under the fixed max-margin strategy;
 7. see route cost as `% realization` and final margin impact in p.p.;
 8. see observed-period ruble opportunity of local vs current fulfillment;
 9. open `Потоки спроса`, choose destination and visually see origin composition;

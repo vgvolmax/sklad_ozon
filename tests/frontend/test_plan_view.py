@@ -93,3 +93,12 @@ def test_drawer_diagnostics_model_keeps_messages_and_technical_codes():
     data=node(f"SkladOzon.buildDrawerModel({json.dumps(row,ensure_ascii=False)},{json.dumps(snap,ensure_ascii=False)}).sections[5].data")
     assert data['explanations'] == ['Пояснение']
     assert data['diagnostics'][0]['message'] == 'Понятное сообщение'
+
+
+def test_plan_has_no_objective_control_and_explains_margin_priority():
+    app = (ROOT / "frontend/assets/js/app.js").read_text()
+    assert 'id="objective"' not in app
+    assert "optimization_objective" not in app
+    assert "Макс. прибыль" not in app
+    assert "Макс. маржа" not in app
+    assert "План отдаёт приоритет более маржинальным вариантам размещения." in app

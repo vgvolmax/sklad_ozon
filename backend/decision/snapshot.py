@@ -128,6 +128,23 @@ def _flow_economics(rows, opportunities):
             opportunity, True, ())
 
 
+def _observed_flow_opportunity(rows, opportunities):
+    """Aggregate the immutable observed audit value for a displayed link."""
+    items = [opportunities.get((row.sku, row.origin_cluster_id,
+                                row.destination_cluster_id)) for row in rows]
+    if not items or any(
+        item is None or not item.complete
+        or item.observed_profit_opportunity_rub is None
+        for item in items
+    ):
+        return None
+    with localcontext(_CTX):
+        return sum(
+            (item.observed_profit_opportunity_rub for item in items),
+            Decimal("0"),
+        )
+
+
 def _views(flows, products, opportunities, product_identities=None,
            *, evidence_source="observed"):
     product_map = {p.sku: p for p in products}
@@ -149,6 +166,7 @@ def _views(flows, products, opportunities, product_identities=None,
             for (origin, destination), rows in sorted(route_groups.items()):
                 quantity = sum(row.quantity for row in rows)
                 economics = _flow_economics(rows, opp)
+                observed_opportunity = _observed_flow_opportunity(rows, opp)
                 breakdown = []
                 for flow in sorted(rows, key=lambda item: item.sku):
                     product = product_map.get(flow.sku)
@@ -168,7 +186,7 @@ def _views(flows, products, opportunities, product_identities=None,
                 links.append(FlowLinkView(
                     origin, destination, quantity,
                     Decimal(quantity) / Decimal(destination_totals[destination]),
-                    economics.margin_delta_pp, economics.profit_opportunity_rub,
+                    economics.margin_delta_pp, observed_opportunity,
                     economics.complete, economics.reason_codes, tuple(breakdown),
                     economics))
             local = sum(flow.quantity for flow in selected

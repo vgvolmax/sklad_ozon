@@ -1,6 +1,5 @@
 """Cross-layer acceptance for the final Product Completion presentation."""
 import json
-from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -33,6 +32,9 @@ def _build_product_completion_acceptance_files():
                     f"Доставлен;{date}T10:00:00;PII_BUYER_12345;"
                     "PII_PHONE_12345;PII_EMAIL_12345;PII_ADDRESS_12345")
     # W33 -> W34 is the canonical stockout/substitution shape for Moscow demand.
+    for date in ("2026-06-29", "2026-07-06", "2026-07-13",
+                 "2026-07-20", "2026-07-27", "2026-08-03"):
+        order("SKU-1", "39439", date, "Москва", "Москва", 100, 1000)
     for origin, qty in (("Москва", 90), ("Казань", 5), ("Самара", 5)):
         order("SKU-1", "39439", "2026-08-10", origin, "Москва", qty, 1000)
     for origin, qty in (("Москва", 19), ("Казань", 62), ("Самара", 14)):
@@ -95,11 +97,14 @@ def _route(view, origin, destination):
 def test_product_completion_end_to_end_reconciles_snapshot(product_completion_payload):
     """Exercise uploads -> application orchestration -> serialized snapshot."""
     snapshot = product_completion_payload["snapshot"]
+    assert snapshot["scenario"]["objective"] == "max_margin"
     assert {row["sku"] for row in snapshot["decision_rows"]} == {"SKU-1", "SKU-2"}
-    demand = snapshot["demand_estimates"][0]
+    demand = next(item for item in snapshot["demand_estimates"]
+                  if item["sku"] == "SKU-1" and item["destination_cluster_id"] == "Москва")
     assert all(demand[name] is not None for name in
                ("m1", "m2", "latest_week_qty", "current_weekly_rate"))
-    need = snapshot["decision_rows"][0]["need"]
+    need = next(row["need"] for row in snapshot["decision_rows"]
+                if row["sku"] == "SKU-1" and row["destination_cluster_id"] == "Москва")
     assert need["calculated_need_qty"] is not None
     assert need["horizon_days"] == 56
     assert need["ozon_recommended_qty"] is not None
@@ -128,7 +133,7 @@ def test_product_completion_cleaning_changes_fulfillment_not_demand(product_comp
     clean = _view(snapshot, "clean_views", "destination", "Москва")
     observed_route = _route(observed, "Казань", "Москва")
     clean_route = _route(clean, "Казань", "Москва")
-    assert (observed["total_quantity"], clean["total_quantity"]) == (235, 140)
+    assert (observed["total_quantity"], clean["total_quantity"]) == (835, 740)
     assert (observed_route["quantity"], clean_route["quantity"]) == (67, 5)
     assert observed_route["origin_cluster_id"] == clean_route["origin_cluster_id"] == "Казань"
     assert observed_route["destination_cluster_id"] == clean_route["destination_cluster_id"] == "Москва"
@@ -180,34 +185,52 @@ def test_product_completion_rejects_max_volume():
     assert response.json()["error"]["code"] == "INVALID_OPTIMIZATION_OBJECTIVE"
 
 
-def test_product_completion_objectives_allocate_limited_stock_differently(monkeypatch):
-    """The real application allocator receives distinct economic priorities."""
-    import backend.application as application_module
+def test_product_completion_max_margin_prioritizes_more_profitable_margin_route():
+    from tests.api.test_analysis import (AVAILABILITY_HEADERS, TARIFF_HEADERS,
+                                         _analysis_data, _analysis_files,
+                                         _orders, _post_analysis)
+
+    files = _analysis_files(available_stock=4)
+    files["availability_file"] = (
+        "availability.xlsx",
+        make_xlsx(headers=AVAILABILITY_HEADERS, rows=[
+            ["SKU-1", "W1", "Москва", 999, 10, 0, 0],
+            ["SKU-1", "W2", "Уфа", 999, 10, 0, 0],
+        ]),
+    )
+    files["restrictions_file"] = (
+        "restrictions.csv",
+        "SKU;Склад;Статус;Причина\nSKU-1;W1;Разрешено;\nSKU-1;W2;Разрешено;\n".encode(),
+    )
+    files["orders_file"] = (
+        "orders.csv",
+        _orders(destination="Москва") + _orders(destination="Уфа").split(b"\n", 1)[1],
+    )
+    files["tariffs_file"] = (
+        "tariffs.xlsx",
+        make_xlsx(headers=TARIFF_HEADERS, rows=[
+            [origin, destination, 0, "", "", "", 40 if origin == "Москва" else 100]
+            for origin in ("Москва", "Уфа")
+            for destination in ("Москва", "Уфа")
+        ]),
+    )
+    response = _post_analysis(files=files, data=_analysis_data())
+    assert response.status_code == 200
+    snapshot = response.json()["snapshot"]
+    rows = {row["destination_cluster_id"]: row for row in snapshot["decision_rows"]}
+    margins = {item["placement_cluster_id"]: Decimal(item["margin_rate"])
+               for item in snapshot["unit_economics"] if item["sku"] == "SKU-1"}
+    assert margins["Москва"] > margins["Уфа"]
+    assert rows["Москва"]["calculated_plan_qty"] == 4
+    assert rows["Уфа"]["calculated_plan_qty"] == 0
+    assert sum(row["calculated_plan_qty"] for row in rows.values()) == 4
+
+def test_product_completion_rejects_legacy_max_profit():
     from tests.api.test_analysis import _analysis_data, _post_analysis
-
-    original = application_module.calculate_unit_economics
-    def contrasting_economics(product, cluster, logistics, settings):
-        result = original(product, cluster, logistics, settings)
-        return replace(result,
-                       profit_per_unit=Decimal("100" if cluster == "Москва" else "90"),
-                       margin_rate=Decimal("0.10" if cluster == "Москва" else "0.20"),
-                       roi=Decimal("1"))
-    monkeypatch.setattr(application_module, "calculate_unit_economics", contrasting_economics)
-
-    files = _build_product_completion_acceptance_files()
-    profit = _post_analysis(files=files, data=_analysis_data(
-        optimization_objective="max_profit")).json()["snapshot"]
-    margin = _post_analysis(files=_build_product_completion_acceptance_files(), data=_analysis_data(
-        optimization_objective="max_margin")).json()["snapshot"]
-    def allocation(snapshot):
-        return {row["destination_cluster_id"]: row["calculated_plan_qty"]
-                for row in snapshot["decision_rows"] if row["sku"] == "SKU-1"}
-    profit_qty, margin_qty = allocation(profit), allocation(margin)
-    assert profit_qty["Москва"] > margin_qty["Москва"]
-    assert margin_qty["Самара"] > profit_qty["Самара"]
-    assert sum(profit_qty.values()) <= 20
-    assert sum(margin_qty.values()) <= 20
-
+    response = _post_analysis(files=_build_product_completion_acceptance_files(),
+                              data=_analysis_data(optimization_objective="max_profit"))
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_OPTIMIZATION_OBJECTIVE"
 
 def test_product_completion_snapshot_excludes_buyer_pii(product_completion_payload):
     serialized = json.dumps(product_completion_payload["snapshot"], ensure_ascii=False)
