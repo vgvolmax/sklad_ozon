@@ -210,3 +210,11 @@ def load_project(path: Path) -> Project:
     if not all(isinstance(k, str) and isinstance(v, str) and k and v for k, v in payload["manual_cluster_mappings"].items()): raise ProjectValidationError("Manual mappings must contain nonblank strings.")
     project = Project(tuple(tariffs), _meta(payload["tariff_meta"]), tuple(products), _meta(payload["product_economics_meta"]), payload["seller_available_stock"], payload["manual_cluster_mappings"], econ, thresholds, tuple(snapshots))
     _validate(project); return project
+
+
+def load_project_if_exists(path: Path) -> Project:
+    """Load a Project without creating it, returning an empty Project if absent."""
+    path = Path(path)
+    if not path.exists():
+        return Project()
+    return load_project(path)

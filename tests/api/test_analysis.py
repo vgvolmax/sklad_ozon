@@ -1,7 +1,7 @@
 """End-to-end Task 17 API regressions over the real ASGI application."""
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal, getcontext
 from enum import Enum
@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 import backend.api as api_module
@@ -113,6 +114,11 @@ def _without_import_timestamps(payload):
     normalized = deepcopy(payload)
     for metadata in normalized.get("metadata", {}).values():
         metadata.pop("imported_at", None)
+    snapshot = normalized.get("snapshot", {})
+    snapshot.pop("snapshot_id", None)
+    snapshot.pop("created_at", None)
+    for metadata in snapshot.get("report_meta", {}).values():
+        metadata.pop("imported_at", None)
     return normalized
 
 
@@ -125,7 +131,7 @@ def _real_four_files(fbs_a=(0, 0, 84, 0), *, include_second=True, obsolete=False
                             "До конца остатка FBO, дн", "До конца остатка FBS, дн", "Остаток FBO, шт",
                             "Остаток FBS, шт", "Товары в пути на склад озон, шт", "Среднесуточные продажи, шт. за 28дн"]
     clusters = ("Новосибирск", "Ростов", "Москва", "Уфа")
-    availability_rows = [["SKU-A", "ART-A", "Товар A", 10 if cluster == "Москва" else 0, "", cluster, "FBO", 0, 1, 1, "", 1, 1, 2, fbs, 0, 1]
+    availability_rows = [["SKU-A", "ART-A", "Товар A", 10 if cluster == "Москва" else None, "", cluster, "FBO", 0, 1, 1, "", 1, 1, 2, fbs, 0, 1]
                          for cluster, fbs in zip(clusters, fbs_a)]
     if include_second:
         availability_rows.append(["SKU-B", "ART-B", "Товар B", 10, "", "Москва", "FBO", 0, 1, 1, "", 1, 1, 2, 20, 0, 1])
@@ -213,6 +219,66 @@ def test_explicit_zero_fbo_and_inbound_are_valid_need_evidence():
     assert _placement(payload, "Москва")["calculated_need_qty"] == 8
 
 
+def test_snapshot_need_survives_missing_product_economics_and_plan_is_unknown():
+    files = _analysis_files()
+    files["product_economics_file"] = (
+        "products.xlsx", make_xlsx(headers=PRODUCT_HEADERS, rows=[]),
+    )
+    payload = _post_analysis(files=files).json()
+    row = payload["snapshot"]["decision_rows"][0]
+    assert row["need"]["complete"] is True
+    assert row["need"]["calculated_need_qty"] == 8
+    assert row["calculated_plan_qty"] is None
+    assert row["expected_plan_profit"] is None
+    assert "MISSING_PRODUCT_ECONOMICS" in row["status_codes"]
+    assert payload["snapshot"]["summary"]["incomplete_row_count"] == 1
+
+
+def test_snapshot_need_survives_missing_volume_and_identity_falls_back():
+    files = _analysis_files()
+    files["product_economics_file"] = (
+        "products.xlsx",
+        make_xlsx(headers=PRODUCT_HEADERS,
+                  rows=[["SKU-1", "ECON-ARTICLE", 100, 20, 1000, "10%", ""]]),
+    )
+    payload = _post_analysis(files=files).json()
+    row = payload["snapshot"]["decision_rows"][0]
+    assert row["need"]["complete"] is True
+    assert row["need"]["calculated_need_qty"] == 8
+    assert row["calculated_plan_qty"] is None
+    assert row["article"] == "ECON-ARTICLE"
+    assert "MISSING_PRODUCT_VOLUME" in row["status_codes"]
+    assert "MISSING_SELLER_AVAILABLE_STOCK" not in {
+        item["code"] for item in payload["diagnostics"]
+    }
+
+
+def test_explicit_zero_recommendation_alone_creates_decision_identity():
+    files = _analysis_files(recommendations=(0,))
+    files["orders_file"] = (
+        "orders.csv",
+        "SKU;Количество;Цена продавца;Кластер отгрузки;Кластер доставки;Статус;Принят в обработку\n".encode(),
+    )
+
+    payload = _post_analysis(files=files).json()
+
+    assert len(payload["snapshot"]["decision_rows"]) == 1
+    row = payload["snapshot"]["decision_rows"][0]
+    assert (row["sku"], row["destination_cluster_id"]) == ("SKU-1", "Москва")
+    assert row["need"]["ozon_recommended_qty"] == 0
+    assert row["need"]["calculated_need_qty"] is None
+    assert "MISSING_DEMAND_ESTIMATE" in row["need"]["blocker_codes"]
+
+
+def test_snapshot_preserves_missing_ozon_recommendation_vs_explicit_zero():
+    missing = _post_analysis(recommendations=(None,)).json()["snapshot"]["decision_rows"][0]
+    zero = _post_analysis(recommendations=(0,)).json()["snapshot"]["decision_rows"][0]
+    assert missing["need"]["ozon_recommended_qty"] is None
+    assert missing["safe_plan_qty"] is None
+    assert zero["need"]["ozon_recommended_qty"] == 0
+    assert zero["safe_plan_qty"] == 0
+
+
 def test_ozon_horizon_reaches_need_comparison(monkeypatch):
     comparisons = []
     original = application_module.calculate_need
@@ -230,6 +296,136 @@ def test_ozon_horizon_reaches_need_comparison(monkeypatch):
     assert comparisons[0].ozon_horizon_days == 56
     assert comparisons[0].horizon_days == 56
     assert comparisons[0].comparability.value == "same_horizon"
+
+
+def test_explicit_horizon_and_inbound_scenario_propagate_through_snapshot():
+    horizon = _post_analysis(data=_analysis_data(horizon_days="67")).json()["snapshot"]
+    row = horizon["decision_rows"][0]
+    assert horizon["scenario"]["horizon_days"] == 67
+    assert row["need"]["horizon_days"] == 67
+    assert row["need"]["ozon_horizon_days"] == 56
+    assert row["need"]["comparability"] == "different_horizon"
+    assert any("56" in warning and "67" in warning
+               for warning in horizon["freshness_warnings"])
+
+    with_inbound_files = _analysis_files()
+    with_inbound_files["availability_file"] = (
+        "availability.xlsx",
+        make_xlsx(headers=AVAILABILITY_HEADERS,
+                  rows=[["SKU-1", "W1", "Москва", 999, 10, 0, 4]]),
+    )
+    with_inbound = _post_analysis(
+        files=with_inbound_files,
+        data=_analysis_data(include_inbound="true"),
+    ).json()["snapshot"]
+    without_inbound = _post_analysis(
+        files=with_inbound_files,
+        data=_analysis_data(include_inbound="false"),
+    ).json()["snapshot"]
+    assert with_inbound["scenario"]["include_inbound"] is True
+    assert without_inbound["scenario"]["include_inbound"] is False
+    assert (with_inbound["decision_rows"][0]["need"]["calculated_need_qty"] <
+            without_inbound["decision_rows"][0]["need"]["calculated_need_qty"])
+
+
+def test_non_positive_profit_reason_reaches_complete_decision_row():
+    payload = _post_analysis(data=_analysis_data(
+        fixed_fbo_fee="1000", min_profit_per_unit="-2000",
+    )).json()
+    row = payload["snapshot"]["decision_rows"][0]
+    assert row["calculated_plan_qty"] == 0
+    assert "NON_POSITIVE_PROFIT" in row["status_codes"]
+    assert any("прибыл" in text.lower() for text in row["explanations"])
+    assert payload["snapshot"]["summary"]["incomplete_row_count"] == 0
+
+
+def test_limited_seller_stock_reasons_reach_each_decision_row():
+    files = _analysis_files(available_stock=4)
+    files["availability_file"] = (
+        "availability.xlsx",
+        make_xlsx(headers=AVAILABILITY_HEADERS, rows=[
+            ["SKU-1", "W1", "Москва", 999, 10, 0, 0],
+            ["SKU-1", "W2", "Уфа", 999, 10, 0, 0],
+        ]),
+    )
+    files["restrictions_file"] = (
+        "restrictions.csv",
+        "SKU;Склад;Статус;Причина\nSKU-1;W1;Разрешено;\nSKU-1;W2;Разрешено;\n".encode(),
+    )
+    files["orders_file"] = (
+        "orders.csv",
+        _orders(destination="Москва") + _orders(destination="Уфа").split(b"\n", 1)[1],
+    )
+    files["tariffs_file"] = (
+        "tariffs.xlsx",
+        make_xlsx(headers=TARIFF_HEADERS, rows=[
+            ["Москва", "Москва", 0, "", "", "", 50],
+            ["Москва", "Уфа", 0, "", "", "", 50],
+            ["Уфа", "Москва", 0, "", "", "", 50],
+            ["Уфа", "Уфа", 0, "", "", "", 50],
+        ]),
+    )
+
+    rows = _post_analysis(files=files).json()["snapshot"]["decision_rows"]
+    partial = next(row for row in rows
+                   if "PARTIAL_BY_SELLER_STOCK" in row["status_codes"])
+    exhausted = next(row for row in rows
+                     if "SELLER_STOCK_EXHAUSTED" in row["status_codes"])
+    assert partial["calculated_plan_qty"] == 4
+    assert exhausted["calculated_plan_qty"] == 0
+    assert any("частично" in text.lower() for text in partial["explanations"])
+    assert any("распределён" in text.lower() for text in exhausted["explanations"])
+
+
+def test_objective_selection_propagates_and_changes_api_allocation(monkeypatch):
+    files = _analysis_files(available_stock=4)
+    files["availability_file"] = (
+        "availability.xlsx",
+        make_xlsx(headers=AVAILABILITY_HEADERS, rows=[
+            ["SKU-1", "W1", "Москва", 999, 10, 0, 0],
+            ["SKU-1", "W2", "Уфа", 999, 10, 0, 0],
+        ]),
+    )
+    files["restrictions_file"] = (
+        "restrictions.csv",
+        "SKU;Склад;Статус;Причина\nSKU-1;W1;Разрешено;\nSKU-1;W2;Разрешено;\n".encode(),
+    )
+    files["orders_file"] = (
+        "orders.csv",
+        _orders(destination="Москва") + _orders(destination="Уфа").split(b"\n", 1)[1],
+    )
+    files["tariffs_file"] = (
+        "tariffs.xlsx", make_xlsx(headers=TARIFF_HEADERS, rows=[
+            [origin, destination, 0, "", "", "", 50]
+            for origin in ("Москва", "Уфа")
+            for destination in ("Москва", "Уфа")
+        ]),
+    )
+    original = application_module.calculate_unit_economics
+
+    def contrasting_economics(product, cluster, logistics, settings):
+        result = original(product, cluster, logistics, settings)
+        return replace(
+            result,
+            profit_per_unit=Decimal("100" if cluster == "Москва" else "90"),
+            margin_rate=Decimal("0.10" if cluster == "Москва" else "0.20"),
+            roi=Decimal("1"),
+        )
+
+    monkeypatch.setattr(application_module, "calculate_unit_economics",
+                        contrasting_economics)
+    profit = _post_analysis(files=files, data=_analysis_data(
+        optimization_objective="max_profit")).json()["snapshot"]
+    margin = _post_analysis(files=files, data=_analysis_data(
+        optimization_objective="max_margin")).json()["snapshot"]
+    assert profit["scenario"]["objective"] == "max_profit"
+    assert margin["scenario"]["objective"] == "max_margin"
+    profit_qty = {row["destination_cluster_id"]: row["calculated_plan_qty"]
+                  for row in profit["decision_rows"]}
+    margin_qty = {row["destination_cluster_id"]: row["calculated_plan_qty"]
+                  for row in margin["decision_rows"]}
+    assert profit_qty == {"Москва": 4, "Уфа": 0}
+    assert margin_qty == {"Москва": 0, "Уфа": 4}
 
 
 def test_unknown_ozon_horizon_stays_unknown(monkeypatch):
@@ -366,7 +562,11 @@ def test_conflicting_cluster_recommendations_fail_closed():
     assert "CONFLICTING_OZON_RECOMMENDATION" in {item["code"] for item in payload["diagnostics"]}
     assert _placement(payload, "Москва")["ozon_recommended_qty"] == 0
     assert _allocation(payload, "Москва") == 8
-    assert payload["safe_allocations"][0]["decisions"][0]["allocation_qty"] == 0
+    assert payload["safe_allocations"] == []
+    row = next(item for item in payload["snapshot"]["decision_rows"]
+               if item["destination_cluster_id"] == "Москва")
+    assert row["need"]["ozon_recommended_qty"] is None
+    assert row["safe_plan_qty"] is None
 
 
 def test_missing_tariff_keeps_incomplete_rows_and_causes_visible():
@@ -473,6 +673,32 @@ def test_missing_field_and_invalid_date_are_controlled_errors():
     assert missing.status_code == 400 and missing.json()["error"]["code"] == "MISSING_FIELD"
     invalid = _post_analysis(data=_analysis_data(as_of="not-a-date"))
     assert invalid.status_code == 400 and invalid.json()["error"] | {} == {"code": "INVALID_DATE", "message": "Expected YYYY-MM-DD.", "field": "as_of"}
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "abc", "true"])
+def test_invalid_scenario_horizon_is_rejected_exactly(value):
+    response = _post_analysis(data=_analysis_data(horizon_days=value))
+    assert response.status_code == 400
+    assert response.json()["error"] | {} == {
+        "code": "INVALID_HORIZON_DAYS", "message": "Expected a positive integer.",
+        "field": "horizon_days",
+    }
+
+
+@pytest.mark.parametrize("value", ["1", "0", "yes", "no", "on", "off"])
+def test_invalid_scenario_inbound_is_rejected_exactly(value):
+    response = _post_analysis(data=_analysis_data(include_inbound=value))
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_INCLUDE_INBOUND"
+    assert response.json()["error"]["field"] == "include_inbound"
+
+
+@pytest.mark.parametrize("value", ["max_volume", "foo"])
+def test_invalid_scenario_objective_is_rejected_exactly(value):
+    response = _post_analysis(data=_analysis_data(optimization_objective=value))
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_OPTIMIZATION_OBJECTIVE"
+    assert response.json()["error"]["field"] == "optimization_objective"
 
 
 def test_economics_setting_domains_return_400():

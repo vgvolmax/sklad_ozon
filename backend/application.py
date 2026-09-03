@@ -9,8 +9,10 @@ from backend.analytics.routes import build_route_profile, RouteProfile
 from backend.analytics.stockout import detect_stockouts
 from backend.analytics.distortion import detect_recommendation_distortion
 from backend.analytics.clean_routes import build_clean_route_profile, CleanRouteResult
+from backend.analytics.flows import aggregate_observed_flows
 from backend.analytics.route_profiles import select_route_profile
-from backend.economics import expected_logistics, LogisticsContext, RouteProfileSource, calculate_unit_economics
+from backend.economics import (expected_logistics, LogisticsContext, RouteProfileSource,
+                               calculate_unit_economics, calculate_route_opportunity)
 from backend.project import EconomicsSettings, OptimizerThresholds
 from backend.decision import ScenarioSettings, calculate_need
 from backend.supply import (AllocationObjective, PlanFamily, WarehouseCapability, PlacementInput, PlacementSource, RouteConfidence,
@@ -57,6 +59,9 @@ class AnalysisResult:
     stockouts: tuple; distortions: tuple; logistics: tuple; economics: tuple
     placements: tuple; allocations: tuple; safe_allocations: tuple; summary: AnalysisSummary
     diagnostics: tuple[AnalysisDiagnostic, ...]
+    demand_estimates: tuple = ()
+    needs: tuple = ()
+    route_economics: tuple = ()
 
 def analyze(availability, restrictions, orders, tariffs, products, *, as_of: date,
             economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds,
@@ -89,7 +94,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         if record.recommended_quantity is None: continue
         key = (record.sku, record.cluster)
         if key in rec_values and rec_values[key] != record.recommended_quantity:
-            conflicts.add(key); rec_values[key] = 0
+            conflicts.add(key); rec_values.pop(key, None)
         elif key not in conflicts: rec_values[key] = record.recommended_quantity
     for sku, cluster in sorted(conflicts):
         diagnostics.append(AnalysisDiagnostic("error", "CONFLICTING_OZON_RECOMMENDATION", "Conflicting cluster-level recommendations.", sku, cluster))
@@ -139,15 +144,36 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         tuple((sku, cluster, value) for (sku, cluster), value in rec_values.items()),
         lambda item: item[0],
     )
-    logistics_results=[]; economics_results=[]; candidates=[]
+    logistics_results=[]; economics_results=[]; candidates=[]; needs=[]
     progress("logistics_economics", 0, len(skus))
     for sku_index, sku in enumerate(skus, 1):
         clusters = {c.destination_cluster_id for c in demand_by_sku.get(sku, ())}
-        clusters |= {r.origin_cluster_id for r in observed_by_sku.get(sku, ())}
-        clusters |= {item[1] for item in recommendations_by_sku.get(sku, ()) if item[2]>0}
+        clusters |= {r.destination_cluster_id for r in observed_by_sku.get(sku, ())}
+        # A known zero is still recommendation evidence for this decision
+        # identity; only ``None`` means that no recommendation was supplied.
+        clusters |= {item[1] for item in recommendations_by_sku.get(sku, ())}
         clusters |= {s.destination_cluster_id for s in stockouts_by_sku.get(sku, ())}
         clusters |= {s.recommended_cluster_id for s in distortions_by_sku.get(sku, ())}
         product=product_map.get(sku)
+        # Need is an upstream quantity contract.  Build it before attempting
+        # economics so missing product data can only block placement/allocation.
+        sku_needs = []
+        for cluster in sorted(clusters):
+            operational = availability_by_identity.get((sku, cluster), ())
+            estimate = demand_estimates_by_identity.get((sku, cluster))
+            need = calculate_need(
+                sku=sku,
+                destination_cluster_id=cluster,
+                weekly_rate=(estimate.current_weekly_rate if estimate is not None else None),
+                horizon_days=scenario_settings.horizon_days,
+                fbo_stock=conservative_quantity(operational, "fbo_quantity"),
+                inbound_qty=conservative_quantity(operational, "inbound_quantity"),
+                include_inbound=scenario_settings.include_inbound,
+                ozon_recommended_qty=rec_values.get((sku, cluster)),
+                ozon_horizon_days=ozon_horizon_days,
+            )
+            needs.append(need)
+            sku_needs.append(need)
         if product is None:
             diagnostics.append(AnalysisDiagnostic("error","MISSING_PRODUCT_ECONOMICS","Missing product economics.",sku))
             progress("logistics_economics", sku_index, len(skus)); continue
@@ -170,25 +196,12 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
                     AnalysisDiagnostic("error", blocker, f"Unit economics is blocked by {blocker}.", sku, cluster)
                     for blocker in econ.blockers
                 )
-            qty=0 if (sku,cluster) in conflicts else rec_values.get((sku,cluster),0)
-            operational = availability_by_identity.get((sku, cluster), ())
-            fbo_stock = conservative_quantity(operational, "fbo_quantity")
-            inbound_qty = conservative_quantity(operational, "inbound_quantity")
-            estimate = demand_estimates_by_identity.get((sku, cluster))
-            need = calculate_need(
-                sku=sku,
-                destination_cluster_id=cluster,
-                weekly_rate=(estimate.current_weekly_rate if estimate is not None else None),
-                horizon_days=scenario_settings.horizon_days,
-                fbo_stock=fbo_stock,
-                inbound_qty=inbound_qty,
-                include_inbound=scenario_settings.include_inbound,
-                ozon_recommended_qty=qty,
-                ozon_horizon_days=ozon_horizon_days,
-            )
+            recommendation = rec_values.get((sku,cluster))
+            qty = recommendation if recommendation is not None else 0
+            need = next(item for item in sku_needs if item.destination_cluster_id == cluster)
             sources=[]
             if observed_profile: sources.append(PlacementSource.OBSERVED)
-            sources.append(PlacementSource.RECOMMENDED if qty>0 else PlacementSource.COUNTERFACTUAL)
+            sources.append(PlacementSource.RECOMMENDED if recommendation is not None else PlacementSource.COUNTERFACTUAL)
             distortion=distortion_by_cluster.get((sku, cluster))
             candidates.append(PlacementInput(
                 sku, cluster, qty, tuple(sources), econ, distortion, confidence,
@@ -217,24 +230,44 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         stock = ((next(iter(positive_fbs[sku])) if positive_fbs.get(sku) else 0) if sku in fbs and sku not in conflicting_fbs else
                  (product.available_qty if product and sku not in fbs and not availability_fbs_authoritative else None))
         if product and stock is not None and group:
-            safe_allocations.append(optimize_allocations(
-                group, stock, optimizer_thresholds,
-                plan_family=PlanFamily.SAFE,
-                objective=scenario_settings.objective,
-            ))
+            # Safe is not calculable without the external Ozon ceiling.  The
+            # Calculated family remains independent from that evidence.
+            recommendations = {
+                item.destination_cluster_id: item.ozon_recommended_qty
+                for item in needs if item.sku == sku
+            }
+            safe_group = tuple(
+                item for item in group
+                if recommendations.get(item.cluster_id) is not None
+            )
+            if safe_group:
+                safe_allocations.append(optimize_allocations(
+                    safe_group, stock, optimizer_thresholds,
+                    plan_family=PlanFamily.SAFE,
+                    objective=scenario_settings.objective,
+                ))
             allocations.append(optimize_allocations(
                 group, stock, optimizer_thresholds,
                 plan_family=PlanFamily.CALCULATED,
                 objective=scenario_settings.objective,
             ))
-        elif product and sku not in conflicting_fbs:
+        elif product and stock is None and sku not in conflicting_fbs:
             diagnostics.append(AnalysisDiagnostic("error","MISSING_SELLER_AVAILABLE_STOCK","Missing seller available stock.",sku))
         progress("optimizer", sku_index, len(skus))
     allocations = tuple(allocations)
     safe_allocations = tuple(safe_allocations)
+    feasibility={(p.sku,p.cluster_id):p.feasibility for p in placements}
+    route_opportunities=[]
+    for flow in aggregate_observed_flows(observed):
+        product=product_map.get(flow.sku); local=feasibility.get((flow.sku,flow.destination_cluster_id))
+        if product is not None and local is not None:
+            route_opportunities.append(calculate_route_opportunity(flow,product,tariffs,economics_settings,local))
     summary = build_analysis_summary(placements, allocations)
+    identities = [(item.sku, item.destination_cluster_id) for item in needs]
+    if len(identities) != len(set(identities)):
+        raise AssertionError("duplicate NeedComparison for SKU and destination")
     return AnalysisResult(
         demand, observed, clean, stockouts, distortions, tuple(logistics_results),
         tuple(economics_results), placements, allocations, safe_allocations, summary,
-        tuple(diagnostics),
+        tuple(diagnostics), tuple(demand_estimates), tuple(needs), tuple(route_opportunities),
     )
