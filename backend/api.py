@@ -252,7 +252,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_ca
     logger.info("[analysis %s] reports done %.3fs",request_id,perf_counter()-reports_started)
     imported=[availability,restrictions,orders,tariffs,products]
     settings=EconomicsSettings(*(values[n] for n in DECIMAL_NAMES[:4]),tax,*(values[n] for n in DECIMAL_NAMES[4:7])); thresholds=OptimizerThresholds(*(values[n] for n in DECIMAL_NAMES[7:]))
-    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=availability.records,progress_callback=progress_callback)
+    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=availability.records,ozon_horizon_days=availability.meta.recommendation_horizon_days,progress_callback=progress_callback)
     progress("serialization")
     coverage={key:0 for key in ('complete','partial','none','no_profile')}
     for item in result.logistics:coverage[item.coverage_status.value]+=1
@@ -263,4 +263,4 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_ca
     input_statuses={field:input_status(item) for field,item in zip(files,statuses)}
     if unitka is not None:
         input_statuses["unitka_file"]=input_status(products,tariffs)
-    return {"api_version":1,"complete":complete,"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}
+    return {"api_version":1,"complete":complete,"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"safe_allocations":wire(result.safe_allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}

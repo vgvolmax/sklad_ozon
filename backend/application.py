@@ -61,6 +61,7 @@ class AnalysisResult:
 def analyze(availability, restrictions, orders, tariffs, products, *, as_of: date,
             economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds,
             availability_fbs_authoritative: bool = False, operational_availability=None,
+            ozon_horizon_days: int | None = None,
             progress_callback=None,
             scenario_settings: ScenarioSettings = _DEFAULT_SCENARIO) -> AnalysisResult:
     if not isinstance(scenario_settings, ScenarioSettings):
@@ -183,7 +184,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
                 inbound_qty=inbound_qty,
                 include_inbound=scenario_settings.include_inbound,
                 ozon_recommended_qty=qty,
-                ozon_horizon_days=None,
+                ozon_horizon_days=ozon_horizon_days,
             )
             sources=[]
             if observed_profile: sources.append(PlacementSource.OBSERVED)

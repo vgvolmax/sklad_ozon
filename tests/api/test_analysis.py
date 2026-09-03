@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 import backend.api as api_module
+import backend.application as application_module
 from backend.application import AnalysisSummary, build_analysis_summary
 from backend.api import MAX_UPLOAD_BYTES, wire
 from backend.main import app
@@ -19,7 +20,14 @@ from tests.helpers.xlsx_fixtures import make_multisheet_xlsx, make_real_unitka, 
 
 
 CLIENT = TestClient(app)
-AVAILABILITY_HEADERS = ["SKU", "Склад", "Кластер", "Доступно", "Рекомендуемая поставка"]
+AVAILABILITY_HEADERS = [
+    "SKU", "Склад", "Кластер", "Доступно",
+    "Рекомендуемая поставка, шт на 56 дней",
+    "Остаток FBO, шт", "Товары в пути на склад озон, шт",
+]
+LEGACY_AVAILABILITY_HEADERS = [
+    "SKU", "Склад", "Кластер", "Доступно", "Рекомендуемая поставка",
+]
 TARIFF_HEADERS = ["Кластер отгрузки", "Кластер доставки", "Объём от", "Объём до", "Цена от", "Цена до", "Логистика"]
 PRODUCT_HEADERS = ["SKU", "Артикул", "Себестоимость", "Доступный остаток", "Цена", "Комиссия", "Объём, л"]
 PII_MARKERS = ("PII_BUYER_12345", "PII_PHONE_12345", "PII_EMAIL_12345", "PII_ADDRESS_12345")
@@ -46,7 +54,10 @@ def _orders(origin="Москва", destination="Москва", *, pii=False):
 
 
 def _analysis_files(*, recommendations=(10,), available_stock=20, origin="Москва", destination="Москва", tariff=True, pii=False):
-    availability_rows = [["SKU-1", f"W{i + 1}", origin, 999, recommendation] for i, recommendation in enumerate(recommendations)]
+    availability_rows = [
+        ["SKU-1", f"W{i + 1}", origin, 999, recommendation, 0, 0]
+        for i, recommendation in enumerate(recommendations)
+    ]
     restrictions = "SKU;Склад;Статус;Причина\n" + "".join(
         f"SKU-1;W{i + 1};Разрешено;\n" for i in range(len(recommendations))
     )
@@ -63,7 +74,8 @@ def _analysis_files(*, recommendations=(10,), available_stock=20, origin="Мос
 def _two_sku_analysis_files():
     return {
         "availability_file": ("availability.xlsx", make_xlsx(headers=AVAILABILITY_HEADERS, rows=[
-            ["SKU-1", "W1", "Москва", 999, 3], ["SKU-2", "W2", "Москва", 999, 4],
+            ["SKU-1", "W1", "Москва", 999, 3, 0, 0],
+            ["SKU-2", "W2", "Москва", 999, 4, 0, 0],
         ])),
         "restrictions_file": ("restrictions.csv", "SKU;Склад;Статус;Причина\nSKU-1;W1;Разрешено;\nSKU-2;W2;Разрешено;\n".encode()),
         "orders_file": ("orders.csv", _orders() + _orders().decode().splitlines()[1].replace("SKU-1", "SKU-2").encode() + b"\n"),
@@ -163,14 +175,89 @@ def test_wire_decimal_is_exact_and_independent_of_global_precision():
         context.prec = original_precision
 
 
-def test_happy_path_uses_recommendation_not_availability():
+def test_happy_path_exposes_calculated_and_safe_plan_families():
     response = _post_analysis(recommendations=(3,), available_stock=5)
     assert response.status_code == 200
     payload = response.json()
     assert payload["api_version"] == 1 and payload["complete"] is True
-    assert {"api_version", "complete", "as_of", "metadata", "demand", "observed_routes", "clean_routes", "stockout_signals", "distortion_signals", "logistics", "economics", "placements", "allocations", "coverage", "diagnostics"} <= payload.keys()
+    assert {"api_version", "complete", "as_of", "metadata", "demand", "observed_routes", "clean_routes", "stockout_signals", "distortion_signals", "logistics", "economics", "placements", "allocations", "safe_allocations", "coverage", "diagnostics"} <= payload.keys()
     assert _placement(payload, "Москва")["ozon_recommended_qty"] == 3
-    assert _allocation(payload, "Москва") == 3
+    assert _allocation(payload, "Москва") == 5
+    assert payload["safe_allocations"][0]["decisions"][0]["allocation_qty"] == 3
+
+
+def test_missing_fbo_and_inbound_evidence_blocks_calculated_need():
+    files = _analysis_files(recommendations=(3,), available_stock=5)
+    files["availability_file"] = (
+        "availability.xlsx",
+        make_xlsx(
+            headers=LEGACY_AVAILABILITY_HEADERS,
+            rows=[["SKU-1", "W1", "Москва", 999, 3]],
+        ),
+    )
+
+    payload = _post_analysis(files=files).json()
+
+    assert _placement(payload, "Москва")["calculated_need_qty"] is None
+    assert payload["allocations"][0]["decisions"][0]["reason_codes"] == [
+        "CALCULATED_NEED_MISSING"
+    ]
+    assert payload["safe_allocations"][0]["decisions"][0]["reason_codes"] == [
+        "CALCULATED_NEED_MISSING"
+    ]
+
+
+def test_explicit_zero_fbo_and_inbound_are_valid_need_evidence():
+    payload = _post_analysis(recommendations=(3,), available_stock=5).json()
+
+    assert _placement(payload, "Москва")["calculated_need_qty"] == 8
+
+
+def test_ozon_horizon_reaches_need_comparison(monkeypatch):
+    comparisons = []
+    original = application_module.calculate_need
+
+    def capture_need(**kwargs):
+        comparison = original(**kwargs)
+        comparisons.append(comparison)
+        return comparison
+
+    monkeypatch.setattr(application_module, "calculate_need", capture_need)
+
+    response = _post_analysis()
+
+    assert response.status_code == 200
+    assert comparisons[0].ozon_horizon_days == 56
+    assert comparisons[0].horizon_days == 56
+    assert comparisons[0].comparability.value == "same_horizon"
+
+
+def test_unknown_ozon_horizon_stays_unknown(monkeypatch):
+    comparisons = []
+    original = application_module.calculate_need
+
+    def capture_need(**kwargs):
+        comparison = original(**kwargs)
+        comparisons.append(comparison)
+        return comparison
+
+    monkeypatch.setattr(application_module, "calculate_need", capture_need)
+    files = _analysis_files()
+    files["availability_file"] = (
+        "availability.xlsx",
+        make_xlsx(
+            headers=LEGACY_AVAILABILITY_HEADERS + [
+                "Остаток FBO, шт", "Товары в пути на склад озон, шт",
+            ],
+            rows=[["SKU-1", "W1", "Москва", 999, 10, 0, 0]],
+        ),
+    )
+
+    response = _post_analysis(files=files)
+
+    assert response.status_code == 200
+    assert comparisons[0].ozon_horizon_days is None
+    assert comparisons[0].comparability.value == "ozon_horizon_unknown"
 
 
 def test_analysis_summary_contract_and_reconciliation():
@@ -261,10 +348,11 @@ def test_origin_destination_direction_is_preserved():
     assert (route["origin_cluster_id"], route["destination_cluster_id"]) == ("Казань", "Москва")
 
 
-def test_counterfactual_zero_stays_visible_and_unallocated():
+def test_ozon_zero_blocks_safe_but_not_calculated_plan():
     payload = _post_analysis(recommendations=(0,)).json()
     assert _placement(payload, "Москва")["ozon_recommended_qty"] == 0
-    assert _allocation(payload, "Москва") == 0
+    assert _allocation(payload, "Москва") == 8
+    assert payload["safe_allocations"][0]["decisions"][0]["allocation_qty"] == 0
 
 
 def test_duplicate_cluster_recommendations_are_not_summed():
@@ -277,7 +365,8 @@ def test_conflicting_cluster_recommendations_fail_closed():
     assert payload["complete"] is False
     assert "CONFLICTING_OZON_RECOMMENDATION" in {item["code"] for item in payload["diagnostics"]}
     assert _placement(payload, "Москва")["ozon_recommended_qty"] == 0
-    assert _allocation(payload, "Москва") == 0
+    assert _allocation(payload, "Москва") == 8
+    assert payload["safe_allocations"][0]["decisions"][0]["allocation_qty"] == 0
 
 
 def test_missing_tariff_keeps_incomplete_rows_and_causes_visible():
@@ -322,7 +411,7 @@ def test_real_four_file_mode_fbo_fbs_article_and_sku_specific_caps():
     sku_a = next(p for p in payload["placements"] if p["sku"] == "SKU-A")
     assert sku_a["feasibility"]["eligible_warehouses"] == ["МОСКВА_РФЦ"]
     assert "PROHIBITED_WAREHOUSE_PRESENT" in sku_a["feasibility"]["reasons"]
-    assert {a["sku"]: a["allocated_qty"] for a in payload["allocations"]} == {"SKU-A": 3, "SKU-B": 7}
+    assert {a["sku"]: a["allocated_qty"] for a in payload["allocations"]} == {"SKU-A": 3, "SKU-B": 6}
     assert "INVALID_MAX_SUPPLY_QTY" not in {d["code"] for d in payload["diagnostics"]}
     assert {item["expected_fee"] for item in payload["logistics"]} == {"69"}
     assert "PII_REAL_SHAPE" not in json.dumps(payload, ensure_ascii=False)
