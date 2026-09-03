@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Current Product Completion correction (2026-09-03):** The product has one optimization strategy, `MAX_MARGIN`, and no user-selectable objective. The API defaults an omitted objective to `max_margin` and rejects legacy `max_profit` and unsupported `max_volume`. Within a single SKU, destination price is constant, so profit/unit and margin-rate rankings are equivalent. Historical steps below describe the implementation evolution and do not override this current contract.
+
 **Goal:** Implement the approved Product Completion layer so the application independently estimates destination demand, compares it with Ozon, models route economics, produces Safe and Calculated plans under max-profit/max-margin objectives, and exposes the result through the approved decision UI and `Потоки спроса` flow analysis.
 
 **Architecture:** Preserve the current SCOZ-lite runtime and the working ingestion/economics core. Add small pure Python modules around the existing analytics/economics/supply contracts, then assemble one immutable business-facing analysis snapshot through the existing FastAPI boundary. Only after the snapshot contract is complete, migrate the vanilla frontend to the four-section Product Completion UI governed by `DESIGN.md` and `UX-CONTRACT.md`.
@@ -1249,7 +1251,7 @@ Top-level sections exactly:
   snapshot: null,
   staleSnapshot: false,
   section: 'plan',
-  scenario: { horizonDays: 56, includeInbound: true, objective: 'max_profit' },
+  scenario: { horizonDays: 56, includeInbound: true },
   planView: { search: '', quickFilter: 'all', sort: null, page: 1, pageSize: 50, columns: [] },
   selectedDecisionKey: null,
   flowView: { mode: 'destination', metric: 'units', selectedKey: null, selectedRoute: null }
@@ -1311,7 +1313,7 @@ git commit -m "feat: add Product Completion application shell"
 **Behavior:**
 
 - `Данные` owns file import, freshness, economics settings, manual mappings and diagnostics.
-- `План` owns horizon, inbound flag, objective and `Пересчитать план`.
+- `План` owns horizon, inbound flag and `Пересчитать план`; optimization is fixed to margin priority.
 - A successful old snapshot remains visible during recalculation. Changed scenario is visibly `Требуется пересчёт`.
 - Failed recalculation preserves the prior snapshot and labels it previous; file selections/settings remain.
 - Decision line order is always `Ozon → Наша потребность → План`.

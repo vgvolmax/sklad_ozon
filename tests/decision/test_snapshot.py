@@ -118,7 +118,10 @@ def test_clean_breakdown_keeps_observed_audit_value_separate_from_evidence_value
     )
     view = next(v for v in _views((flow,), (), (opportunity,), evidence_source="clean")
                 if v.mode == "destination")
-    item = view.links[0].sku_breakdown[0]
+    link = view.links[0]
+    item = link.sku_breakdown[0]
+    assert link.observed_profit_opportunity_rub == Decimal("1000")
+    assert link.economics.profit_opportunity_rub == Decimal("400")
     assert item.observed_profit_opportunity_rub == Decimal("1000")
     assert item.profit_opportunity_rub == Decimal("400")
 

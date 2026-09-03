@@ -377,56 +377,14 @@ def test_limited_seller_stock_reasons_reach_each_decision_row():
     assert any("распределён" in text.lower() for text in exhausted["explanations"])
 
 
-def test_objective_selection_propagates_and_changes_api_allocation(monkeypatch):
-    files = _analysis_files(available_stock=4)
-    files["availability_file"] = (
-        "availability.xlsx",
-        make_xlsx(headers=AVAILABILITY_HEADERS, rows=[
-            ["SKU-1", "W1", "Москва", 999, 10, 0, 0],
-            ["SKU-1", "W2", "Уфа", 999, 10, 0, 0],
-        ]),
-    )
-    files["restrictions_file"] = (
-        "restrictions.csv",
-        "SKU;Склад;Статус;Причина\nSKU-1;W1;Разрешено;\nSKU-1;W2;Разрешено;\n".encode(),
-    )
-    files["orders_file"] = (
-        "orders.csv",
-        _orders(destination="Москва") + _orders(destination="Уфа").split(b"\n", 1)[1],
-    )
-    files["tariffs_file"] = (
-        "tariffs.xlsx", make_xlsx(headers=TARIFF_HEADERS, rows=[
-            [origin, destination, 0, "", "", "", 50]
-            for origin in ("Москва", "Уфа")
-            for destination in ("Москва", "Уфа")
-        ]),
-    )
-    original = application_module.calculate_unit_economics
-
-    def contrasting_economics(product, cluster, logistics, settings):
-        result = original(product, cluster, logistics, settings)
-        return replace(
-            result,
-            profit_per_unit=Decimal("100" if cluster == "Москва" else "90"),
-            margin_rate=Decimal("0.10" if cluster == "Москва" else "0.20"),
-            roi=Decimal("1"),
-        )
-
-    monkeypatch.setattr(application_module, "calculate_unit_economics",
-                        contrasting_economics)
-    profit = _post_analysis(files=files, data=_analysis_data(
-        optimization_objective="max_profit")).json()["snapshot"]
-    margin = _post_analysis(files=files, data=_analysis_data(
-        optimization_objective="max_margin")).json()["snapshot"]
-    assert profit["scenario"]["objective"] == "max_profit"
-    assert margin["scenario"]["objective"] == "max_margin"
-    profit_qty = {row["destination_cluster_id"]: row["calculated_plan_qty"]
-                  for row in profit["decision_rows"]}
-    margin_qty = {row["destination_cluster_id"]: row["calculated_plan_qty"]
-                  for row in margin["decision_rows"]}
-    assert profit_qty == {"Москва": 4, "Уфа": 0}
-    assert margin_qty == {"Москва": 0, "Уфа": 4}
-
+def test_legacy_max_profit_objective_is_rejected():
+    response = _post_analysis(data=_analysis_data(optimization_objective="max_profit"))
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "code": "INVALID_OPTIMIZATION_OBJECTIVE",
+        "message": "Unsupported optimization objective.",
+        "field": "optimization_objective",
+    }
 
 def test_unknown_ozon_horizon_stays_unknown(monkeypatch):
     comparisons = []
@@ -693,7 +651,7 @@ def test_invalid_scenario_inbound_is_rejected_exactly(value):
     assert response.json()["error"]["field"] == "include_inbound"
 
 
-@pytest.mark.parametrize("value", ["max_volume", "foo"])
+@pytest.mark.parametrize("value", ["max_profit", "max_volume", "foo"])
 def test_invalid_scenario_objective_is_rejected_exactly(value):
     response = _post_analysis(data=_analysis_data(optimization_objective=value))
     assert response.status_code == 400

@@ -22,7 +22,7 @@ def test_route_state_and_page_behaviors():
 
 
 def test_scenario_dirty_keeps_snapshot_identity_and_route_preserves_flow_state():
-    result = node("(()=>{const snap=SkladOzon.deepFreezeSnapshot({scenario:{horizon_days:56,include_inbound:true,optimization_objective:'max_profit'}});const s={...SkladOzon.createInitialState(),snapshot:snap};const n=SkladOzon.updateScenario(s,{horizonDays:28});return {stale:n.staleSnapshot,same:n.snapshot===snap,frozen:Object.isFrozen(snap.scenario)}})()")
+    result = node("(()=>{const snap=SkladOzon.deepFreezeSnapshot({scenario:{horizon_days:56,include_inbound:true}});const s={...SkladOzon.createInitialState(),snapshot:snap};const n=SkladOzon.updateScenario(s,{horizonDays:28});return {stale:n.staleSnapshot,same:n.snapshot===snap,frozen:Object.isFrozen(snap.scenario)}})()")
     assert result == {'stale': True, 'same': True, 'frozen': True}
     assert node("(()=>{const s={...SkladOzon.createInitialState(),flowView:{mode:'sku',metric:'units',selectedKey:'1',selectedRoute:null}};return SkladOzon.applyRoute(s,SkladOzon.parseRoute('#data')).flowView})()")['selectedKey'] == '1'
 
@@ -95,7 +95,16 @@ def test_scenario_draft_input_revision_and_date_only_format():
     for draft in ('0','-1','1.5',''):
         assert node(f"SkladOzon.validateScenarioDraft({json.dumps(draft)}).valid") is False
     assert node("SkladOzon.validateScenarioDraft('67')") == {'valid':True,'value':67,'error':None}
-    assert node("SkladOzon.isSnapshotStale({runInputRevision:4,currentInputRevision:5,currentScenario:{horizonDays:56,includeInbound:true,objective:'max_profit'},resultScenario:{horizon_days:56,include_inbound:true,optimization_objective:'max_profit'}})") is True
+    assert node("SkladOzon.isSnapshotStale({runInputRevision:4,currentInputRevision:5,currentScenario:{horizonDays:56,includeInbound:true,objective:'max_profit'},resultScenario:{horizon_days:56,include_inbound:true}})") is True
     assert node("SkladOzon.canApplyRunInputStatuses(4,5)") is False
     assert node("SkladOzon.canApplyRunInputStatuses(5,5)") is True
     assert node("SkladOzon.presentIsoDate('2026-09-01')") == '01.09.2026'
+
+
+def test_objective_is_not_state_or_persisted_and_legacy_preference_is_ignored():
+    state = node("SkladOzon.createInitialState()")
+    assert "objective" not in state["scenario"]
+    loaded = node("SkladOzon.loadPreferences({getItem:()=>JSON.stringify({scenario:{horizonDays:28,includeInbound:false,objective:'max_profit'}})}).scenario")
+    assert loaded == {"horizonDays": 28, "includeInbound": False}
+    saved = node("(()=>{let value;SkladOzon.savePreferences({setItem:(_,x)=>value=x},SkladOzon.createInitialState());return JSON.parse(value).scenario})()")
+    assert saved == {"horizonDays": 56, "includeInbound": True}
