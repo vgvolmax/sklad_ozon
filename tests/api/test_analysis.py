@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 import backend.api as api_module
@@ -113,6 +114,11 @@ def _without_import_timestamps(payload):
     normalized = deepcopy(payload)
     for metadata in normalized.get("metadata", {}).values():
         metadata.pop("imported_at", None)
+    snapshot = normalized.get("snapshot", {})
+    snapshot.pop("snapshot_id", None)
+    snapshot.pop("created_at", None)
+    for metadata in snapshot.get("report_meta", {}).values():
+        metadata.pop("imported_at", None)
     return normalized
 
 
@@ -211,6 +217,46 @@ def test_explicit_zero_fbo_and_inbound_are_valid_need_evidence():
     payload = _post_analysis(recommendations=(3,), available_stock=5).json()
 
     assert _placement(payload, "Москва")["calculated_need_qty"] == 8
+
+
+def test_snapshot_need_survives_missing_product_economics_and_plan_is_unknown():
+    files = _analysis_files()
+    files["product_economics_file"] = (
+        "products.xlsx", make_xlsx(headers=PRODUCT_HEADERS, rows=[]),
+    )
+    payload = _post_analysis(files=files).json()
+    row = payload["snapshot"]["decision_rows"][0]
+    assert row["need"]["complete"] is True
+    assert row["need"]["calculated_need_qty"] == 8
+    assert row["calculated_plan_qty"] is None
+    assert row["expected_plan_profit"] is None
+    assert "MISSING_PRODUCT_ECONOMICS" in row["status_codes"]
+    assert payload["snapshot"]["summary"]["incomplete_row_count"] == 1
+
+
+def test_snapshot_need_survives_missing_volume_and_identity_falls_back():
+    files = _analysis_files()
+    files["product_economics_file"] = (
+        "products.xlsx",
+        make_xlsx(headers=PRODUCT_HEADERS,
+                  rows=[["SKU-1", "ECON-ARTICLE", 100, 20, 1000, "10%", ""]]),
+    )
+    payload = _post_analysis(files=files).json()
+    row = payload["snapshot"]["decision_rows"][0]
+    assert row["need"]["complete"] is True
+    assert row["need"]["calculated_need_qty"] == 8
+    assert row["calculated_plan_qty"] is None
+    assert row["article"] == "ECON-ARTICLE"
+    assert "MISSING_PRODUCT_VOLUME" in row["status_codes"]
+
+
+def test_snapshot_preserves_missing_ozon_recommendation_vs_explicit_zero():
+    missing = _post_analysis(recommendations=(None,)).json()["snapshot"]["decision_rows"][0]
+    zero = _post_analysis(recommendations=(0,)).json()["snapshot"]["decision_rows"][0]
+    assert missing["need"]["ozon_recommended_qty"] is None
+    assert missing["safe_plan_qty"] is None
+    assert zero["need"]["ozon_recommended_qty"] == 0
+    assert zero["safe_plan_qty"] == 0
 
 
 def test_ozon_horizon_reaches_need_comparison(monkeypatch):
@@ -366,7 +412,11 @@ def test_conflicting_cluster_recommendations_fail_closed():
     assert "CONFLICTING_OZON_RECOMMENDATION" in {item["code"] for item in payload["diagnostics"]}
     assert _placement(payload, "Москва")["ozon_recommended_qty"] == 0
     assert _allocation(payload, "Москва") == 8
-    assert payload["safe_allocations"][0]["decisions"][0]["allocation_qty"] == 0
+    assert payload["safe_allocations"] == []
+    row = next(item for item in payload["snapshot"]["decision_rows"]
+               if item["destination_cluster_id"] == "Москва")
+    assert row["need"]["ozon_recommended_qty"] is None
+    assert row["safe_plan_qty"] is None
 
 
 def test_missing_tariff_keeps_incomplete_rows_and_causes_visible():
@@ -473,6 +523,32 @@ def test_missing_field_and_invalid_date_are_controlled_errors():
     assert missing.status_code == 400 and missing.json()["error"]["code"] == "MISSING_FIELD"
     invalid = _post_analysis(data=_analysis_data(as_of="not-a-date"))
     assert invalid.status_code == 400 and invalid.json()["error"] | {} == {"code": "INVALID_DATE", "message": "Expected YYYY-MM-DD.", "field": "as_of"}
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "abc", "true"])
+def test_invalid_scenario_horizon_is_rejected_exactly(value):
+    response = _post_analysis(data=_analysis_data(horizon_days=value))
+    assert response.status_code == 400
+    assert response.json()["error"] | {} == {
+        "code": "INVALID_HORIZON_DAYS", "message": "Expected a positive integer.",
+        "field": "horizon_days",
+    }
+
+
+@pytest.mark.parametrize("value", ["1", "0", "yes", "no", "on", "off"])
+def test_invalid_scenario_inbound_is_rejected_exactly(value):
+    response = _post_analysis(data=_analysis_data(include_inbound=value))
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_INCLUDE_INBOUND"
+    assert response.json()["error"]["field"] == "include_inbound"
+
+
+@pytest.mark.parametrize("value", ["max_volume", "foo"])
+def test_invalid_scenario_objective_is_rejected_exactly(value):
+    response = _post_analysis(data=_analysis_data(optimization_objective=value))
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_OPTIMIZATION_OBJECTIVE"
+    assert response.json()["error"]["field"] == "optimization_objective"
 
 
 def test_economics_setting_domains_return_400():

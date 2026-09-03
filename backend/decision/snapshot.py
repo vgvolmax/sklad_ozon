@@ -14,6 +14,59 @@ from .explanations import explain_decision
 _CTX = Context(prec=40, rounding=ROUND_HALF_EVEN)
 
 
+def first_nonblank(*values) -> str:
+    """Return the first meaningful identity value, never a blank override."""
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _route_aggregate(opportunities, observed_components=()):
+    """Fail closed, then aggregate a destination's routes by observed units."""
+    if not opportunities:
+        return None, None, False
+    complete = all(
+        item.complete
+        and item.margin_delta_pp is not None
+        and item.observed_profit_opportunity_rub is not None
+        for item in opportunities
+    )
+    if observed_components:
+        observed = defaultdict(int)
+        for item in observed_components:
+            observed[item.origin_cluster_id] += item.quantity
+        modeled = {item.origin_cluster_id: item.observed_qty for item in opportunities}
+        complete = complete and modeled == dict(observed)
+    if not complete:
+        return None, None, False
+    quantity = sum(item.observed_qty for item in opportunities)
+    if quantity <= 0:
+        return None, None, False
+    with localcontext(_CTX):
+        margin = sum(
+            (item.margin_delta_pp * Decimal(item.observed_qty) for item in opportunities),
+            Decimal("0"),
+        ) / Decimal(quantity)
+        rubles = sum(
+            (item.observed_profit_opportunity_rub for item in opportunities),
+            Decimal("0"),
+        )
+    return margin, rubles, True
+
+
+def _is_incomplete_row(row, placement, *, route_required, route_complete):
+    return (
+        not row.need.complete
+        or row.safe_plan_qty is None
+        or row.calculated_plan_qty is None
+        or placement is None
+        or not placement.economics.complete
+        or not placement.feasibility.allowed
+        or (route_required and not route_complete)
+    )
+
+
 def _views(flows, products, opportunities, product_identities=None):
     product_map = {p.sku: p for p in products}
     product_identities = product_identities or {}
@@ -32,7 +85,9 @@ def _views(flows, products, opportunities, product_identities=None):
                 breakdown=[]
                 for f in sorted(rows, key=lambda x:x.sku):
                     p=product_map.get(f.sku); o=opp.get((f.sku,origin,destination))
-                    article,name=product_identities.get(f.sku,(getattr(p,"article","") or "",getattr(p,"product_name","") or ""))
+                    identity=product_identities.get(f.sku, ("", ""))
+                    article=first_nonblank(identity[0], getattr(p,"article", ""))
+                    name=first_nonblank(identity[1], getattr(p,"product_name", ""))
                     breakdown.append(RouteSkuBreakdown(
                         f.sku, article, name,
                         f.quantity, Decimal(f.quantity)/Decimal(qty),
@@ -42,12 +97,15 @@ def _views(flows, products, opportunities, product_identities=None):
                 os=[opp.get((f.sku,origin,destination)) for f in rows]
                 complete=bool(os) and all(o is not None and o.complete for o in os)
                 reasons=tuple(sorted({c for o in os if o for c in o.reason_codes}))
+                if not complete and not reasons:
+                    reasons=("ROUTE_ECONOMICS_INCOMPLETE",)
                 margins=[o.margin_delta_pp for o in os if o and o.margin_delta_pp is not None]
                 rubles=[o.observed_profit_opportunity_rub for o in os if o and o.observed_profit_opportunity_rub is not None]
+                link_margin = margins[0] if complete and len(rows) == 1 else None
                 links.append(FlowLinkView(origin,destination,qty,
                     Decimal(qty)/Decimal(destination_totals[destination]),
-                    sum(margins,Decimal("0"))/Decimal(len(margins)) if margins else None,
-                    sum(rubles,Decimal("0")) if rubles else None,complete,reasons,tuple(breakdown)))
+                    link_margin,
+                    sum(rubles,Decimal("0")) if complete else None,complete,reasons,tuple(breakdown)))
             local=sum(f.quantity for f in selected if f.origin_cluster_id==f.destination_cluster_id)
             external=total-local
             return FlowView(mode,key,total,Decimal(local)/Decimal(total) if total else None,
@@ -74,39 +132,66 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
     distortion={(x.sku,x.recommended_cluster_id) for x in distortion_signals}
     products_by_sku={p.sku:p for p in products}
     product_identities = product_identities or {}
+    diagnostics_by_key = defaultdict(set)
+    for item in diagnostics:
+        if item.sku is not None:
+            diagnostics_by_key[(item.sku, item.destination_cluster_id or item.cluster_id)].add(item.code)
+            if item.destination_cluster_id is None and item.cluster_id is None:
+                diagnostics_by_key[(item.sku, None)].add(item.code)
     rows=[]
     for need in sorted(needs,key=lambda x:(x.sku,x.destination_cluster_id)):
         key=(need.sku,need.destination_cluster_id); p=products_by_sku.get(need.sku); place=placement.get(key)
         s=safe.get(key); c=calculated.get(key); opportunities=opportunity.get(key,[])
-        status=tuple(sorted(set(need.blocker_codes + (() if place is None else place.status_codes))))
-        margins=[o.margin_delta_pp for o in opportunities if o.margin_delta_pp is not None]
-        rubles=[o.observed_profit_opportunity_rub for o in opportunities if o.observed_profit_opportunity_rub is not None]
-        article,name=product_identities.get(need.sku,(getattr(p,"article","") or "",""))
-        rows.append(DecisionRow(need.sku,article,name,need.destination_cluster_id,
-            demand.get(key),need,0 if s is None else s.allocation_qty,0 if c is None else c.allocation_qty,
+        observed_components = [r for r in observed_routes.routes
+                               if (r.sku, r.destination_cluster_id) == key]
+        route_margin, route_rubles, route_complete = _route_aggregate(
+            opportunities, observed_components)
+        route_required = bool(observed_components)
+        codes = set(need.blocker_codes + (() if place is None else place.status_codes))
+        codes.update(diagnostics_by_key.get(key, ()))
+        codes.update(diagnostics_by_key.get((need.sku, None), ()))
+        if s is None: codes.add("SAFE_PLAN_UNAVAILABLE")
+        if c is None: codes.add("CALCULATED_PLAN_UNAVAILABLE")
+        if route_required and not route_complete: codes.add("ROUTE_ECONOMICS_INCOMPLETE")
+        status=tuple(sorted(codes))
+        identity=product_identities.get(need.sku, ("", ""))
+        article=first_nonblank(identity[0], getattr(p,"article", ""))
+        name=first_nonblank(identity[1], getattr(p,"product_name", ""))
+        row = DecisionRow(need.sku,article,name,need.destination_cluster_id,
+            demand.get(key),need,None if s is None else s.allocation_qty,None if c is None else c.allocation_qty,
             need.current_fbo_stock,need.inbound_qty,
             _external_share(observed_routes,key),
-            max(margins) if margins else None,sum(rubles,Decimal("0")) if rubles else None,
+            route_margin,route_rubles,
             None if c is None else c.expected_profit,
             SignalConfidence.LOW if demand.get(key) is None else demand[key].confidence,status,
             explain_decision(need=need,status_codes=status,
                 demand_codes=() if demand.get(key) is None else demand[key].explanation_codes,
                 distorted=key in distortion,
-                route_incomplete=any(not o.complete for o in opportunities))))
+                route_incomplete=route_required and not route_complete))
+        rows.append(row)
     with localcontext(_CTX): profit=sum((x.objective_profit for x in calculated_allocations),Decimal("0"))
     summary=DecisionSummary(len({r.sku for r in rows}),len(rows),
         sum(r.need.ozon_recommended_qty for r in rows if r.need.ozon_recommended_qty is not None),
         sum(r.need.calculated_need_qty for r in rows if r.need.calculated_need_qty is not None),
-        sum(r.safe_plan_qty for r in rows),sum(r.calculated_plan_qty for r in rows),profit,
+        sum(r.safe_plan_qty for r in rows if r.safe_plan_qty is not None),
+        sum(r.calculated_plan_qty for r in rows if r.calculated_plan_qty is not None),profit,
         sum(r.need.ozon_recommended_qty is not None and r.need.calculated_need_qty is not None and r.need.ozon_recommended_qty!=r.need.calculated_need_qty for r in rows),
-        sum(not r.need.complete for r in rows))
+        sum(_is_incomplete_row(
+            r, placement.get((r.sku, r.destination_cluster_id)),
+            route_required=bool([item for item in observed_routes.routes if
+                                 (item.sku, item.destination_cluster_id) ==
+                                 (r.sku, r.destination_cluster_id)]),
+            route_complete="ROUTE_ECONOMICS_INCOMPLETE" not in r.status_codes,
+        ) for r in rows))
     observed_flows=aggregate_observed_flows(observed_routes); clean_flows=aggregate_clean_flows(clean_routes)
     return AnalysisSnapshot(uuid4().hex,datetime.now(timezone.utc).isoformat(),dict(report_meta),tuple(freshness_warnings),scenario,
         dict(input_statuses),summary,tuple(rows),tuple(sorted(demand_estimates,key=lambda x:(x.sku,x.destination_cluster_id))),
         observed_routes,clean_routes,tuple(stockout_signals),tuple(distortion_signals),tuple(route_economics),
         tuple(unit_economics),tuple(safe_allocations),tuple(calculated_allocations),
         FlowViewAggregates(_views(observed_flows,products,route_economics,product_identities),_views(clean_flows,products,route_economics,product_identities)),
-        tuple(sorted(diagnostics,key=lambda x:(x.sku or "",x.cluster_id or "",x.code,x.message))))
+        tuple(sorted(diagnostics,key=lambda x:(x.sku or "",x.cluster_id or "",
+                                                x.destination_cluster_id or "",
+                                                x.code,x.message))))
 
 
 def _external_share(observed, key):

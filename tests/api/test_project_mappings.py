@@ -41,6 +41,10 @@ def test_mapping_update_preserves_other_project_fields(tmp_path, monkeypatch):
     saved = load_project(path)
     assert saved == replace(project, manual_cluster_mappings={"Alias": "Москва"})
 
+    cleared = TestClient(app).put("/api/project/mappings", json={})
+    assert cleared.status_code == 200
+    assert load_project(path) == replace(project, manual_cluster_mappings={})
+
 
 def test_mapping_put_rejects_invalid_shapes(tmp_path, monkeypatch):
     monkeypatch.setattr(api_module, "PROJECT_PATH", tmp_path / "project.json")

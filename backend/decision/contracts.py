@@ -128,7 +128,7 @@ class FlowViewAggregates:
 class DecisionRow:
     sku: str; article: str; product_name: str; destination_cluster_id: str
     demand: DemandEstimate | None; need: NeedComparison
-    safe_plan_qty: int; calculated_plan_qty: int
+    safe_plan_qty: int | None; calculated_plan_qty: int | None
     current_fbo_stock: int | None; inbound_qty: int | None
     route_external_share: Decimal | None
     route_margin_opportunity_pp: Decimal | None
