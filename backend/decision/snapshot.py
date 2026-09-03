@@ -161,8 +161,8 @@ def _views(flows, products, opportunities, product_identities=None,
                         Decimal(flow.quantity) / Decimal(quantity),
                         Decimal(flow.quantity) / Decimal(destination_totals[destination]),
                         None if opportunity is None else opportunity.margin_delta_pp,
-                        None if opportunity is None or opportunity.profit_delta_per_unit is None
-                        else opportunity.profit_delta_per_unit * Decimal(flow.quantity),
+                        None if opportunity is None
+                        else opportunity.observed_profit_opportunity_rub,
                         None if opportunity is None or opportunity.profit_delta_per_unit is None
                         else opportunity.profit_delta_per_unit * Decimal(flow.quantity)))
                 links.append(FlowLinkView(

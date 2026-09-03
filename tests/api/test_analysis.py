@@ -720,7 +720,7 @@ def test_upload_limit_and_thin_frontend_contract():
     assert MAX_UPLOAD_BYTES == 64 * 1024 * 1024
     source = Path("frontend/assets/js/app.js").read_text(encoding="utf-8")
     assert "fetch(" in source and "FormData" in source and "/api/" in source
-    assert not any(token in source for token in ("calculate_unit_economics", "expected_logistics", "SheetJS", "FileReader", "ArrayBuffer", "JSZip"))
+    assert not any(token in source for token in ("calculate_unit_economics", "function expectedLogistics(", "calculateExpectedLogistics(", "calculateRouteEconomics(", "calculateMargin(", "SheetJS", "FileReader", "ArrayBuffer", "JSZip"))
     assert "result.snapshot" in source
     assert "snap.summary" in source and "snap.input_statuses" in source
     assert not any(field in source for field in (
