@@ -6,7 +6,7 @@ from enum import Enum
 import asyncio
 import json
 import logging
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from queue import Queue
 from threading import Event, Thread
 from time import perf_counter
@@ -14,6 +14,9 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from backend.application import analyze
+from backend.decision import (DiagnosticView, InputStatusView, ScenarioSettings,
+                              assemble_snapshot)
+from backend.supply import AllocationObjective
 from backend.ingestion.cluster_resolution import resolve_analysis_clusters
 from backend.domain.contracts import ReportMeta, ImportDiagnostic
 from backend.ingestion.availability import import_availability
@@ -22,10 +25,13 @@ from backend.ingestion.orders import import_orders
 from backend.ingestion.tariffs import import_tariffs
 from backend.ingestion.product_economics import import_product_economics
 from backend.ingestion.unitka import import_unitka_bundle
-from backend.project import EconomicsSettings, OptimizerThresholds
+from backend.project import (EconomicsSettings, OptimizerThresholds, Project,
+                             ProjectValidationError, load_project_if_exists,
+                             save_project_atomic)
 MAX_UPLOAD_BYTES=64*1024*1024
 router=APIRouter()
 logger=logging.getLogger(__name__)
+PROJECT_PATH=Path(__file__).resolve().parents[1]/"data"/"project.json"
 DECIMAL_NAMES=['acquiring_rate','advertising_rate','buyout_rate','fixed_fbo_fee','income_tax_rate','vat_rate','co_invest_rate','min_profit_per_unit','min_margin_rate','min_roi']
 STAGES={
     "preparing":(1,"Подготовка файлов"), "reports":(2,"Чтение отчётов"),
@@ -99,6 +105,19 @@ async def import_unitka(request:Request):
 
 async def prepare_analysis(request:Request, request_id="http"):
     form=await request.form(); common=['availability_file','restrictions_file','orders_file']
+    explicit_horizon=form.get("horizon_days")
+    if explicit_horizon is not None:
+        value=str(explicit_horizon).strip()
+        if not value.isascii() or not value.isdigit() or value.startswith("+") or int(value)<=0:
+            return error(400,"INVALID_HORIZON_DAYS","Expected a positive integer.","horizon_days")
+        explicit_horizon=int(value)
+    raw_inbound=str(form.get("include_inbound","true")).strip().lower()
+    if raw_inbound not in {"true","false"}:
+        return error(400,"INVALID_INCLUDE_INBOUND","Expected true or false.","include_inbound")
+    raw_objective=str(form.get("optimization_objective","max_profit")).strip()
+    try: objective=AllocationObjective(raw_objective)
+    except ValueError:
+        return error(400,"INVALID_OPTIMIZATION_OBJECTIVE","Unsupported optimization objective.","optimization_objective")
     for field in common:
         if form.get(field) is None:return error(400,'MISSING_FIELD','Required multipart field is missing.',field)
     unitka=form.get('unitka_file'); legacy=(form.get('tariffs_file'),form.get('product_economics_file'))
@@ -122,7 +141,7 @@ async def prepare_analysis(request:Request, request_id="http"):
     for field in files:
         try: raw.append((form[field],await read(form[field],field,request_id)))
         except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.',field)
-    return raw, unitka, files, values, tax, as_of
+    return raw, unitka, files, values, tax, as_of, (explicit_horizon,raw_inbound=="true",objective)
 
 @router.post('/api/analysis')
 async def analysis(request:Request):
@@ -189,7 +208,7 @@ class AnalysisCancelled(Exception):
     """Internal cooperative cancellation at progress boundaries."""
 
 
-def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_callback=None, request_id="http"):
+def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_request=(None,True,AllocationObjective.MAX_PROFIT), *, progress_callback=None, request_id="http"):
     """Run imports, joins, domain analysis and serialization for both transports."""
     def progress(stage, current=None, total=None, detail=None):
         if progress_callback is not None:
@@ -218,8 +237,10 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_ca
         tariffs,products=bundle.tariffs,bundle.product_economics
     else:
         tariffs=timed("tariffs_import",import_tariffs,raw[3][1],meta(raw[3][0])); products=timed("product_economics_import",import_product_economics,raw[4][1],meta(raw[4][0]))
+    project=load_project_if_exists(PROJECT_PATH)
     resolution = resolve_analysis_clusters(
-        availability.records, restrictions.records, orders.records, tariffs.records, {}
+        availability.records, restrictions.records, orders.records, tariffs.records,
+        project.manual_cluster_mappings
     )
     analysis_availability = resolution.availability
     analysis_restrictions = resolution.restrictions
@@ -252,7 +273,9 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_ca
     logger.info("[analysis %s] reports done %.3fs",request_id,perf_counter()-reports_started)
     imported=[availability,restrictions,orders,tariffs,products]
     settings=EconomicsSettings(*(values[n] for n in DECIMAL_NAMES[:4]),tax,*(values[n] for n in DECIMAL_NAMES[4:7])); thresholds=OptimizerThresholds(*(values[n] for n in DECIMAL_NAMES[7:]))
-    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=availability.records,ozon_horizon_days=availability.meta.recommendation_horizon_days,progress_callback=progress_callback)
+    explicit_horizon,include_inbound,objective=scenario_request
+    scenario=ScenarioSettings(explicit_horizon or availability.meta.recommendation_horizon_days or 56,include_inbound,objective)
+    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=availability.records,ozon_horizon_days=availability.meta.recommendation_horizon_days,progress_callback=progress_callback,scenario_settings=scenario)
     progress("serialization")
     coverage={key:0 for key in ('complete','partial','none','no_profile')}
     for item in result.logistics:coverage[item.coverage_status.value]+=1
@@ -263,4 +286,45 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, *, progress_ca
     input_statuses={field:input_status(item) for field,item in zip(files,statuses)}
     if unitka is not None:
         input_statuses["unitka_file"]=input_status(products,tariffs)
-    return {"api_version":1,"complete":complete,"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"safe_allocations":wire(result.safe_allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}
+    report_meta={field:item.meta for field,item in zip(files,statuses)}
+    status_views={name:InputStatusView(value["ok"],value["record_count"],tuple(
+        DiagnosticView(d["severity"],d["code"],d["message"]) for d in value["diagnostics"]))
+        for name,value in input_statuses.items()}
+    diagnostic_views=tuple(DiagnosticView(d.severity,d.code,d.message,getattr(d,"sku",None),getattr(d,"cluster_id",None),getattr(d,"destination_cluster_id",None)) for d in diagnostics)
+    warnings=[]
+    if availability.meta.recommendation_horizon_days is None and explicit_horizon is None:
+        warnings.append("Горизонт рекомендации Ozon неизвестен; для сценария по умолчанию использовано 56 дней.")
+    elif availability.meta.recommendation_horizon_days is None:
+        warnings.append("Горизонт рекомендации Ozon неизвестен; прямое сравнение горизонтов невозможно.")
+    elif availability.meta.recommendation_horizon_days != scenario.horizon_days:
+        warnings.append(f"Горизонты различаются: Ozon {availability.meta.recommendation_horizon_days} дней, наш расчёт {scenario.horizon_days} дней.")
+    periods={(m.period_start,m.period_end) for m in report_meta.values() if m.period_start and m.period_end}
+    if len(periods)>1:warnings.append("Периоды загруженных отчётов различаются.")
+    snapshot=assemble_snapshot(scenario=scenario,report_meta=report_meta,input_statuses=status_views,
+        demand_estimates=result.demand_estimates,needs=result.needs,observed_routes=result.observed_routes,
+        clean_routes=result.clean_routes,stockout_signals=result.stockouts,distortion_signals=result.distortions,
+        route_economics=result.route_economics,unit_economics=result.economics,placements=result.placements,
+        safe_allocations=result.safe_allocations,calculated_allocations=result.allocations,products=products.records,
+        diagnostics=diagnostic_views,freshness_warnings=tuple(warnings),
+        product_identities={item.sku:(item.article,item.product_name) for item in analysis_availability})
+    return {"api_version":1,"complete":complete,"snapshot":wire(snapshot),"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"safe_allocations":wire(result.safe_allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}
+
+
+@router.get("/api/project/mappings")
+def get_project_mappings():
+    project=load_project_if_exists(PROJECT_PATH)
+    return {"api_version":1,"mappings":dict(sorted(project.manual_cluster_mappings.items()))}
+
+
+@router.put("/api/project/mappings")
+async def put_project_mappings(request: Request):
+    try: payload=await request.json()
+    except Exception: return error(400,"INVALID_MAPPINGS","Expected a JSON object.","mappings")
+    if not isinstance(payload,dict) or any(not isinstance(k,str) or not k.strip() or not isinstance(v,str) or not v.strip() for k,v in payload.items()):
+        return error(400,"INVALID_MAPPINGS","Expected nonblank string keys and values.","mappings")
+    mappings={k.strip():v.strip() for k,v in payload.items()}
+    project=load_project_if_exists(PROJECT_PATH)
+    project=replace(project,manual_cluster_mappings=mappings)
+    try: save_project_atomic(PROJECT_PATH,project)
+    except ProjectValidationError: return error(400,"INVALID_MAPPINGS","Mappings are invalid.","mappings")
+    return {"api_version":1,"mappings":dict(sorted(mappings.items()))}

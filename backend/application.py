@@ -9,8 +9,10 @@ from backend.analytics.routes import build_route_profile, RouteProfile
 from backend.analytics.stockout import detect_stockouts
 from backend.analytics.distortion import detect_recommendation_distortion
 from backend.analytics.clean_routes import build_clean_route_profile, CleanRouteResult
+from backend.analytics.flows import aggregate_observed_flows
 from backend.analytics.route_profiles import select_route_profile
-from backend.economics import expected_logistics, LogisticsContext, RouteProfileSource, calculate_unit_economics
+from backend.economics import (expected_logistics, LogisticsContext, RouteProfileSource,
+                               calculate_unit_economics, calculate_route_opportunity)
 from backend.project import EconomicsSettings, OptimizerThresholds
 from backend.decision import ScenarioSettings, calculate_need
 from backend.supply import (AllocationObjective, PlanFamily, WarehouseCapability, PlacementInput, PlacementSource, RouteConfidence,
@@ -57,6 +59,9 @@ class AnalysisResult:
     stockouts: tuple; distortions: tuple; logistics: tuple; economics: tuple
     placements: tuple; allocations: tuple; safe_allocations: tuple; summary: AnalysisSummary
     diagnostics: tuple[AnalysisDiagnostic, ...]
+    demand_estimates: tuple = ()
+    needs: tuple = ()
+    route_economics: tuple = ()
 
 def analyze(availability, restrictions, orders, tariffs, products, *, as_of: date,
             economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds,
@@ -139,7 +144,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         tuple((sku, cluster, value) for (sku, cluster), value in rec_values.items()),
         lambda item: item[0],
     )
-    logistics_results=[]; economics_results=[]; candidates=[]
+    logistics_results=[]; economics_results=[]; candidates=[]; needs=[]
     progress("logistics_economics", 0, len(skus))
     for sku_index, sku in enumerate(skus, 1):
         clusters = {c.destination_cluster_id for c in demand_by_sku.get(sku, ())}
@@ -186,6 +191,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
                 ozon_recommended_qty=qty,
                 ozon_horizon_days=ozon_horizon_days,
             )
+            needs.append(need)
             sources=[]
             if observed_profile: sources.append(PlacementSource.OBSERVED)
             sources.append(PlacementSource.RECOMMENDED if qty>0 else PlacementSource.COUNTERFACTUAL)
@@ -232,9 +238,15 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         progress("optimizer", sku_index, len(skus))
     allocations = tuple(allocations)
     safe_allocations = tuple(safe_allocations)
+    feasibility={(p.sku,p.cluster_id):p.feasibility for p in placements}
+    route_opportunities=[]
+    for flow in aggregate_observed_flows(observed):
+        product=product_map.get(flow.sku); local=feasibility.get((flow.sku,flow.destination_cluster_id))
+        if product is not None and local is not None:
+            route_opportunities.append(calculate_route_opportunity(flow,product,tariffs,economics_settings,local))
     summary = build_analysis_summary(placements, allocations)
     return AnalysisResult(
         demand, observed, clean, stockouts, distortions, tuple(logistics_results),
         tuple(economics_results), placements, allocations, safe_allocations, summary,
-        tuple(diagnostics),
+        tuple(diagnostics), tuple(demand_estimates), tuple(needs), tuple(route_opportunities),
     )

@@ -5,6 +5,13 @@ from decimal import Decimal
 from enum import Enum
 
 from backend.supply.contracts import AllocationObjective
+from backend.analytics.clean_routes import CleanRouteResult
+from backend.analytics.demand_estimate import DemandEstimate
+from backend.analytics.routes import RouteProfile
+from backend.domain.contracts import ReportMeta
+from backend.domain.signals import RecommendationDistortionSignal, SignalConfidence, StockoutSignal
+from backend.economics import RouteOpportunity, UnitEconomicsResult
+from backend.supply.contracts import OptimizationResult
 
 
 class HorizonComparability(str, Enum):
@@ -49,3 +56,105 @@ class NeedComparison:
     comparability: HorizonComparability
     complete: bool
     blocker_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticView:
+    severity: str
+    code: str
+    message: str
+    sku: str | None = None
+    cluster_id: str | None = None
+    destination_cluster_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class InputStatusView:
+    ok: bool
+    record_count: int
+    diagnostics: tuple[DiagnosticView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionSummary:
+    sku_count: int
+    decision_row_count: int
+    total_ozon_recommended_qty: int
+    total_calculated_need_qty: int
+    total_safe_plan_qty: int
+    total_calculated_plan_qty: int
+    expected_calculated_plan_profit: Decimal
+    disagreement_row_count: int
+    incomplete_row_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RouteSkuBreakdown:
+    sku: str; article: str; product_name: str; quantity: int
+    route_share: Decimal; destination_demand_share: Decimal
+    margin_delta_pp: Decimal | None
+    observed_profit_opportunity_rub: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class FlowLinkView:
+    origin_cluster_id: str; destination_cluster_id: str; quantity: int
+    destination_share: Decimal
+    margin_delta_pp: Decimal | None
+    observed_profit_opportunity_rub: Decimal | None
+    route_economics_complete: bool
+    route_reason_codes: tuple[str, ...]
+    sku_breakdown: tuple[RouteSkuBreakdown, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FlowView:
+    mode: str; key: str; total_quantity: int
+    local_share: Decimal | None; external_share: Decimal | None; donor_count: int
+    links: tuple[FlowLinkView, ...]
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"destination", "origin", "sku"}:
+            raise ValueError("mode must be destination, origin, or sku")
+
+
+@dataclass(frozen=True, slots=True)
+class FlowViewAggregates:
+    observed_views: tuple[FlowView, ...]
+    clean_views: tuple[FlowView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionRow:
+    sku: str; article: str; product_name: str; destination_cluster_id: str
+    demand: DemandEstimate | None; need: NeedComparison
+    safe_plan_qty: int; calculated_plan_qty: int
+    current_fbo_stock: int | None; inbound_qty: int | None
+    route_external_share: Decimal | None
+    route_margin_opportunity_pp: Decimal | None
+    observed_profit_opportunity_rub: Decimal | None
+    expected_plan_profit: Decimal | None
+    confidence: SignalConfidence
+    status_codes: tuple[str, ...]; explanations: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisSnapshot:
+    snapshot_id: str; created_at: str
+    report_meta: dict[str, ReportMeta]
+    freshness_warnings: tuple[str, ...]
+    scenario: ScenarioSettings
+    input_statuses: dict[str, InputStatusView]
+    summary: DecisionSummary
+    decision_rows: tuple[DecisionRow, ...]
+    demand_estimates: tuple[DemandEstimate, ...]
+    observed_routes: RouteProfile
+    clean_routes: CleanRouteResult
+    stockout_signals: tuple[StockoutSignal, ...]
+    distortion_signals: tuple[RecommendationDistortionSignal, ...]
+    route_economics: tuple[RouteOpportunity, ...]
+    unit_economics: tuple[UnitEconomicsResult, ...]
+    safe_allocations: tuple[OptimizationResult, ...]
+    calculated_allocations: tuple[OptimizationResult, ...]
+    flow_view_aggregates: FlowViewAggregates
+    diagnostics: tuple[DiagnosticView, ...]
