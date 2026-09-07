@@ -2,9 +2,13 @@ from datetime import date
 from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
 from types import SimpleNamespace
 
+import pytest
+
 from backend.analytics.daily import DailyFulfillmentCell, DailyFulfillmentResult
 from backend.economics.stockout_impact import (RouteQuantityImpact,
-    aggregate_impacts, apply_route_quantity, build_stockout_episode_impacts)
+    RouteDayQuantityImpact, StockoutEpisodeImpact, aggregate_impacts,
+    apply_route_quantity, build_stockout_episode_impacts,
+    deduplicate_route_day_impacts)
 from backend.economics.route_opportunity import RouteCounterfactual
 
 D = Decimal
@@ -74,6 +78,25 @@ def test_episode_uses_sparse_affected_dates_and_external_routes_only():
         (), {}, tariffs, SimpleNamespace(), {})[0]
     assert result.external_quantity == 100 and result.local_quantity == 5
     assert sum(route.quantity for route in result.routes) == 100
+    assert [(item.day, item.quantity) for item in result.route_day_impacts] == [
+        (date(2026,8,17), 60), (date(2026,8,18), 40)]
     assert result.episode_id.endswith("::operational_current_week")
     assert not result.economics.complete
     assert result.economics.reason_codes == ("MISSING_PRODUCT_ECONOMICS",)
+
+
+def test_conflicting_factual_route_day_evidence_fails_fast():
+    day = date(2026, 9, 3)
+    def evidence(quantity):
+        route = impact("A", quantity)
+        component = RouteDayQuantityImpact(
+            "A", day, "Казань", "Москва", quantity, route)
+        economics = aggregate_impacts((route,))
+        return StockoutEpisodeImpact(
+            f"episode-{quantity}", "A", "Москва", day, day, (day,),
+            "historical_complete", "high", quantity, quantity, 0, quantity,
+            D("0"), D("1"), D("1"), D("0"), (), economics, (route,),
+            (component,))
+
+    with pytest.raises(ValueError, match="conflicting stockout factual route-day evidence"):
+        deduplicate_route_day_impacts((evidence(10), evidence(12)))

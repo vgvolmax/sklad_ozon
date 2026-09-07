@@ -253,6 +253,21 @@ def test_product_completion_snapshot_excludes_buyer_pii(product_completion_paylo
         assert marker not in serialized
 
 
+def test_product_completion_stockout_impact_is_bounded_reconciled_and_pii_free(
+    product_completion_payload,
+):
+    stockout = product_completion_payload["snapshot"]["stockout_impact"]
+    assert stockout["economics_basis_text"] == (
+        "Оценка по текущим тарифам и настройкам на фактическом объёме периода.")
+    for episode in stockout["episodes"]:
+        assert sum(donor["quantity"] for donor in episode["donors"]) == (
+            episode["external_quantity"])
+    serialized = json.dumps(stockout, ensure_ascii=False)
+    for marker in ("PII_BUYER_12345", "PII_PHONE_12345", "PII_EMAIL_12345",
+                   "PII_ADDRESS_12345"):
+        assert marker not in serialized
+
+
 def test_product_completion_snapshot_does_not_serialize_daily_fact_matrix(
     product_completion_payload,
 ):
