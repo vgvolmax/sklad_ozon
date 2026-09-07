@@ -20,3 +20,16 @@ def test_production_has_no_route_count_canvas_height_or_pii():
     assert 'links.length*90' not in source and 'length * 90' not in source
     assert 'raw_orders' not in source and 'buyer' not in source.lower()
     assert 'stockout_impact?.destination_daily_series' in source
+
+def test_default_destination_all_episode_bands_and_context_safe_episode():
+    js="""(()=>{const episodes=Array.from({length:35},(_,i)=>({episode_id:'m'+i,sku:'A',destination_cluster_id:'Москва',start_date:'2026-08-01',end_date:'2026-08-02'}));episodes.push({episode_id:'k',sku:'A',destination_cluster_id:'Казань'});const snapshot={flow_view_aggregates:{clean_views:[{mode:'destination',key:'Москва',links:[],context_summary:{}},{mode:'sku',key:'A',links:[{route_key:'Казань→Казань',origin_cluster_id:'Казань',destination_cluster_id:'Казань',quantity:1,sku_breakdown:[]}],context_summary:{}}]},stockout_impact:{episodes,destination_daily_series:[{destination_cluster_id:'Москва',points:[]}],destination_summaries:[]},decision_rows:[]};const base={mode:'destination',evidence:'clean',metric:'units',selectedKey:null,selectedRoute:null,selectedEpisodeId:null,selectorQuery:'',selectorPage:1,routeQuery:'',routePage:1,dailyPage:1,episodePage:1,skuQuery:'',skuPage:1};const screen=SkladOzon.FlowView.buildScreenModel(snapshot,base),p1=SkladOzon.FlowTimeline.buildModel(snapshot,{mode:'destination',key:'Москва',destination:'Москва'},base),p2=SkladOzon.FlowTimeline.buildModel(snapshot,{mode:'destination',key:'Москва',destination:'Москва'},{...base,episodePage:2}),sku=SkladOzon.FlowView.buildScreenModel(snapshot,{...base,mode:'sku',selectedKey:'A',selectedRoute:'Казань→Казань',selectedEpisodeId:'m0'});return [screen.view.key,screen.timelineDestination,p1.allEpisodes.length,p1.episodes.rows.length,p2.allEpisodes.length,p2.episodes.rows.length,sku.episode]})()"""
+    assert node(js)==['Москва','Москва',35,20,35,15,None]
+
+def test_destination_impact_is_backend_owned_and_incomplete_fails_closed():
+    js="""(()=>{const summary={destination_cluster_id:'Москва',stockout_episode_count:3,affected_sku_count:5,episode_external_quantity:155,episode_economics:{complete:false}};return SkladOzon.FlowView.destinationImpact(summary,'ТОЧНЫЙ BACKEND TEXT')})()"""
+    rendered=node(js)
+    assert '<dt>Периодов</dt><dd>3</dd>' in rendered
+    assert '<dt>SKU</dt><dd>5</dd>' in rendered
+    assert '<dt>Перекрыто извне</dt><dd>155 шт.</dd>' in rendered
+    assert 'Экономика: <strong>Не рассчитано</strong>' in rendered
+    assert 'ТОЧНЫЙ BACKEND TEXT' in rendered
