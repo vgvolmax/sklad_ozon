@@ -20,9 +20,10 @@ from .unit import (
 from .route_opportunity import (RouteCounterfactual, RouteOpportunity,
                                 calculate_route_counterfactual,
                                 calculate_route_opportunity)
-from .stockout_impact import (ImpactEconomicsAggregate, RouteQuantityImpact,
-    StockoutEpisodeImpact, aggregate_impacts, apply_route_quantity,
-    build_stockout_episode_impacts)
+from .stockout_impact import (ImpactEconomicsAggregate, RouteDayQuantityImpact,
+    RouteQuantityImpact, StockoutEpisodeImpact, aggregate_impacts,
+    apply_route_quantity, build_stockout_episode_impacts,
+    deduplicate_route_day_impacts)
 
 __all__ = (
     "ExpectedLogisticsResult",
@@ -42,6 +43,7 @@ __all__ = (
     "RouteCounterfactual",
     "calculate_route_counterfactual",
     "calculate_route_opportunity",
-    "ImpactEconomicsAggregate", "RouteQuantityImpact", "StockoutEpisodeImpact",
-    "aggregate_impacts", "apply_route_quantity", "build_stockout_episode_impacts",
+    "ImpactEconomicsAggregate", "RouteDayQuantityImpact", "RouteQuantityImpact",
+    "StockoutEpisodeImpact", "aggregate_impacts", "apply_route_quantity",
+    "build_stockout_episode_impacts", "deduplicate_route_day_impacts",
 )

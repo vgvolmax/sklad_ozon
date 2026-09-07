@@ -31,6 +31,18 @@ class RouteQuantityImpact:
 
 
 @dataclass(frozen=True, slots=True)
+class RouteDayQuantityImpact:
+    """Backend-only impact preserving one factual fulfillment cell's identity."""
+
+    sku: str
+    day: date
+    origin_cluster_id: str
+    destination_cluster_id: str
+    quantity: int
+    impact: RouteQuantityImpact
+
+
+@dataclass(frozen=True, slots=True)
 class ImpactEconomicsAggregate:
     quantity: int
     current_route_cost_rub_per_unit: Decimal | None
@@ -56,6 +68,31 @@ class StockoutEpisodeImpact:
     evidence_reason_codes: tuple[str, ...]
     economics: ImpactEconomicsAggregate
     routes: tuple[RouteQuantityImpact, ...]
+    route_day_impacts: tuple[RouteDayQuantityImpact, ...]
+
+
+def deduplicate_route_day_impacts(
+    episodes: tuple[StockoutEpisodeImpact, ...] | list[StockoutEpisodeImpact],
+) -> tuple[RouteDayQuantityImpact, ...]:
+    """Return the deterministic union of factual route-day evidence.
+
+    Evidence-scoped episode views are intentionally not additive. Rolled-up
+    destination/SKU totals use this union keyed without episode or scope.
+    """
+    unique: dict[tuple[str, str, date, str], RouteDayQuantityImpact] = {}
+    for episode in episodes:
+        for component in episode.route_day_impacts:
+            key = (component.sku, component.destination_cluster_id,
+                   component.day, component.origin_cluster_id)
+            previous = unique.get(key)
+            if previous is not None and previous != component:
+                raise ValueError(
+                    "conflicting stockout factual route-day evidence: "
+                    f"sku={key[0]!r}, destination={key[1]!r}, "
+                    f"day={key[2].isoformat()}, origin={key[3]!r}"
+                )
+            unique[key] = component
+    return tuple(unique[key] for key in sorted(unique))
 
 
 def apply_route_quantity(counterfactual: RouteCounterfactual, quantity: int) -> RouteQuantityImpact:
@@ -129,17 +166,32 @@ def build_stockout_episode_impacts(
                     and cell.day in dates]
         routes = defaultdict(int)
         local = 0
+        route_day_impacts = []
+        counterfactuals = {}
         for cell in selected:
             if cell.origin_cluster_id == cell.destination_cluster_id:
                 local += cell.quantity
             else:
                 routes[cell.origin_cluster_id] += cell.quantity
+                route_key = (episode.sku, cell.origin_cluster_id,
+                             episode.destination_cluster_id)
+                counterfactual = counterfactuals.get(route_key)
+                if counterfactual is None:
+                    counterfactual = calculate_route_counterfactual(
+                        episode.sku, cell.origin_cluster_id,
+                        episode.destination_cluster_id, products.get(episode.sku),
+                        tariffs, settings,
+                        feasibility.get((episode.sku,
+                                         episode.destination_cluster_id)))
+                    counterfactuals[route_key] = counterfactual
+                route_day_impacts.append(RouteDayQuantityImpact(
+                    episode.sku, cell.day, cell.origin_cluster_id,
+                    episode.destination_cluster_id, cell.quantity,
+                    apply_route_quantity(counterfactual, cell.quantity)))
         route_impacts = []
         for origin, quantity in sorted(routes.items()):
-            counterfactual = calculate_route_counterfactual(
-                episode.sku, origin, episode.destination_cluster_id,
-                products.get(episode.sku), tariffs, settings,
-                feasibility.get((episode.sku, episode.destination_cluster_id)))
+            counterfactual = counterfactuals[
+                (episode.sku, origin, episode.destination_cluster_id)]
             route_impacts.append(apply_route_quantity(counterfactual, quantity))
         external = sum(routes.values()); fulfilled = local + external
         demand = sum(point.destination_demand_qty for point in locality
@@ -158,5 +210,8 @@ def build_stockout_episode_impacts(
             episode.evidence_scope, episode.confidence, demand, fulfilled, local, external,
             local_share, external_share, episode.baseline_local_share,
             episode.representative_local_share, episode.reason_codes,
-            aggregate_impacts(route_impacts), tuple(route_impacts)))
+            aggregate_impacts(route_impacts), tuple(route_impacts),
+            tuple(sorted(route_day_impacts, key=lambda item: (
+                item.sku, item.destination_cluster_id, item.day,
+                item.origin_cluster_id)))))
     return tuple(impacts)

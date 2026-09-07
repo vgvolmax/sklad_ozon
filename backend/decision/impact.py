@@ -3,7 +3,8 @@
 from collections import defaultdict
 from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
 
-from backend.economics.stockout_impact import aggregate_impacts
+from backend.economics.stockout_impact import (aggregate_impacts,
+    deduplicate_route_day_impacts)
 from .contracts import (DestinationDailyPoint, DestinationDailySeries,
     DestinationImpactSummary, EpisodeDonorBreakdown, EpisodeSkuBreakdown,
     ImpactEconomicsView, RouteImpactView, StockoutEpisodeView,
@@ -84,13 +85,15 @@ def build_stockout_impact_presentation(locality, episode_impacts,
     for item in series:
         episodes = [e for e in episode_impacts
                     if e.destination_cluster_id == item.destination_cluster_id]
-        routes = tuple(route for episode in episodes for route in episode.routes)
-        episode_external = sum(e.external_quantity for e in episodes)
+        factual_components = deduplicate_route_day_impacts(episodes)
+        routes = tuple(component.impact for component in factual_components)
+        episode_external = sum(component.quantity for component in factual_components)
         sku_rows = []
         for sku in sorted({e.sku for e in episodes}):
             selected = [e for e in episodes if e.sku == sku]
-            sku_routes = tuple(route for episode in selected for route in episode.routes)
-            quantity = sum(e.external_quantity for e in selected)
+            sku_routes = tuple(component.impact for component in factual_components
+                               if component.sku == sku)
+            quantity = sum(route.quantity for route in sku_routes)
             article, name = identity(sku)
             with localcontext(_CTX):
                 share = (Decimal(quantity) / Decimal(episode_external)
