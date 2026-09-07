@@ -1,4 +1,5 @@
 """PII-free, deterministic operator presentation for raw diagnostics."""
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from backend.domain.contracts import ImportResult, ProductEconomicsInput, TariffRow
 from backend.economics.tariffs import LogisticsContext, RouteProfileSource
@@ -11,6 +12,11 @@ class DataQualityFact:
     origin_cluster_id: str | None = None; destination_cluster_id: str | None = None
     source_name: str | None = None; source_row: int | None = None
     detail_code: str | None = None; detail: str | None = None
+
+@dataclass(frozen=True, slots=True)
+class _FactOccurrence:
+    fact: DataQualityFact
+    raw_occurrence_indices: tuple[int, ...] = ()
 
 _RULES = {
  "MISSING_SELLER_AVAILABLE_STOCK":(DataQualityLevel.BLOCKING,"sku","SKU без доступного остатка продавца — {n}","План поставки для этих товаров не рассчитан полностью.",( "Безопасный план","Рассчитанный план"),"Проверьте доступный остаток продавца/FBS в отчёте доступности."),
@@ -38,37 +44,53 @@ def _generic(d,i):
     key="::".join(x for x in (sku,cluster) if x) or f"occurrence::{i}"
     return DataQualityFact(d.code,"calculation",key," · ".join(x for x in (sku,cluster) if x) or "Техническая диагностика",getattr(d,"severity","error"),sku=sku,destination_cluster_id=cluster)
 
+def _calculation_identity(f):
+    return (f.sku,f.origin_cluster_id or f.destination_cluster_id)
+
 def build_data_quality_presentation(*,diagnostics,structured_facts=(),**_context):
     """Group by structured fields and codes. Diagnostic message is never read."""
-    diagnostics=tuple(diagnostics); supplied=list(structured_facts); remaining={}
-    for f in supplied: remaining[f.code]=remaining.get(f.code,0)+1
-    facts=[]
-    for i,d in enumerate(diagnostics):
-        if remaining.get(d.code,0): remaining[d.code]-=1
-        else: facts.append(_generic(d,i))
-    facts.extend(supplied)
-    roots={(f.sku,f.origin_cluster_id or f.destination_cluster_id):f.code for f in facts if f.code in _ROOTS}
+    diagnostics=tuple(diagnostics); supplied=list(structured_facts)
+    raw_facts=[_generic(d,i) for i,d in enumerate(diagnostics)]
+    unused=set(range(len(raw_facts))); facts=[]
+    by_identity=defaultdict(deque); by_code=defaultdict(deque)
+    for i,raw_fact in enumerate(raw_facts):
+        by_identity[(raw_fact.code,_calculation_identity(raw_fact))].append(i)
+        by_code[raw_fact.code].append(i)
+    def take(queue):
+        while queue and queue[0] not in unused: queue.popleft()
+        return queue.popleft() if queue else None
+    for supplied_fact in supplied:
+        raw_indices=()
+        raw_index=take(by_identity[(supplied_fact.code,_calculation_identity(supplied_fact))])
+        if raw_index is None: raw_index=take(by_code[supplied_fact.code])
+        if raw_index is not None:
+            unused.remove(raw_index); raw_indices=(raw_index,)
+        facts.append(_FactOccurrence(supplied_fact,raw_indices))
+    facts.extend(_FactOccurrence(raw_facts[i],(i,)) for i in sorted(unused))
+    roots={_calculation_identity(item.fact):item.fact.code for item in facts if item.fact.code in _ROOTS}
     attached={}; visible=[]
-    for f in facts:
-        identity=(f.sku,f.origin_cluster_id or f.destination_cluster_id)
-        if f.code=="INCOMPLETE_LOGISTICS_COVERAGE" and identity in roots: attached.setdefault(roots[identity],[]).append(f)
-        else: visible.append(f)
+    for item in facts:
+        f=item.fact; identity=_calculation_identity(f)
+        if f.code=="INCOMPLETE_LOGISTICS_COVERAGE" and identity in roots: attached.setdefault(roots[identity],[]).append(item)
+        else: visible.append(item)
     by={}
-    for f in visible: by.setdefault(f.code,[]).append(f)
+    for item in visible: by.setdefault(item.fact.code,[]).append(item)
     groups=[]
     for code,items in by.items():
+        item_facts=[item.fact for item in items]
         if code in _RULES: level,entity_type,title,explanation,blocks,hint=_RULES[code]
         else:
-            sev=items[0].severity; level=DataQualityLevel.BLOCKING if sev=="error" else DataQualityLevel.WARNING if sev=="warning" else DataQualityLevel.TECHNICAL
-            entity_type=items[0].entity_type
+            sev=item_facts[0].severity; level=DataQualityLevel.BLOCKING if sev=="error" else DataQualityLevel.WARNING if sev=="warning" else DataQualityLevel.TECHNICAL
+            entity_type=item_facts[0].entity_type
             title={DataQualityLevel.BLOCKING:"Есть блокирующая проблема данных — {n}",DataQualityLevel.WARNING:"Есть предупреждение о данных — {n}",DataQualityLevel.TECHNICAL:"Техническое событие — {n}"}[level]
             explanation="Часть расчёта недоступна. Подробности есть в технической диагностике." if level is DataQualityLevel.BLOCKING else "Подробности доступны в технической диагностике."
             blocks=(); hint="Откройте техническую диагностику для подробностей."
         unique={}
-        for f in items: unique.setdefault((f.entity_type,f.entity_key),_entity(f))
+        for f in item_facts: unique.setdefault((f.entity_type,f.entity_key),_entity(f))
         entities=tuple(sorted(unique.values(),key=lambda x:(x.label,x.key)))
         consequence=attached.get(code,[]); related=(code,"INCOMPLETE_LOGISTICS_COVERAGE") if consequence else (code,)
-        raw_count=sum(d.code in related for d in diagnostics)
+        raw_count=sum(len(item.raw_occurrence_indices) for item in items)
+        raw_count+=sum(len(item.raw_occurrence_indices) for item in consequence)
         groups.append(DataQualityIssueGroup(level,code,related,title.format(n=len(entities)),explanation,len(entities),entity_type,entities,raw_count,blocks,hint))
     groups.sort(key=lambda g:(_ORDER[g.level],_PRIORITY.get(g.primary_code,99),g.primary_code))
     return DataQualityPresentation(tuple(groups),len(diagnostics),sum(g.level is DataQualityLevel.BLOCKING for g in groups),sum(g.level is DataQualityLevel.WARNING for g in groups),sum(g.level is DataQualityLevel.TECHNICAL for g in groups))
@@ -86,8 +108,10 @@ def classify_tariff_gap(tariffs:ImportResult[TariffRow],context:LogisticsContext
 
 def _number(value):
     if value is None:return None
-    rendered=format(value,"f").rstrip("0").rstrip(".")
-    return (rendered or "0").replace(".",",")
+    rendered=format(value,"f")
+    if "." in rendered: rendered=rendered.rstrip("0").rstrip(".")
+    if rendered in {"","-0"}: rendered="0"
+    return rendered.replace(".",",")
 
 def tariff_gap_user_detail(detail_code,volume_liters,price):
     """Translate a machine tariff classification into operator-facing copy."""
