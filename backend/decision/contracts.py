@@ -160,7 +160,34 @@ class FlowEconomicsAggregate:
 
 
 @dataclass(frozen=True, slots=True)
+class FlowContextSummary:
+    period_start: object | None
+    period_end: object | None
+    own_destination_demand_qty: int
+    fulfilled_quantity: int
+    same_cluster_fulfilled_qty: int
+    cross_cluster_fulfilled_qty: int
+    same_cluster_share: Decimal | None
+    cross_cluster_share: Decimal | None
+    counterparty_count: int
+    destination_count: int
+    origin_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class FlowMetricOverview:
+    metric: str
+    top_route_keys: tuple[str, ...]
+    top_quantity: int
+    other_route_count: int
+    other_quantity: int
+    total_route_count: int
+    total_quantity: int
+
+
+@dataclass(frozen=True, slots=True)
 class FlowLinkView:
+    route_key: str
     origin_cluster_id: str; destination_cluster_id: str; quantity: int
     destination_share: Decimal
     margin_delta_pp: Decimal | None
@@ -177,6 +204,8 @@ class FlowView:
     local_share: Decimal | None; external_share: Decimal | None; donor_count: int
     external_economics: FlowEconomicsAggregate | None
     links: tuple[FlowLinkView, ...]
+    context_summary: FlowContextSummary | None = None
+    metric_overviews: tuple[FlowMetricOverview, ...] = ()
 
     def __post_init__(self) -> None:
         if self.mode not in {"destination", "origin", "sku"}:

@@ -202,3 +202,7 @@ Motion минимален и сообщает состояние: открыти
 - **Don't:** использовать красный для обычного несогласия с Ozon.
 - **Don't:** использовать глобальный Sankey/chord как главный способ анализа всех кластеров.
 - **Don't:** прятать точное значение только в hover/tooltip или кодировать смысл только цветом.
+
+## PR5 real-scale Flow
+
+«Потоки спроса» теперь используют selected-context-first композицию: bounded searchable selector, backend-ranked Top 8 exact routes plus a non-selectable presentation-only `Прочие`, and a searchable exact route list. The signature visual is the fixed-height **Динамика локальности** timeline: restrained own-destination-demand bars, a dominant local-share line with explicit gaps for unknown values, and backend episode bands. No canvas dimension depends on route count. Route economics and matching Data Quality guidance appear only for the selected exact backend route; local/external routes also differ by text and border pattern. At narrow desktop widths and 200% zoom the three columns stack while large lists retain their own bounded scroll.

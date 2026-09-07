@@ -320,3 +320,14 @@ Before UI implementation is considered complete:
 - verify reduced motion and forced-colors/high-contrast operability;
 - verify no raw backend code replaces user-facing explanation;
 - verify `Потоки спроса` diagram and text/breakdown totals agree exactly.
+
+## PR5 — Real-scale Flow contract
+
+- Flow is selected-context-first in destination, origin, and SKU modes; the selector is searchable, internally scrollable, and renders at most 100 rows.
+- The overview contains at most eight exact backend-ranked routes and one non-interactive `Прочие` presentation row. `Прочие` is never a route or economics entity.
+- The complete route list is searchable, paged at 100 exact rows, and selects only backend `route_key` values.
+- `Собственный спрос` is always destination-owned demand. Origin context separately labels own destination demand, physical dispatch, same-cluster fulfillment, and other-cluster demand.
+- `Динамика локальности` is the signature fixed-height visual and consumes only backend destination daily series and episode intervals. Unknown local share creates a line gap, never a false zero.
+- Daily values are paged at 50, episodes at 20, exact route SKU values at 100, and ranked SKU bars at 12.
+- Missing economics is `Не рассчитано`; signed negative economics says that local placement is worse/has lower margin. A matching PR4 blocker provides a concise reason and `Открыть в «Данные»` action.
+- Evidence changes routing, never own destination demand or factual timeline geography. No route-count-dependent SVG/canvas is permitted.
