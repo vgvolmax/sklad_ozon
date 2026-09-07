@@ -16,18 +16,35 @@ from .route_profiles import RouteProfileSelection, select_route_profile
 from .flows import FulfillmentFlowCell, aggregate_clean_flows, aggregate_observed_flows
 from .stockout import StockoutThresholds, detect_stockouts
 from .distortion import detect_recommendation_distortion
+from .stockout_episodes import (
+    DailyLocalityPoint, DailyOriginShare, DailyStockoutThresholds,
+    EpisodeReplacementOriginEvidence, StockoutEpisode, StockoutEpisodeScope,
+    build_daily_locality_series, detect_stockout_episodes,
+)
 from .clean_routes import (
     CleanRouteFallbackStatus,
     CleanRoutePolicy,
     CleanRouteResult,
+    EpisodeExcludedRouteEvidence,
     ExcludedRouteEvidence,
     RouteDistributionCell,
     RouteProfileSummary,
     build_clean_route_profile,
+    build_episode_clean_route_profile,
 )
 
 __all__ = (
     "AnalyticsWindow",
+    "detect_stockout_episodes",
+    "build_episode_clean_route_profile",
+    "build_daily_locality_series",
+    "StockoutEpisodeScope",
+    "StockoutEpisode",
+    "EpisodeReplacementOriginEvidence",
+    "EpisodeExcludedRouteEvidence",
+    "DailyStockoutThresholds",
+    "DailyOriginShare",
+    "DailyLocalityPoint",
     "CleanRouteFallbackStatus",
     "CleanRoutePolicy",
     "CleanRouteResult",

@@ -37,8 +37,12 @@ def _build_product_completion_acceptance_files():
         order("SKU-1", "39439", date, "Москва", "Москва", 100, 1000)
     for origin, qty in (("Москва", 90), ("Казань", 5), ("Самара", 5)):
         order("SKU-1", "39439", "2026-08-10", origin, "Москва", qty, 1000)
-    for origin, qty in (("Москва", 19), ("Казань", 62), ("Самара", 14)):
-        order("SKU-1", "39439", "2026-08-17", origin, "Москва", qty, 1000)
+    for date, quantities in (
+        ("2026-08-17", (("Москва", 10), ("Казань", 31), ("Самара", 7))),
+        ("2026-08-18", (("Москва", 9), ("Казань", 31), ("Самара", 7))),
+    ):
+        for origin, qty in quantities:
+            order("SKU-1", "39439", date, origin, "Москва", qty, 1000)
     order("SKU-1", "39439", "2026-08-10", "Казань", "Самара", 30, 1000)
     order("SKU-1", "39439", "2026-08-17", "Казань", "Самара", 30, 1000)
     order("SKU-2", "ART-2", "2026-08-10", "Москва", "Москва", 20, 1200)
@@ -255,6 +259,9 @@ def test_product_completion_snapshot_does_not_serialize_daily_fact_matrix(
     snapshot = product_completion_payload["snapshot"]
 
     assert "daily_facts" not in snapshot
+    assert "daily_locality" not in snapshot
+    assert "stockout_episodes" not in snapshot
+    assert "affected_dates" not in json.dumps(snapshot, ensure_ascii=False)
     assert "daily_demand" not in snapshot
     assert "daily_fulfillment" not in snapshot
 

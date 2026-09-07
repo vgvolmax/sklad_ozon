@@ -219,3 +219,42 @@ def test_empty_inputs_and_contracts_are_immutable():
     assert build_clean_route_profile(empty, ()).observed_routes == ()
     assert build_clean_route_profile(empty, ()).clean_routes == ()
     assert build_clean_route_profile(empty, ()).summaries == ()
+
+
+def test_episode_cleaner_excludes_only_affected_days_and_preserves_fallback():
+    from datetime import date, timedelta
+    from backend.analytics.daily import DailyFulfillmentCell, DailyFulfillmentResult
+    from backend.analytics.routes import build_weekly_route_profile
+    from backend.analytics.clean_routes import build_episode_clean_route_profile
+    from backend.analytics.stockout_episodes import StockoutEpisode, StockoutEpisodeScope
+    from backend.domain.signals import AvailabilityCorroboration
+
+    monday=date(2026,8,17)
+    cells=tuple(DailyFulfillmentCell("SKU-X",monday+timedelta(days=i),"Москва","Москва",10,1)
+                for i in range(7))
+    daily=DailyFulfillmentResult(cells,0,0)
+    observed=build_weekly_route_profile(daily,date(2026,8,24))
+    episode=StockoutEpisode("SKU-X","Москва",monday+timedelta(days=2),monday+timedelta(days=3),
+        (monday+timedelta(days=2),monday+timedelta(days=3)),monday-timedelta(days=7),monday-timedelta(days=1),
+        Decimal(".9"),Decimal(".2"),Decimal(1),(),SignalConfidence.HIGH,
+        AvailabilityCorroboration.NEUTRAL,SignalConfidence.HIGH,True,
+        StockoutEpisodeScope.HISTORICAL_COMPLETE,("SUSTAINED_DAILY_CONTAMINATION",))
+    result=build_episode_clean_route_profile(observed,daily,(episode,))
+    assert result.observed_routes[0].quantity == 70
+    assert result.clean_routes[0].quantity == 50
+    assert result.excluded_episode_routes[0].quantity == 20
+    assert result.excluded_episode_routes[0].observation_count == 2
+
+    all_days=replace(episode,start_date=monday,end_date=monday+timedelta(days=6),
+                     affected_dates=tuple(monday+timedelta(days=i) for i in range(7)))
+    fallback=build_episode_clean_route_profile(observed,daily,(all_days,))
+    assert fallback.clean_routes == ()
+    assert fallback.summaries[0].clean_share_sum is None
+    assert fallback.summaries[0].fallback_status is CleanRouteFallbackStatus.OBSERVED_FALLBACK
+
+
+def test_episode_cleaner_rejects_daily_universe_that_does_not_match_observed():
+    from backend.analytics.daily import DailyFulfillmentResult
+    from backend.analytics.clean_routes import build_episode_clean_route_profile
+    with pytest.raises(ValueError, match="does not match"):
+        build_episode_clean_route_profile(_canonical(),DailyFulfillmentResult((),0,0),())
