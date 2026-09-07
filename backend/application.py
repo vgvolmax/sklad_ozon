@@ -3,9 +3,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
-from backend.analytics.demand import aggregate_demand, DemandResult
+from backend.analytics.daily import DailyOrderFacts, build_daily_order_facts
+from backend.analytics.demand import aggregate_weekly_demand, DemandResult
 from backend.analytics.demand_estimate import estimate_destination_demand
-from backend.analytics.routes import build_route_profile, RouteProfile
+from backend.analytics.routes import build_weekly_route_profile, RouteProfile
 from backend.analytics.stockout import detect_stockouts
 from backend.analytics.distortion import detect_recommendation_distortion
 from backend.analytics.clean_routes import build_clean_route_profile, CleanRouteResult
@@ -55,6 +56,7 @@ def build_analysis_summary(placements: tuple, allocations: tuple) -> AnalysisSum
 
 @dataclass(frozen=True, slots=True)
 class AnalysisResult:
+    daily_facts: DailyOrderFacts
     demand: DemandResult; observed_routes: RouteProfile; clean_routes: CleanRouteResult
     stockouts: tuple; distortions: tuple; logistics: tuple; economics: tuple
     placements: tuple; allocations: tuple; safe_allocations: tuple; summary: AnalysisSummary
@@ -76,13 +78,14 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             progress_callback(stage, current, total)
 
     progress("demand")
-    demand = aggregate_demand(orders, as_of)
+    daily_facts = build_daily_order_facts(orders, as_of)
+    demand = aggregate_weekly_demand(daily_facts.demand, as_of)
     demand_estimates = estimate_destination_demand(demand)
     demand_estimates_by_identity = {
         (item.sku, item.destination_cluster_id): item for item in demand_estimates
     }
     progress("routes")
-    observed = build_route_profile(orders, as_of)
+    observed = build_weekly_route_profile(daily_facts.fulfillment, as_of)
     progress("distortions")
     stockouts = detect_stockouts(observed, availability)
     distortions = detect_recommendation_distortion(stockouts, observed)
@@ -267,7 +270,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
     if len(identities) != len(set(identities)):
         raise AssertionError("duplicate NeedComparison for SKU and destination")
     return AnalysisResult(
-        demand, observed, clean, stockouts, distortions, tuple(logistics_results),
+        daily_facts, demand, observed, clean, stockouts, distortions, tuple(logistics_results),
         tuple(economics_results), placements, allocations, safe_allocations, summary,
         tuple(diagnostics), tuple(demand_estimates), tuple(needs), tuple(route_opportunities),
     )

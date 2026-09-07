@@ -1,11 +1,14 @@
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
 
-from backend.analytics.demand import aggregate_demand
-from backend.analytics.routes import build_route_profile
+from backend.analytics.daily import build_daily_order_facts
+from backend.analytics.demand import aggregate_demand, aggregate_weekly_demand
+from backend.analytics.demand_estimate import estimate_destination_demand
+from backend.analytics.routes import build_route_profile, build_weekly_route_profile
+from backend.decision import calculate_need
 from backend.domain.contracts import OrderLifecycle, OrderRecord
 from backend.domain.invariants import DomainValidationError
 
@@ -44,6 +47,34 @@ def baseline_orders():
             lifecycle=OrderLifecycle.CANCELLED,
         ),
     )
+
+
+def test_weekly_demand_explicit_daily_path_matches_compatibility_wrapper():
+    orders = baseline_orders() + (
+        order(quantity=50, lifecycle=OrderLifecycle.IN_PROGRESS),
+        order(accepted_at="2026-08-24T10:00:00+03:00"),
+        order(accepted_at="2026-08-25"),
+        order(accepted_at=""),
+    )
+    daily = build_daily_order_facts(orders, AS_OF)
+
+    assert aggregate_weekly_demand(daily.demand, AS_OF) == aggregate_demand(
+        orders, AS_OF,
+    )
+
+
+def test_weekly_routes_explicit_daily_path_matches_compatibility_wrapper():
+    orders = baseline_orders() + (
+        order(quantity=50, lifecycle=OrderLifecycle.IN_PROGRESS),
+        order(accepted_at="2026-08-24T10:00:00+03:00"),
+        order(accepted_at="2026-08-25"),
+        order(accepted_at=""),
+    )
+    daily = build_daily_order_facts(orders, AS_OF)
+
+    assert build_weekly_route_profile(
+        daily.fulfillment, AS_OF,
+    ) == build_route_profile(orders, AS_OF)
 
 
 def test_demand_is_weekly_quantity_by_destination_not_origin():
@@ -185,3 +216,44 @@ def test_results_and_nested_contracts_are_immutable():
         demand.window.as_of = date(2026, 1, 1)
     with pytest.raises(Exception):
         routes.routes[0].quantity = 2
+
+
+def test_changing_only_origins_changes_routes_not_demand_estimate_or_need():
+    base = tuple(
+        order(
+            quantity=100,
+            origin="Москва",
+            destination="Казань",
+            accepted_at=(date(2026, 6, 29) + timedelta(days=7 * index)).isoformat(),
+        )
+        for index in range(8)
+    )
+    permuted = tuple(
+        replace(item, origin_cluster="Омск" if index % 2 else "Новосибирск")
+        for index, item in enumerate(base)
+    )
+
+    left_demand = aggregate_demand(base, AS_OF)
+    right_demand = aggregate_demand(permuted, AS_OF)
+    left_estimate = estimate_destination_demand(left_demand)
+    right_estimate = estimate_destination_demand(right_demand)
+
+    assert left_demand == right_demand
+    assert left_estimate == right_estimate
+    assert build_route_profile(base, AS_OF) != build_route_profile(permuted, AS_OF)
+
+    need_args = dict(
+        sku="SKU-1",
+        destination_cluster_id="Казань",
+        horizon_days=56,
+        fbo_stock=200,
+        inbound_qty=100,
+        include_inbound=True,
+        ozon_recommended_qty=400,
+        ozon_horizon_days=56,
+    )
+    assert calculate_need(
+        weekly_rate=left_estimate[0].current_weekly_rate, **need_args
+    ) == calculate_need(
+        weekly_rate=right_estimate[0].current_weekly_rate, **need_args
+    )

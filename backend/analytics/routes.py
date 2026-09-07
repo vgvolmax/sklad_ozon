@@ -6,13 +6,13 @@ from decimal import Decimal
 from typing import Iterable
 
 from backend.domain.contracts import OrderRecord
-from backend.domain.invariants import is_fulfilled_route, validate_order
+
+from .daily import DailyFulfillmentResult, build_daily_order_facts
 
 from ._weeks import (
     AnalyticsWindow,
     WeekPolicy,
     make_window,
-    parse_source_date,
     require_completed_iso_weeks,
 )
 
@@ -36,8 +36,8 @@ class RouteProfile:
     window: AnalyticsWindow
 
 
-def build_route_profile(
-    orders: Iterable[OrderRecord],
+def build_weekly_route_profile(
+    daily: DailyFulfillmentResult,
     as_of: date,
     week_policy: WeekPolicy = WeekPolicy.COMPLETED_ISO_WEEKS,
 ) -> RouteProfile:
@@ -45,30 +45,20 @@ def build_route_profile(
     current_week = as_of.isocalendar()[:2]
     totals: dict[tuple[int, int, str, str, str], list[int]] = {}
     included_weeks: set[tuple[int, int]] = set()
-    excluded_current = excluded_future = excluded_undated = 0
+    excluded_current = 0
 
-    for order in orders:
-        validate_order(order)
-        if not is_fulfilled_route(order):
-            continue
-        event_date = parse_source_date(order.accepted_at)
-        if event_date is None:
-            excluded_undated += 1
-            continue
-        if event_date > as_of:
-            excluded_future += 1
-            continue
-        iso = event_date.isocalendar()
+    for cell in daily.cells:
+        iso = cell.day.isocalendar()
         week = (iso.year, iso.week)
         if week == current_week:
-            excluded_current += 1
+            excluded_current += cell.observation_count
             continue
         included_weeks.add(week)
-        key = (iso.year, iso.week, order.sku,
-               order.origin_cluster, order.destination_cluster)
+        key = (iso.year, iso.week, cell.sku,
+               cell.origin_cluster_id, cell.destination_cluster_id)
         aggregate = totals.setdefault(key, [0, 0])
-        aggregate[0] += order.quantity
-        aggregate[1] += 1
+        aggregate[0] += cell.quantity
+        aggregate[1] += cell.observation_count
 
     destination_totals: dict[tuple[int, int, str, str], int] = {}
     origin_totals: dict[tuple[int, int, str, str], int] = {}
@@ -104,7 +94,16 @@ def build_route_profile(
             as_of=as_of,
             included_weeks=included_weeks,
             excluded_current=excluded_current,
-            excluded_future=excluded_future,
-            excluded_undated=excluded_undated,
+            excluded_future=daily.excluded_future_observations,
+            excluded_undated=daily.excluded_undated_observations,
         ),
     )
+
+
+def build_route_profile(
+    orders: Iterable[OrderRecord],
+    as_of: date,
+    week_policy: WeekPolicy = WeekPolicy.COMPLETED_ISO_WEEKS,
+) -> RouteProfile:
+    daily = build_daily_order_facts(orders, as_of)
+    return build_weekly_route_profile(daily.fulfillment, as_of, week_policy)
