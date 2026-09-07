@@ -33,3 +33,14 @@ def test_destination_impact_is_backend_owned_and_incomplete_fails_closed():
     assert '<dt>Перекрыто извне</dt><dd>155 шт.</dd>' in rendered
     assert 'Экономика: <strong>Не рассчитано</strong>' in rendered
     assert 'ТОЧНЫЙ BACKEND TEXT' in rendered
+
+
+def test_sku_episode_without_route_resolves_timeline_destination():
+    js = r"""(()=>{const episode={episode_id:'m1',sku:'A',destination_cluster_id:'Москва',start_date:'2026-08-01',end_date:'2026-08-02'};const points=[{date:'2026-08-01',destination_demand_qty:10,local_share:0.5}];const snapshot={flow_view_aggregates:{clean_views:[{mode:'sku',key:'A',links:[],context_summary:{}}]},stockout_impact:{episodes:[episode],destination_daily_series:[{destination_cluster_id:'Москва',points}],destination_summaries:[]},decision_rows:[]};const state={mode:'sku',evidence:'clean',metric:'units',selectedKey:'A',selectedRoute:null,selectedEpisodeId:'m1',selectorQuery:'',selectorPage:1,routeQuery:'',routePage:1,dailyPage:1,episodePage:1,skuQuery:'',skuPage:1};const screen=SkladOzon.FlowView.buildScreenModel(snapshot,state);const timeline=SkladOzon.FlowTimeline.buildModel(snapshot,{mode:'sku',key:'A',destination:screen.timelineDestination},state);return {episode:screen.episode?.episode_id||null,destination:screen.timelineDestination,prompt:timeline.prompt,selectedEpisode:timeline.selectedEpisode?.episode_id||null,points:timeline.points};})()"""
+    assert node(js) == {
+        'episode': 'm1',
+        'destination': 'Москва',
+        'prompt': None,
+        'selectedEpisode': 'm1',
+        'points': [{'date': '2026-08-01', 'destination_demand_qty': 10, 'local_share': 0.5}],
+    }
