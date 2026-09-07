@@ -314,7 +314,8 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         route_economics=result.route_economics,unit_economics=result.economics,placements=result.placements,
         safe_allocations=result.safe_allocations,calculated_allocations=result.allocations,products=products.records,
         diagnostics=diagnostic_views,freshness_warnings=tuple(warnings),
-        product_identities=product_identities)
+        product_identities=product_identities, daily_locality=result.daily_locality,
+        stockout_episode_impacts=result.stockout_episode_impacts)
     return {"api_version":1,"complete":complete,"snapshot":wire(snapshot),"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"safe_allocations":wire(result.safe_allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}
 
 
