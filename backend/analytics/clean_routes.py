@@ -11,6 +11,8 @@ from backend.domain.signals import SignalConfidence, StockoutSignal
 
 from .routes import RouteCell, RouteProfile
 
+_ZERO = Decimal(0)
+
 
 _WEEK_PATTERN = re.compile(r"^(\d{4})-W(\d{2})$")
 _CONFIDENCE_RANK = {
@@ -76,6 +78,7 @@ class CleanRouteResult:
     clean_routes: tuple[RouteDistributionCell, ...]
     excluded_routes: tuple[ExcludedRouteEvidence, ...]
     summaries: tuple[RouteProfileSummary, ...]
+    excluded_episode_routes: tuple["EpisodeExcludedRouteEvidence", ...] = ()
 
 
 def _parse_week(observed_week: str) -> tuple[int, int]:
@@ -233,3 +236,81 @@ def _evidence_totals(
         aggregate[0] += row.quantity
         aggregate[1] += row.observation_count
     return {key: (value[0], value[1]) for key, value in totals.items()}
+
+@dataclass(frozen=True, slots=True)
+class EpisodeExcludedRouteEvidence:
+    sku: str
+    episode_start_date: date
+    episode_end_date: date
+    origin_cluster_id: str
+    destination_cluster_id: str
+    quantity: int
+    observation_count: int
+    stockout_confidence: SignalConfidence
+
+
+def build_episode_clean_route_profile(observed, daily_fulfillment, episodes):
+    """Remove only affected completed-history destination days."""
+    from .daily import DailyFulfillmentResult
+    from .routes import build_weekly_route_profile
+
+    included = set(observed.window.included_weeks)
+    historical_cells = tuple(cell for cell in daily_fulfillment.cells
+                             if cell.day.isocalendar()[:2] in included)
+    historical = DailyFulfillmentResult(
+        historical_cells,
+        daily_fulfillment.excluded_future_observations,
+        daily_fulfillment.excluded_undated_observations,
+    )
+    rebuilt = build_weekly_route_profile(historical, observed.window.as_of)
+    if rebuilt.routes != observed.routes:
+        raise ValueError("daily fulfillment completed-week universe does not match observed routes")
+
+    eligible_by_day = {}
+    for episode in episodes:
+        if not episode.route_cleaning_eligible:
+            continue
+        for day in episode.affected_dates:
+            key = (episode.sku, episode.destination_cluster_id, day)
+            previous = eligible_by_day.get(key)
+            if previous is None or (episode.start_date, episode.end_date) < (previous.start_date, previous.end_date):
+                eligible_by_day[key] = episode
+    excluded_cells = []
+    clean_cells = []
+    audit: dict[tuple, list[int]] = {}
+    for cell in historical_cells:
+        episode = eligible_by_day.get((cell.sku, cell.destination_cluster_id, cell.day))
+        if episode is None:
+            clean_cells.append(cell)
+            continue
+        excluded_cells.append(cell)
+        key = (cell.sku, episode.start_date, episode.end_date,
+               cell.origin_cluster_id, cell.destination_cluster_id, episode.confidence)
+        aggregate = audit.setdefault(key, [0, 0])
+        aggregate[0] += cell.quantity
+        aggregate[1] += cell.observation_count
+
+    clean_weekly = build_weekly_route_profile(
+        DailyFulfillmentResult(tuple(clean_cells), 0, 0), observed.window.as_of
+    )
+    observed_routes = _aggregate(observed.routes)
+    clean_routes = _aggregate(clean_weekly.routes)
+    audit_rows = tuple(EpisodeExcludedRouteEvidence(*key[:-1], quantity, count, key[-1])
+                       for key, (quantity, count) in sorted(audit.items(), key=lambda item: item[0][:-1]))
+    observed_by_origin = _origin_totals(observed_routes)
+    clean_by_origin = _origin_totals(clean_routes)
+    excluded_by_origin: dict[tuple[str, str], list[int]] = {}
+    for cell in excluded_cells:
+        total = excluded_by_origin.setdefault((cell.sku, cell.origin_cluster_id), [0, 0])
+        total[0] += cell.quantity; total[1] += cell.observation_count
+    summaries = tuple(RouteProfileSummary(
+        sku, origin, observed_by_origin[(sku, origin)][0], observed_by_origin[(sku, origin)][1],
+        clean_by_origin.get((sku, origin), (0, 0))[0], clean_by_origin.get((sku, origin), (0, 0))[1],
+        excluded_by_origin.get((sku, origin), (0, 0))[0], excluded_by_origin.get((sku, origin), (0, 0))[1],
+        sum((cell.share for cell in observed_routes if (cell.sku, cell.origin_cluster_id)==(sku,origin)), _ZERO),
+        (sum((cell.share for cell in clean_routes if (cell.sku, cell.origin_cluster_id)==(sku,origin)), _ZERO)
+         if (sku, origin) in clean_by_origin else None),
+        (CleanRouteFallbackStatus.CLEAN_AVAILABLE if (sku, origin) in clean_by_origin
+         else CleanRouteFallbackStatus.OBSERVED_FALLBACK),
+    ) for sku, origin in sorted(observed_by_origin))
+    return CleanRouteResult(observed_routes, clean_routes, (), summaries, audit_rows)

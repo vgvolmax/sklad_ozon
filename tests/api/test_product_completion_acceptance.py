@@ -255,6 +255,9 @@ def test_product_completion_snapshot_does_not_serialize_daily_fact_matrix(
     snapshot = product_completion_payload["snapshot"]
 
     assert "daily_facts" not in snapshot
+    assert "daily_locality" not in snapshot
+    assert "stockout_episodes" not in snapshot
+    assert "affected_dates" not in json.dumps(snapshot, ensure_ascii=False)
     assert "daily_demand" not in snapshot
     assert "daily_fulfillment" not in snapshot
 

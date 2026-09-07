@@ -8,8 +8,9 @@ from backend.analytics.demand import aggregate_weekly_demand, DemandResult
 from backend.analytics.demand_estimate import estimate_destination_demand
 from backend.analytics.routes import build_weekly_route_profile, RouteProfile
 from backend.analytics.stockout import detect_stockouts
+from backend.analytics.stockout_episodes import (build_daily_locality_series, detect_stockout_episodes)
 from backend.analytics.distortion import detect_recommendation_distortion
-from backend.analytics.clean_routes import build_clean_route_profile, CleanRouteResult
+from backend.analytics.clean_routes import build_episode_clean_route_profile, CleanRouteResult
 from backend.analytics.flows import aggregate_observed_flows
 from backend.analytics.route_profiles import select_route_profile
 from backend.economics import (expected_logistics, LogisticsContext, RouteProfileSource,
@@ -64,6 +65,8 @@ class AnalysisResult:
     demand_estimates: tuple = ()
     needs: tuple = ()
     route_economics: tuple = ()
+    daily_locality: tuple = ()
+    stockout_episodes: tuple = ()
 
 def analyze(availability, restrictions, orders, tariffs, products, *, as_of: date,
             economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds,
@@ -88,8 +91,12 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
     observed = build_weekly_route_profile(daily_facts.fulfillment, as_of)
     progress("distortions")
     stockouts = detect_stockouts(observed, availability)
+    daily_locality = build_daily_locality_series(daily_facts, as_of)
+    stockout_episodes = detect_stockout_episodes(daily_locality, availability, as_of)
     distortions = detect_recommendation_distortion(stockouts, observed)
-    clean = build_clean_route_profile(observed, stockouts)
+    clean = build_episode_clean_route_profile(
+        observed, daily_facts.fulfillment, stockout_episodes
+    )
     diagnostics = []
     rec_values = {}
     conflicts = set()
@@ -273,4 +280,5 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         daily_facts, demand, observed, clean, stockouts, distortions, tuple(logistics_results),
         tuple(economics_results), placements, allocations, safe_allocations, summary,
         tuple(diagnostics), tuple(demand_estimates), tuple(needs), tuple(route_opportunities),
+        daily_locality, stockout_episodes,
     )
