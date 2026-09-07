@@ -352,7 +352,7 @@ def test_all_runtime_assets_are_part_of_shell_ci_and_windows_acceptance():
     html = (ROOT / "frontend/index.html").read_text()
     ci = (ROOT / ".github/workflows/ci.yml").read_text()
     windows = (ROOT / "tests/windows/portable-smoke.ps1").read_text()
-    assets = ("core.js", "components.js", "flow.js", "app.js")
+    assets = ("core.js", "components.js", "flow_timeline.js", "flow.js", "app.js")
     positions = [html.index(f'/assets/js/{name}') for name in assets]
     assert positions == sorted(positions)
     for name in assets:

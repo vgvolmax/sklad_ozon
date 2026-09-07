@@ -8,7 +8,8 @@ from uuid import uuid4
 from backend.analytics.flows import aggregate_clean_flows, aggregate_observed_flows
 from backend.domain.signals import SignalConfidence
 from .contracts import (AnalysisSnapshot, DataQualityPresentation, DecisionRow, DecisionSummary, DiagnosticView,
-                        FlowEconomicsAggregate, FlowLinkView, FlowView, FlowViewAggregates, RouteSkuBreakdown)
+                        FlowContextSummary, FlowEconomicsAggregate, FlowLinkView,
+                        FlowMetricOverview, FlowView, FlowViewAggregates, RouteSkuBreakdown)
 from .explanations import explain_decision
 from .impact import build_stockout_impact_presentation
 
@@ -146,7 +147,43 @@ def _observed_flow_opportunity(rows, opportunities):
         )
 
 
+def _route_key(origin, destination):
+    return f"{origin}→{destination}"
+
+
+def _metric_overviews(links):
+    def ranking(link, metric):
+        if metric == "units":
+            return (-link.quantity, link.route_key)
+        if metric == "share":
+            return (-link.destination_share, link.route_key)
+        value = (link.margin_delta_pp if metric == "margin_pp"
+                 else link.economics.profit_opportunity_rub)
+        complete = link.route_economics_complete and value is not None
+        return (not complete, Decimal("0") if value is None else -abs(value),
+                -link.quantity, link.route_key)
+
+    result = []
+    total_quantity = sum(link.quantity for link in links)
+    for metric in ("units", "share", "margin_pp", "profit_rub"):
+        top = sorted(links, key=lambda link: ranking(link, metric))[:8]
+        top_quantity = sum(link.quantity for link in top)
+        result.append(FlowMetricOverview(
+            metric, tuple(link.route_key for link in top), top_quantity,
+            len(links) - len(top), total_quantity - top_quantity,
+            len(links), total_quantity))
+    return tuple(result)
+
+
+def _flow_daily_locality(daily_locality, included_weeks):
+    """Scope Flow demand to the observed RouteProfile evidence universe."""
+    weeks = set(included_weeks)
+    return tuple(point for point in daily_locality
+                 if tuple(point.day.isocalendar()[:2]) in weeks)
+
+
 def _views(flows, products, opportunities, product_identities=None,
+           daily_locality=(),
            *, evidence_source="observed"):
     product_map = {p.sku: p for p in products}
     product_identities = product_identities or {}
@@ -155,6 +192,12 @@ def _views(flows, products, opportunities, product_identities=None,
     destination_totals = defaultdict(int)
     for flow in flows:
         destination_totals[flow.destination_cluster_id] += flow.quantity
+    period_days = [point.day for point in daily_locality]
+    destination_demand = defaultdict(int)
+    sku_demand = defaultdict(int)
+    for point in daily_locality:
+        destination_demand[point.destination_cluster_id] += point.destination_demand_qty
+        sku_demand[point.sku] += point.destination_demand_qty
 
     def build(mode, key, selected):
         route_groups = defaultdict(list)
@@ -185,7 +228,7 @@ def _views(flows, products, opportunities, product_identities=None,
                         None if opportunity is None or opportunity.profit_delta_per_unit is None
                         else opportunity.profit_delta_per_unit * Decimal(flow.quantity)))
                 links.append(FlowLinkView(
-                    origin, destination, quantity,
+                    _route_key(origin, destination), origin, destination, quantity,
                     Decimal(quantity) / Decimal(destination_totals[destination]),
                     economics.margin_delta_pp, observed_opportunity,
                     economics.complete, economics.reason_codes, tuple(breakdown),
@@ -197,12 +240,32 @@ def _views(flows, products, opportunities, product_identities=None,
             external = total - local
             external_economics = (_flow_economics(external_rows, opp)
                                   if mode == "destination" and external_rows else None)
+            destinations = {flow.destination_cluster_id for flow in selected}
+            origins = {flow.origin_cluster_id for flow in selected}
+            own_demand = (destination_demand[key] if mode in {"destination", "origin"}
+                          else sku_demand[key])
+            counterparties = ({origin for origin in origins if origin != key}
+                              if mode == "destination" else
+                              {destination for destination in destinations
+                               if destination != key}
+                              if mode == "origin" else
+                              {(flow.origin_cluster_id, flow.destination_cluster_id)
+                               for flow in selected
+                               if flow.origin_cluster_id != flow.destination_cluster_id})
+            summary = FlowContextSummary(
+                min(period_days) if period_days else None,
+                max(period_days) if period_days else None,
+                own_demand, total, local, external,
+                Decimal(local) / Decimal(total) if total else None,
+                Decimal(external) / Decimal(total) if total else None,
+                len(counterparties), len(destinations), len(origins))
             return FlowView(
                 mode, key, evidence_source, total,
                 Decimal(local) / Decimal(total) if total else None,
                 Decimal(external) / Decimal(total) if total else None,
                 len({flow.origin_cluster_id for flow in external_rows}),
-                external_economics, tuple(links))
+                external_economics, tuple(links), summary,
+                _metric_overviews(links))
 
     result = []
     for mode, attribute in (("destination", "destination_cluster_id"),
@@ -287,14 +350,18 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
             route_complete="ROUTE_ECONOMICS_INCOMPLETE" not in r.status_codes,
         ) for r in rows))
     observed_flows=aggregate_observed_flows(observed_routes); clean_flows=aggregate_clean_flows(clean_routes)
+    flow_daily_locality = _flow_daily_locality(
+        daily_locality, observed_routes.window.included_weeks)
     return AnalysisSnapshot(uuid4().hex,datetime.now(timezone.utc).isoformat(),dict(report_meta),tuple(freshness_warnings),scenario,
         dict(input_statuses),summary,tuple(rows),tuple(sorted(demand_estimates,key=lambda x:(x.sku,x.destination_cluster_id))),
         observed_routes,clean_routes,tuple(stockout_signals),tuple(distortion_signals),tuple(route_economics),
         tuple(unit_economics),tuple(safe_allocations),tuple(calculated_allocations),
         FlowViewAggregates(
             _views(observed_flows, products, route_economics, product_identities,
+                   flow_daily_locality,
                    evidence_source="observed"),
             _views(clean_flows, products, route_economics, product_identities,
+                   flow_daily_locality,
                    evidence_source="clean")),
         build_stockout_impact_presentation(
             daily_locality, stockout_episode_impacts, product_identities),
