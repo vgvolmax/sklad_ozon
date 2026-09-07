@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Iterable
 
+from backend.analytics.demand import DemandResult
 from backend.analytics.routes import RouteProfile
 from backend.domain.signals import (
     AvailabilityCorroboration,
@@ -81,6 +82,7 @@ def _display_confidence(
 
 def detect_stockouts(
     weekly_profiles: RouteProfile,
+    demand: DemandResult,
     availability: Iterable[AvailabilityRecord] | None = None,
     thresholds: StockoutThresholds = StockoutThresholds(),
 ) -> tuple[StockoutSignal, ...]:
@@ -92,6 +94,11 @@ def detect_stockouts(
             availability_support.add(key)
 
     metrics = _metrics(weekly_profiles)
+    demand_quantities = {
+        (cell.sku, cell.destination_cluster_id, cell.iso_year, cell.iso_week): cell.quantity
+        for cell in demand.cells
+        if (cell.iso_year, cell.iso_week) in demand.window.included_weeks
+    }
     grouped: dict[tuple[str, str], list[tuple[int, int, _Metrics]]] = {}
     for (sku, destination, year, week), value in metrics.items():
         grouped.setdefault((sku, destination), []).append((year, week, value))
@@ -105,7 +112,11 @@ def detect_stockouts(
             if after_date - before_date != timedelta(days=7):
                 continue
             before, after = baseline[2], observed[2]
-            retention = Decimal(after.quantity) / Decimal(before.quantity)
+            before_demand = demand_quantities.get((sku, destination, baseline[0], baseline[1]))
+            after_demand = demand_quantities.get((sku, destination, observed[0], observed[1]))
+            if before_demand is None or after_demand is None or before_demand <= 0:
+                continue
+            retention = Decimal(after_demand) / Decimal(before_demand)
             if (before.quantity < thresholds.min_fulfilled_weekly_quantity
                     or after.quantity < thresholds.min_fulfilled_weekly_quantity
                     or before.local_share < thresholds.prior_local_share_min

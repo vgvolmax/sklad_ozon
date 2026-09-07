@@ -35,7 +35,8 @@ def optimize_allocations(candidates, stock, limits, *,
 
 def candidate(cluster="A", *, sku="SKU-1", recommendation=10, physical=None,
               allowed=True, complete=True, profit="30", margin="0.30", roi="0.40",
-              route=RouteConfidence.MEDIUM, distortion=None, need=None):
+              route=RouteConfidence.MEDIUM, demand=SignalConfidence.MEDIUM,
+              distortion=None, need=None):
     economics = UnitEconomicsResult(
         sku, cluster, Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"),
         Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"),
@@ -48,7 +49,7 @@ def candidate(cluster="A", *, sku="SKU-1", recommendation=10, physical=None,
         sku, cluster, allowed, physical, ("W",) if allowed else (), ("fixture",),
     )
     return PlacementAssessment(
-        sku, cluster, recommendation, feasibility, economics, distortion, route, (),
+        sku, cluster, recommendation, feasibility, economics, distortion, route, demand, (),
         recommendation if need is None else need,
     )
 
@@ -239,6 +240,32 @@ def distortion(cluster, confidence):
 def test_canonical_tie_breaks(items, winner):
     result = optimize_allocations(items, 1, thresholds())
     assert allocations(result)[winner] == 1
+
+
+def test_demand_confidence_precedes_larger_need():
+    result = optimize_allocations([
+        candidate("A", need=10, demand=SignalConfidence.HIGH),
+        candidate("B", need=100, demand=SignalConfidence.LOW),
+    ], 1, thresholds(), plan_family=PlanFamily.CALCULATED,
+        objective=AllocationObjective.MAX_MARGIN)
+    assert allocations(result) == {"A": 1, "B": 0}
+
+
+def test_route_confidence_precedes_demand_confidence():
+    result = optimize_allocations([
+        candidate("A", route=RouteConfidence.HIGH, demand=SignalConfidence.LOW),
+        candidate("B", route=RouteConfidence.LOW, demand=SignalConfidence.HIGH),
+    ], 1, thresholds(), objective=AllocationObjective.MAX_MARGIN)
+    assert allocations(result) == {"A": 1, "B": 0}
+
+
+def test_demand_confidence_precedes_distortion_risk():
+    result = optimize_allocations([
+        candidate("A", demand=SignalConfidence.HIGH,
+                  distortion=distortion("A", SignalConfidence.HIGH)),
+        candidate("B", demand=SignalConfidence.LOW, distortion=None),
+    ], 1, thresholds(), objective=AllocationObjective.MAX_MARGIN)
+    assert allocations(result) == {"A": 1, "B": 0}
 
 
 def test_input_permutations_produce_identical_result():

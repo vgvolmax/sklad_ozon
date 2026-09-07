@@ -18,6 +18,11 @@ from .contracts import (
 
 _ZERO = Decimal("0")
 _ROUTE_RANK = {RouteConfidence.LOW: 1, RouteConfidence.MEDIUM: 2, RouteConfidence.HIGH: 3}
+_DEMAND_RANK = {
+    SignalConfidence.LOW: 1,
+    SignalConfidence.MEDIUM: 2,
+    SignalConfidence.HIGH: 3,
+}
 _DISTORTION_RANK = {
     None: 0,
     SignalConfidence.LOW: 1,
@@ -157,6 +162,7 @@ def optimize_allocations(
     eligible.sort(key=lambda item: item.calculated_need_qty, reverse=True)
     eligible.sort(key=lambda item: _DISTORTION_RANK[
         None if item.distortion_signal is None else item.distortion_signal.confidence])
+    eligible.sort(key=lambda item: _DEMAND_RANK[item.demand_confidence], reverse=True)
     eligible.sort(key=lambda item: _ROUTE_RANK[item.route_confidence], reverse=True)
     if objective is AllocationObjective.MAX_PROFIT:
         eligible.sort(key=lambda item: item.economics.profit_per_unit, reverse=True)

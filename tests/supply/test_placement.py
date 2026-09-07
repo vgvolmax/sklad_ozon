@@ -37,9 +37,10 @@ def economics(sku="SKU-1", cluster="Moscow", *, complete=True, profit="10"):
 
 def candidate(cluster="Moscow", *, sku="SKU-1", quantity=0,
               sources=(PlacementSource.COUNTERFACTUAL,), result=None, distortion=None,
-              calculated_need=None):
+              calculated_need=None, demand_confidence=SignalConfidence.MEDIUM):
     return PlacementInput(sku, cluster, quantity, sources, result or economics(sku, cluster),
-                          distortion, RouteConfidence.MEDIUM, calculated_need)
+                          distortion, RouteConfidence.MEDIUM, demand_confidence,
+                          calculated_need)
 
 
 @pytest.mark.parametrize("need", [None, 0, 17])
@@ -55,6 +56,14 @@ def test_calculated_need_is_preserved_without_changing_feasibility(need):
         [restriction("SKU-1", "M", RestrictionState.ALLOWED)],
         [WarehouseCapability("M", "Moscow", 23)],
     )
+
+
+def test_demand_confidence_is_preserved_without_transformation():
+    item = candidate(demand_confidence=SignalConfidence.HIGH)
+    assessed = compare_placements([item], [], [])[0]
+
+    assert item.demand_confidence is SignalConfidence.HIGH
+    assert assessed.demand_confidence is SignalConfidence.HIGH
 
 
 def test_one_allowed_one_prohibited_is_feasible_and_reason_coded():
@@ -200,10 +209,17 @@ def test_candidate_identity_duplicates_and_validation():
 def test_malformed_placement_input_is_rejected(changes):
     values = dict(sku="SKU-1", cluster_id="Moscow", ozon_recommended_qty=0,
                   sources=(PlacementSource.COUNTERFACTUAL,), economics=economics(),
-                  distortion_signal=None, route_confidence=RouteConfidence.LOW)
+                  distortion_signal=None, route_confidence=RouteConfidence.LOW,
+                  demand_confidence=SignalConfidence.LOW)
     values.update(changes)
     with pytest.raises((TypeError, ValueError)):
         PlacementInput(**values)
+
+
+@pytest.mark.parametrize("value", ["high", 1, None, RouteConfidence.HIGH])
+def test_demand_confidence_rejects_invalid_types(value):
+    with pytest.raises(TypeError, match="demand_confidence"):
+        candidate(demand_confidence=value)
 
 
 @pytest.mark.parametrize("args", [

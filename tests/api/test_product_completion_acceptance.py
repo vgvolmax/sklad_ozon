@@ -76,6 +76,41 @@ def _build_origin_permuted_acceptance_files():
     return files
 
 
+def _build_new_sku_acceptance_files():
+    from tests.api.test_analysis import AVAILABILITY_HEADERS, PRODUCT_HEADERS, TARIFF_HEADERS
+
+    orders = [
+        "SKU-OLD;OLD;5;1000;Москва;Москва;Доставлен;"
+        f"2026-{month_day}T10:00:00"
+        for month_day in ("06-29", "07-06", "07-13", "07-20", "07-27", "08-03", "08-10", "08-17")
+    ]
+    orders.append(
+        "SKU-NEW;NEW;10;1000;Москва;Москва;Доставлен;2026-08-17T10:00:00"
+    )
+    header = ("SKU;Артикул;Количество;Цена продавца;Кластер отгрузки;"
+              "Кластер доставки;Статус;Принят в обработку\n")
+    return {
+        "availability_file": ("availability.xlsx", make_xlsx(
+            headers=AVAILABILITY_HEADERS,
+            rows=[["SKU-OLD", "W-OLD", "Москва", 5, 0, 0, 0],
+                  ["SKU-NEW", "W-NEW", "Москва", 80, 0, 0, 0]],
+        )),
+        "restrictions_file": ("restrictions.csv", (
+            "SKU;Склад;Статус;Причина\n"
+            "SKU-OLD;W-OLD;Разрешено;\nSKU-NEW;W-NEW;Разрешено;\n"
+        ).encode()),
+        "orders_file": ("orders.csv", (header + "\n".join(orders) + "\n").encode()),
+        "tariffs_file": ("tariffs.xlsx", make_xlsx(
+            headers=TARIFF_HEADERS, rows=[["Москва", "Москва", 0, "", "", "", 40]],
+        )),
+        "product_economics_file": ("products.xlsx", make_xlsx(
+            headers=PRODUCT_HEADERS,
+            rows=[["SKU-OLD", "OLD", 100, 20, 1000, "10%", 1],
+                  ["SKU-NEW", "NEW", 100, 20, 1000, "10%", 1]],
+        )),
+    }
+
+
 @pytest.fixture(scope="module")
 def product_completion_payload():
     from tests.api.test_analysis import _analysis_data, _post_analysis
@@ -139,6 +174,21 @@ def test_product_completion_end_to_end_reconciles_snapshot(product_completion_pa
     assert snapshot["summary"]["total_safe_plan_qty"] == sum(
         row["safe_plan_qty"] for row in snapshot["decision_rows"]
         if row["safe_plan_qty"] is not None)
+
+
+def test_new_sku_one_week_of_demand_produces_nonzero_56_day_need():
+    from tests.api.test_analysis import _analysis_data, _post_analysis
+
+    response = _post_analysis(files=_build_new_sku_acceptance_files(), data=_analysis_data())
+    assert response.status_code == 200, response.text
+    snapshot = response.json()["snapshot"]
+    estimate = next(item for item in snapshot["demand_estimates"] if item["sku"] == "SKU-NEW")
+    decision = next(item for item in snapshot["decision_rows"] if item["sku"] == "SKU-NEW")
+
+    assert estimate["eligible_week_count"] == 1
+    assert estimate["current_weekly_rate"] == "10"
+    assert decision["need"]["raw_demand_forecast"] == "80"
+    assert decision["need"]["calculated_need_qty"] == 80
 
 
 def test_product_completion_cleaning_changes_fulfillment_not_demand(product_completion_payload):

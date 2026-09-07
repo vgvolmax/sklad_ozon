@@ -118,10 +118,20 @@ def estimate_destination_demand(demand: DemandResult) -> tuple[DemandEstimate, .
         (cell.sku, cell.destination_cluster_id, cell.iso_year, cell.iso_week): Decimal(cell.quantity)
         for cell in demand.cells
     }
+    first_observed = {}
+    for cell in demand.cells:
+        identity = cell.sku, cell.destination_cluster_id
+        week = cell.iso_year, cell.iso_week
+        first_observed[identity] = min(week, first_observed.get(identity, week))
     return tuple(
-        _estimate(sku, destination, [
-            quantities.get((sku, destination, year, week), ZERO)
-            for year, week in weeks
-        ])
+        _estimate(
+            sku,
+            destination,
+            [
+                quantities.get((sku, destination, year, week), ZERO)
+                for year, week in weeks
+                if (year, week) >= first_observed[(sku, destination)]
+            ],
+        )
         for sku, destination in identities
     )
