@@ -1,9 +1,17 @@
 """Pure demand and fulfilled-route analytics."""
 
 from ._weeks import AnalyticsWindow, WeekPolicy
-from .demand import DemandCell, DemandResult, aggregate_demand
+from .daily import (
+    DailyDemandCell,
+    DailyDemandResult,
+    DailyFulfillmentCell,
+    DailyFulfillmentResult,
+    DailyOrderFacts,
+    build_daily_order_facts,
+)
+from .demand import DemandCell, DemandResult, aggregate_demand, aggregate_weekly_demand
 from .demand_estimate import DemandEstimate, DemandRegime, estimate_destination_demand
-from .routes import RouteCell, RouteProfile, build_route_profile
+from .routes import RouteCell, RouteProfile, build_route_profile, build_weekly_route_profile
 from .route_profiles import RouteProfileSelection, select_route_profile
 from .flows import FulfillmentFlowCell, aggregate_clean_flows, aggregate_observed_flows
 from .stockout import StockoutThresholds, detect_stockouts
@@ -25,6 +33,11 @@ __all__ = (
     "CleanRouteResult",
     "DemandCell",
     "DemandResult",
+    "DailyDemandCell",
+    "DailyDemandResult",
+    "DailyFulfillmentCell",
+    "DailyFulfillmentResult",
+    "DailyOrderFacts",
     "DemandEstimate",
     "DemandRegime",
     "ExcludedRouteEvidence",
@@ -36,9 +49,12 @@ __all__ = (
     "RouteProfileSummary",
     "WeekPolicy",
     "aggregate_demand",
+    "aggregate_weekly_demand",
     "aggregate_clean_flows",
     "aggregate_observed_flows",
     "build_route_profile",
+    "build_weekly_route_profile",
+    "build_daily_order_facts",
     "build_clean_route_profile",
     "detect_recommendation_distortion",
     "detect_stockouts",

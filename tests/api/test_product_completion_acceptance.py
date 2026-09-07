@@ -62,6 +62,16 @@ def _build_product_completion_acceptance_files():
     }
 
 
+def _build_origin_permuted_acceptance_files():
+    files = _build_product_completion_acceptance_files()
+    name, payload = files["orders_file"]
+    text = payload.decode("utf-8")
+    text = text.replace("Москва;Москва;Доставлен", "Казань;Москва;Доставлен")
+    text = text.replace("Казань;Самара;Доставлен", "Москва;Самара;Доставлен")
+    files["orders_file"] = (name, text.encode("utf-8"))
+    return files
+
+
 @pytest.fixture(scope="module")
 def product_completion_payload():
     from tests.api.test_analysis import _analysis_data, _post_analysis
@@ -237,6 +247,55 @@ def test_product_completion_snapshot_excludes_buyer_pii(product_completion_paylo
     for marker in ("PII_BUYER_12345", "PII_PHONE_12345", "PII_EMAIL_12345",
                    "PII_ADDRESS_12345"):
         assert marker not in serialized
+
+
+def test_product_completion_snapshot_does_not_serialize_daily_fact_matrix(
+    product_completion_payload,
+):
+    snapshot = product_completion_payload["snapshot"]
+
+    assert "daily_facts" not in snapshot
+    assert "daily_demand" not in snapshot
+    assert "daily_fulfillment" not in snapshot
+
+
+def test_product_completion_origin_routing_cannot_change_destination_demand_or_need():
+    from tests.api.test_analysis import _analysis_data, _post_analysis
+
+    baseline_response = _post_analysis(
+        files=_build_product_completion_acceptance_files(), data=_analysis_data()
+    )
+    permuted_response = _post_analysis(
+        files=_build_origin_permuted_acceptance_files(), data=_analysis_data()
+    )
+    assert baseline_response.status_code == 200, baseline_response.text
+    assert permuted_response.status_code == 200, permuted_response.text
+
+    baseline = baseline_response.json()["snapshot"]
+    permuted = permuted_response.json()["snapshot"]
+
+    def demand_projection(snapshot):
+        return [
+            (row["sku"], row["destination_cluster_id"], row["m1"], row["m2"],
+             row["latest_week_qty"], row["current_weekly_rate"])
+            for row in snapshot["demand_estimates"]
+        ]
+
+    def need_projection(snapshot):
+        demand_identities = {
+            (row["sku"], row["destination_cluster_id"])
+            for row in snapshot["demand_estimates"]
+        }
+        return sorted(
+            (row["sku"], row["destination_cluster_id"],
+             row["need"]["raw_demand_forecast"], row["need"]["calculated_need_qty"])
+            for row in snapshot["decision_rows"]
+            if (row["sku"], row["destination_cluster_id"]) in demand_identities
+        )
+
+    assert demand_projection(permuted) == demand_projection(baseline)
+    assert need_projection(permuted) == need_projection(baseline)
+    assert baseline["observed_routes"]["routes"] != permuted["observed_routes"]["routes"]
 
 
 def test_all_runtime_assets_are_part_of_shell_ci_and_windows_acceptance():

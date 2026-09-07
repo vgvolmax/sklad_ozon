@@ -5,13 +5,13 @@ from datetime import date
 from typing import Iterable
 
 from backend.domain.contracts import OrderRecord
-from backend.domain.invariants import is_net_demand, validate_order
+
+from .daily import DailyDemandResult, build_daily_order_facts
 
 from ._weeks import (
     AnalyticsWindow,
     WeekPolicy,
     make_window,
-    parse_source_date,
     require_completed_iso_weeks,
 )
 
@@ -32,8 +32,8 @@ class DemandResult:
     window: AnalyticsWindow
 
 
-def aggregate_demand(
-    orders: Iterable[OrderRecord],
+def aggregate_weekly_demand(
+    daily: DailyDemandResult,
     as_of: date,
     week_policy: WeekPolicy = WeekPolicy.COMPLETED_ISO_WEEKS,
 ) -> DemandResult:
@@ -41,29 +41,19 @@ def aggregate_demand(
     current_week = as_of.isocalendar()[:2]
     totals: dict[tuple[int, int, str, str], list[int]] = {}
     included_weeks: set[tuple[int, int]] = set()
-    excluded_current = excluded_future = excluded_undated = 0
+    excluded_current = 0
 
-    for order in orders:
-        validate_order(order)
-        if not is_net_demand(order):
-            continue
-        event_date = parse_source_date(order.accepted_at)
-        if event_date is None:
-            excluded_undated += 1
-            continue
-        if event_date > as_of:
-            excluded_future += 1
-            continue
-        iso = event_date.isocalendar()
+    for cell in daily.cells:
+        iso = cell.day.isocalendar()
         week = (iso.year, iso.week)
         if week == current_week:
-            excluded_current += 1
+            excluded_current += cell.observation_count
             continue
         included_weeks.add(week)
-        key = (iso.year, iso.week, order.sku, order.destination_cluster)
+        key = (iso.year, iso.week, cell.sku, cell.destination_cluster_id)
         aggregate = totals.setdefault(key, [0, 0])
-        aggregate[0] += order.quantity
-        aggregate[1] += 1
+        aggregate[0] += cell.quantity
+        aggregate[1] += cell.observation_count
 
     cells = tuple(
         DemandCell(
@@ -82,7 +72,16 @@ def aggregate_demand(
             as_of=as_of,
             included_weeks=included_weeks,
             excluded_current=excluded_current,
-            excluded_future=excluded_future,
-            excluded_undated=excluded_undated,
+            excluded_future=daily.excluded_future_observations,
+            excluded_undated=daily.excluded_undated_observations,
         ),
     )
+
+
+def aggregate_demand(
+    orders: Iterable[OrderRecord],
+    as_of: date,
+    week_policy: WeekPolicy = WeekPolicy.COMPLETED_ISO_WEEKS,
+) -> DemandResult:
+    daily = build_daily_order_facts(orders, as_of)
+    return aggregate_weekly_demand(daily.demand, as_of, week_policy)
