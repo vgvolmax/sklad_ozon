@@ -42,6 +42,23 @@ def test_consequence_collapses_only_with_proven_identity_and_orphan_remains():
     orphan=build([diag("INCOMPLETE_LOGISTICS_COVERAGE","error","OTHER","X")])
     assert orphan.groups[0].primary_code=="INCOMPLETE_LOGISTICS_COVERAGE"
 
+def test_mixed_root_and_orphan_consequences_assign_each_raw_occurrence_once():
+    root=fact("MISSING_TARIFF","SKU-1::O1::D",sku="SKU-1",origin="O1")
+    attached=DataQualityFact("INCOMPLETE_LOGISTICS_COVERAGE","calculation","SKU-1::O1","SKU-1 · O1",sku="SKU-1",origin_cluster_id="O1")
+    orphan=DataQualityFact("INCOMPLETE_LOGISTICS_COVERAGE","calculation","SKU-2::O2","SKU-2 · O2",sku="SKU-2",origin_cluster_id="O2")
+    result=build([
+        diag("MISSING_TARIFF","error","SKU-1","O1"),
+        diag("INCOMPLETE_LOGISTICS_COVERAGE","error","SKU-1","O1"),
+        diag("INCOMPLETE_LOGISTICS_COVERAGE","error","SKU-2","O2"),
+    ],[root,attached,orphan])
+    by={group.primary_code:group for group in result.groups}
+    assert by["MISSING_TARIFF"].related_codes == (
+        "MISSING_TARIFF", "INCOMPLETE_LOGISTICS_COVERAGE")
+    assert by["MISSING_TARIFF"].raw_diagnostic_count == 2
+    assert by["INCOMPLETE_LOGISTICS_COVERAGE"].raw_diagnostic_count == 1
+    assert result.raw_diagnostic_count == 3
+    assert sum(group.raw_diagnostic_count for group in result.groups) == result.raw_diagnostic_count
+
 def test_distinct_roots_article_warning_and_repairs_stay_distinct():
     ds=[diag("MISSING_TARIFF"),diag("MISSING_PRODUCT_ECONOMICS"),diag("MISSING_SELLER_AVAILABLE_STOCK"),diag("MISSING_ARTICLE_TO_SKU","warning"),diag("WORKSHEET_DIMENSION_REPAIRED","info")]
     result=build(ds)
@@ -54,6 +71,7 @@ def test_large_input_is_deterministic_and_bounded_by_codes():
     ds=[diag(code,"warning" if code=="MISSING_ARTICLE_TO_SKU" else "error",f"S{i%100}") for i in range(1000) for code in ("MISSING_TARIFF","MISSING_PRODUCT_ECONOMICS","MISSING_SELLER_AVAILABLE_STOCK","MISSING_ARTICLE_TO_SKU","UNKNOWN")]
     one=build(ds); two=build(reversed(ds))
     assert len(one.groups)==5
+    assert sum(group.raw_diagnostic_count for group in one.groups) == one.raw_diagnostic_count
     assert [(g.primary_code,g.affected_count,g.raw_diagnostic_count) for g in one.groups]==[(g.primary_code,g.affected_count,g.raw_diagnostic_count) for g in two.groups]
 
 def tariffs(*rows):
@@ -118,6 +136,19 @@ def test_tariff_gap_detail_is_russian_and_keeps_machine_code_separate():
     detail = tariff_gap_user_detail("VOLUME_RANGE_MISSING", Decimal("1.2"), Decimal("599"))
     assert detail == "Нет тарифного диапазона для объёма товара · объём 1,2 л"
     assert "VOLUME_RANGE_MISSING" not in detail
+
+def test_user_facing_decimal_formatting_preserves_integer_zeroes():
+    from backend.decision.data_quality import _number
+    assert [_number(Decimal(value)) for value in (
+        "1000", "100", "10", "1.200", "0.50", "0.05", "0"
+    )] == ["1000", "100", "10", "1,2", "0,5", "0,05", "0"]
+
+def test_tariff_gap_detail_preserves_integer_price_and_volume_zeroes():
+    from backend.decision import tariff_gap_user_detail
+    assert tariff_gap_user_detail("PRICE_RANGE_MISSING", Decimal("1"), Decimal("1000")) == (
+        "Нет тарифного диапазона для цены товара · цена 1000 ₽")
+    assert tariff_gap_user_detail("VOLUME_RANGE_MISSING", Decimal("10"), Decimal("100")) == (
+        "Нет тарифного диапазона для объёма товара · объём 10 л")
 
 def test_product_economics_gap_classifies_absent_conflict_and_ambiguity():
     from backend.decision import classify_product_economics_gap
