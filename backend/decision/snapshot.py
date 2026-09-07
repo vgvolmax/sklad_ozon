@@ -10,6 +10,7 @@ from backend.domain.signals import SignalConfidence
 from .contracts import (AnalysisSnapshot, DecisionRow, DecisionSummary, DiagnosticView,
                         FlowEconomicsAggregate, FlowLinkView, FlowView, FlowViewAggregates, RouteSkuBreakdown)
 from .explanations import explain_decision
+from .impact import build_stockout_impact_presentation
 
 _CTX = Context(prec=40, rounding=ROUND_HALF_EVEN)
 
@@ -216,7 +217,8 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
                       needs, observed_routes, clean_routes, stockout_signals,
                       distortion_signals, route_economics, unit_economics,
                       placements, safe_allocations, calculated_allocations,
-                      products, diagnostics, freshness_warnings=(), product_identities=None):
+                      products, diagnostics, freshness_warnings=(), product_identities=None,
+                      daily_locality=(), stockout_episode_impacts=()):
     demand={(x.sku,x.destination_cluster_id):x for x in demand_estimates}
     placement={(x.sku,x.cluster_id):x for x in placements}
     safe={(d.sku,d.cluster_id):d for r in safe_allocations for d in r.decisions}
@@ -293,6 +295,8 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
                    evidence_source="observed"),
             _views(clean_flows, products, route_economics, product_identities,
                    evidence_source="clean")),
+        build_stockout_impact_presentation(
+            daily_locality, stockout_episode_impacts, product_identities),
         tuple(sorted(diagnostics,key=lambda x:(x.sku or "",x.cluster_id or "",
                                                 x.destination_cluster_id or "",
                                                 x.code,x.message))))

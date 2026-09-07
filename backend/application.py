@@ -14,7 +14,8 @@ from backend.analytics.clean_routes import build_episode_clean_route_profile, Cl
 from backend.analytics.flows import aggregate_observed_flows
 from backend.analytics.route_profiles import select_route_profile
 from backend.economics import (expected_logistics, LogisticsContext, RouteProfileSource,
-                               calculate_unit_economics, calculate_route_opportunity)
+                               calculate_unit_economics, calculate_route_opportunity,
+                               build_stockout_episode_impacts)
 from backend.project import EconomicsSettings, OptimizerThresholds
 from backend.decision import ScenarioSettings, calculate_need
 from backend.supply import (AllocationObjective, PlanFamily, WarehouseCapability, PlacementInput, PlacementSource, RouteConfidence,
@@ -67,6 +68,7 @@ class AnalysisResult:
     route_economics: tuple = ()
     daily_locality: tuple = ()
     stockout_episodes: tuple = ()
+    stockout_episode_impacts: tuple = ()
 
 def analyze(availability, restrictions, orders, tariffs, products, *, as_of: date,
             economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds,
@@ -272,6 +274,9 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         product=product_map.get(flow.sku); local=feasibility.get((flow.sku,flow.destination_cluster_id))
         if product is not None and local is not None:
             route_opportunities.append(calculate_route_opportunity(flow,product,tariffs,economics_settings,local))
+    stockout_episode_impacts = build_stockout_episode_impacts(
+        stockout_episodes, daily_facts.fulfillment, daily_locality, product_map,
+        tariffs, economics_settings, feasibility)
     summary = build_analysis_summary(placements, allocations)
     identities = [(item.sku, item.destination_cluster_id) for item in needs]
     if len(identities) != len(set(identities)):
@@ -280,5 +285,5 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         daily_facts, demand, observed, clean, stockouts, distortions, tuple(logistics_results),
         tuple(economics_results), placements, allocations, safe_allocations, summary,
         tuple(diagnostics), tuple(demand_estimates), tuple(needs), tuple(route_opportunities),
-        daily_locality, stockout_episodes,
+        daily_locality, stockout_episodes, stockout_episode_impacts,
     )

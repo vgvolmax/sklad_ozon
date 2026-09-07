@@ -147,6 +147,88 @@ class FlowViewAggregates:
 
 
 @dataclass(frozen=True, slots=True)
+class ImpactEconomicsView:
+    quantity: int; current_route_cost_rub_per_unit: Decimal | None
+    local_route_cost_rub_per_unit: Decimal | None; extra_logistics_rub: Decimal | None
+    weighted_current_margin_rate: Decimal | None; weighted_local_margin_rate: Decimal | None
+    margin_delta_pp: Decimal | None; profit_delta_per_unit: Decimal | None
+    profit_loss_or_opportunity_rub: Decimal | None
+    complete: bool; reason_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RouteImpactView:
+    sku: str; article: str; product_name: str
+    origin_cluster_id: str; destination_cluster_id: str; quantity: int
+    current_route_cost_rub_per_unit: Decimal | None
+    local_route_cost_rub_per_unit: Decimal | None; extra_logistics_rub: Decimal | None
+    current_margin_rate: Decimal | None; local_margin_rate: Decimal | None
+    margin_delta_pp: Decimal | None; profit_delta_per_unit: Decimal | None
+    profit_loss_or_opportunity_rub: Decimal | None
+    complete: bool; reason_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeDonorBreakdown:
+    origin_cluster_id: str; destination_cluster_id: str; quantity: int
+    share_of_episode_external_qty: Decimal
+    economics: ImpactEconomicsView; route_impacts: tuple[RouteImpactView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeSkuBreakdown:
+    sku: str; article: str; product_name: str; episode_count: int
+    external_quantity: int; share_of_destination_episode_external_qty: Decimal | None
+    economics: ImpactEconomicsView
+
+
+@dataclass(frozen=True, slots=True)
+class StockoutEpisodeView:
+    episode_id: str; sku: str; article: str; product_name: str
+    destination_cluster_id: str; start_date: object; end_date: object
+    confidence: object; evidence_scope: object
+    destination_demand_qty: int; fulfilled_quantity: int
+    local_quantity: int; external_quantity: int
+    local_share: Decimal | None; external_share: Decimal | None
+    baseline_local_share: Decimal; local_share_during: Decimal
+    replacement_origin_count: int; economics: ImpactEconomicsView
+    donors: tuple[EpisodeDonorBreakdown, ...]
+    evidence_reason_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DestinationDailyPoint:
+    day: object; destination_demand_qty: int; fulfilled_quantity: int
+    local_fulfilled_qty: int; external_fulfilled_qty: int
+    local_share: Decimal | None; external_share: Decimal | None
+    stockout_sku_count: int; episode_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DestinationDailySeries:
+    destination_cluster_id: str; points: tuple[DestinationDailyPoint, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DestinationImpactSummary:
+    destination_cluster_id: str; period_start: object; period_end: object
+    destination_demand_qty: int; fulfilled_quantity: int
+    local_quantity: int; external_quantity: int
+    local_share: Decimal | None; external_share: Decimal | None
+    stockout_episode_count: int; affected_sku_count: int
+    episode_external_quantity: int; episode_economics: ImpactEconomicsView
+    sku_breakdown: tuple[EpisodeSkuBreakdown, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StockoutImpactPresentation:
+    economics_basis_text: str
+    destination_summaries: tuple[DestinationImpactSummary, ...]
+    destination_daily_series: tuple[DestinationDailySeries, ...]
+    episodes: tuple[StockoutEpisodeView, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class DecisionRow:
     sku: str; article: str; product_name: str; destination_cluster_id: str
     demand: DemandEstimate | None; need: NeedComparison
@@ -179,4 +261,5 @@ class AnalysisSnapshot:
     safe_allocations: tuple[OptimizationResult, ...]
     calculated_allocations: tuple[OptimizationResult, ...]
     flow_view_aggregates: FlowViewAggregates
+    stockout_impact: StockoutImpactPresentation
     diagnostics: tuple[DiagnosticView, ...]
