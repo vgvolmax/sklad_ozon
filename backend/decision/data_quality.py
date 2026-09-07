@@ -1,7 +1,7 @@
 """PII-free, deterministic operator presentation for raw diagnostics."""
 from dataclasses import dataclass
-from backend.domain.contracts import ImportResult, TariffRow
-from backend.economics.tariffs import LogisticsContext
+from backend.domain.contracts import ImportResult, ProductEconomicsInput, TariffRow
+from backend.economics.tariffs import LogisticsContext, RouteProfileSource
 from .contracts import DataQualityAffectedEntity, DataQualityIssueGroup, DataQualityLevel, DataQualityPresentation
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +68,8 @@ def build_data_quality_presentation(*,diagnostics,structured_facts=(),**_context
         for f in items: unique.setdefault((f.entity_type,f.entity_key),_entity(f))
         entities=tuple(sorted(unique.values(),key=lambda x:(x.label,x.key)))
         consequence=attached.get(code,[]); related=(code,"INCOMPLETE_LOGISTICS_COVERAGE") if consequence else (code,)
-        groups.append(DataQualityIssueGroup(level,code,related,title.format(n=len(entities)),explanation,len(entities),entity_type,entities,len(items)+len(consequence),blocks,hint))
+        raw_count=sum(d.code in related for d in diagnostics)
+        groups.append(DataQualityIssueGroup(level,code,related,title.format(n=len(entities)),explanation,len(entities),entity_type,entities,raw_count,blocks,hint))
     groups.sort(key=lambda g:(_ORDER[g.level],_PRIORITY.get(g.primary_code,99),g.primary_code))
     return DataQualityPresentation(tuple(groups),len(diagnostics),sum(g.level is DataQualityLevel.BLOCKING for g in groups),sum(g.level is DataQualityLevel.WARNING for g in groups),sum(g.level is DataQualityLevel.TECHNICAL for g in groups))
 
@@ -82,3 +83,72 @@ def classify_tariff_gap(tariffs:ImportResult[TariffRow],context:LogisticsContext
     if len(matches)>1:return "AMBIGUOUS_MATCH"
     if not matches:return "PRICE_RANGE_MISSING"
     return None
+
+def _number(value):
+    if value is None:return None
+    rendered=format(value,"f").rstrip("0").rstrip(".")
+    return (rendered or "0").replace(".",",")
+
+def tariff_gap_user_detail(detail_code,volume_liters,price):
+    """Translate a machine tariff classification into operator-facing copy."""
+    text={
+        "ROUTE_PAIR_ABSENT":"Нет тарифа для этого маршрута.",
+        "VOLUME_RANGE_MISSING":"Нет тарифного диапазона для объёма товара.",
+        "PRICE_RANGE_MISSING":"Нет тарифного диапазона для цены товара.",
+        "PRICE_REQUIRED":"Для выбора тарифа не указана цена товара.",
+        "AMBIGUOUS_MATCH":"Найдено несколько подходящих тарифов.",
+    }.get(detail_code,"Тариф для маршрута не найден.")
+    if detail_code=="VOLUME_RANGE_MISSING" and volume_liters is not None:
+        return f"{text[:-1]} · объём {_number(volume_liters)} л"
+    if detail_code=="PRICE_RANGE_MISSING" and price is not None:
+        return f"{text[:-1]} · цена {_number(price)} ₽"
+    return text
+
+def _tariff_fact(*,sku,origin,destination,product,tariffs):
+    context=LogisticsContext(sku,origin,product.volume_liters,product.price,
+                             RouteProfileSource.OBSERVED)
+    detail_code=classify_tariff_gap(tariffs,context,destination)
+    if detail_code is None:return None
+    code=("AMBIGUOUS_TARIFF_MATCH" if detail_code=="AMBIGUOUS_MATCH" else
+          "PRICE_REQUIRED_FOR_TARIFF_LOOKUP" if detail_code=="PRICE_REQUIRED" else
+          "MISSING_TARIFF")
+    key=f"{sku}::{origin}::{destination}::{product.volume_liters}::{product.price}"
+    return DataQualityFact(code,"route",key,f"{origin} → {destination} · {sku}",
+        sku=sku,origin_cluster_id=origin,destination_cluster_id=destination,
+        detail_code=detail_code,
+        detail=tariff_gap_user_detail(detail_code,product.volume_liters,product.price))
+
+def build_stockout_tariff_quality_facts(*,stockout_episode_impacts,products,tariffs):
+    """Explain only tariff reason codes emitted by stockout counterfactuals."""
+    product_map={product.sku:product for product in products}
+    facts=[]
+    for episode in stockout_episode_impacts:
+        for route in episode.routes:
+            product=product_map.get(route.sku)
+            if product is None or product.volume_liters is None:continue
+            identities=[]
+            if "CURRENT_ROUTE_INCOMPLETE" in route.reason_codes:
+                identities.append((route.origin_cluster_id,route.destination_cluster_id))
+            if "LOCAL_ROUTE_INCOMPLETE" in route.reason_codes:
+                identities.append((route.destination_cluster_id,route.destination_cluster_id))
+            for origin,destination in identities:
+                fact=_tariff_fact(sku=route.sku,origin=origin,destination=destination,
+                                  product=product,tariffs=tariffs)
+                if fact is not None:facts.append(fact)
+    return tuple(facts)
+
+def classify_product_economics_gap(sku,article_candidates,unitka_products,
+                                    current_article_skus,historical_article_skus):
+    """Classify why an active SKU has no joined Unitka economics row."""
+    articles=tuple(sorted({article for article in article_candidates if article}))
+    if len(articles)>1:
+        return "ARTICLE_TO_SKU_AMBIGUOUS","Нельзя однозначно определить SKU для артикула."
+    article=articles[0] if articles else None
+    if article and len(current_article_skus.get(article,set()))>1:
+        return "ARTICLE_TO_SKU_CONFLICT","Артикул сопоставлен нескольким SKU в текущих данных."
+    unitka_articles={row.article for row in unitka_products if row.article}
+    if article in unitka_articles and len(historical_article_skus.get(article,set()))>1:
+        return "ARTICLE_TO_SKU_AMBIGUOUS","Нельзя однозначно определить SKU для артикула."
+    if article:
+        return "UNITKA_ROW_ABSENT",f"В Юнитке нет строки для артикула {article}."
+    return "UNITKA_ROW_ABSENT","Товар отсутствует в Юнитке."

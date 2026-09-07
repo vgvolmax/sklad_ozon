@@ -2,6 +2,8 @@ from decimal import Decimal
 from backend.decision import (DataQualityFact, DataQualityLevel, DiagnosticView,
     build_data_quality_presentation, classify_tariff_gap)
 from backend.domain.contracts import ImportResult, ReportMeta, TariffRow
+from backend.domain.contracts import ProductEconomicsInput
+from types import SimpleNamespace
 from backend.analytics.clean_routes import RouteDistributionCell
 from backend.economics import LogisticsContext, RouteProfileSource, expected_logistics
 
@@ -75,3 +77,53 @@ def test_tariff_classifier_is_observational_and_preserves_canonical_money_result
     assert classify_tariff_gap(source,context(),"D") is None
     after=expected_logistics(profile,source,context())
     assert after == before
+
+def test_stockout_only_tariff_gaps_cover_current_and_local_routes_without_raw_counts():
+    from backend.decision import build_stockout_tariff_quality_facts
+    product = ProductEconomicsInput("S", "39439", Decimal("1"), 1,
+        Decimal("599"), Decimal("0.1"), Decimal("1.2"))
+    routes = (
+        SimpleNamespace(sku="S", origin_cluster_id="Kazan",
+            destination_cluster_id="Moscow",
+            reason_codes=("CURRENT_ROUTE_INCOMPLETE",)),
+        SimpleNamespace(sku="S", origin_cluster_id="Kazan",
+            destination_cluster_id="Moscow",
+            reason_codes=("LOCAL_ROUTE_INCOMPLETE",)),
+    )
+    impacts = (SimpleNamespace(routes=routes),)
+    facts = build_stockout_tariff_quality_facts(
+        stockout_episode_impacts=impacts, products=(product,), tariffs=tariffs())
+    result = build((), facts)
+    group = result.groups[0]
+    assert group.affected_count == 2
+    assert group.raw_diagnostic_count == 0
+    assert {entity.label for entity in group.affected_entities} == {
+        "Kazan → Moscow · S", "Moscow → Moscow · S"}
+
+def test_stockout_and_ordinary_fact_share_exact_tariff_lookup_identity():
+    from backend.decision import build_stockout_tariff_quality_facts
+    product = ProductEconomicsInput("S", "39439", Decimal("1"), 1,
+        Decimal("599"), Decimal("0.1"), Decimal("1.2"))
+    route = SimpleNamespace(sku="S", origin_cluster_id="Kazan",
+        destination_cluster_id="Moscow", reason_codes=("CURRENT_ROUTE_INCOMPLETE",))
+    stockout = build_stockout_tariff_quality_facts(
+        stockout_episode_impacts=(SimpleNamespace(routes=(route,)),),
+        products=(product,), tariffs=tariffs())
+    ordinary = DataQualityFact("MISSING_TARIFF", "route",
+        "S::Kazan::Moscow::1.2::599", "Kazan → Moscow · S")
+    assert build((), (ordinary,) + stockout).groups[0].affected_count == 1
+
+def test_tariff_gap_detail_is_russian_and_keeps_machine_code_separate():
+    from backend.decision import tariff_gap_user_detail
+    detail = tariff_gap_user_detail("VOLUME_RANGE_MISSING", Decimal("1.2"), Decimal("599"))
+    assert detail == "Нет тарифного диапазона для объёма товара · объём 1,2 л"
+    assert "VOLUME_RANGE_MISSING" not in detail
+
+def test_product_economics_gap_classifies_absent_conflict_and_ambiguity():
+    from backend.decision import classify_product_economics_gap
+    raw = (ProductEconomicsInput("", "39439", None, None, None, None, None),)
+    assert classify_product_economics_gap("S1", ("39439",), (), {}, {})[0] == "UNITKA_ROW_ABSENT"
+    assert classify_product_economics_gap("S1", ("39439",), raw,
+        {"39439": {"S1", "S2"}}, {})[0] == "ARTICLE_TO_SKU_CONFLICT"
+    assert classify_product_economics_gap("S1", ("39439",), raw, {},
+        {"39439": {"S1", "S2"}})[0] == "ARTICLE_TO_SKU_AMBIGUOUS"

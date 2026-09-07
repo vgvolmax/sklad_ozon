@@ -17,7 +17,10 @@ from backend.application import analyze
 from backend.economics import LogisticsContext
 from backend.decision import (DataQualityFact, DiagnosticView, InputStatusView,
                               ScenarioSettings, assemble_snapshot,
-                              build_data_quality_presentation, classify_tariff_gap)
+                              build_data_quality_presentation,
+                              build_stockout_tariff_quality_facts,
+                              classify_product_economics_gap,
+                              classify_tariff_gap, tariff_gap_user_detail)
 from backend.decision.snapshot import first_nonblank
 from backend.supply import AllocationObjective
 from backend.ingestion.cluster_resolution import resolve_analysis_clusters
@@ -250,6 +253,10 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     analysis_orders = resolution.orders
     analysis_tariffs = replace(tariffs, records=resolution.tariffs)
     join_started=perf_counter()
+    raw_unitka_products=products.records
+    current_article_skus={}
+    for item in analysis_availability:
+        if item.article:current_article_skus.setdefault(item.article,set()).add(item.sku)
     primary={}; primary_conflicts=set()
     for item in analysis_availability:
         if not item.article: continue
@@ -342,12 +349,15 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
                     analysis_tariffs, context, contribution.destination_cluster_id) == "PRICE_REQUIRED" else "MISSING_TARIFF")
             detail_code = classify_tariff_gap(analysis_tariffs, context, contribution.destination_cluster_id)
             key = f"{logistics.sku}::{logistics.origin_cluster_id}::{contribution.destination_cluster_id}::{product.volume_liters}::{product.price}"
-            detail = f"Объём: {product.volume_liters} л; цена: {product.price if product.price is not None else 'не указана'}; причина: {detail_code}"
+            detail = tariff_gap_user_detail(detail_code,product.volume_liters,product.price)
             quality_facts.append(DataQualityFact(code,"route",key,
                 f"{logistics.origin_cluster_id} → {contribution.destination_cluster_id} · {logistics.sku}",
                 "error",sku=logistics.sku,origin_cluster_id=logistics.origin_cluster_id,
                 destination_cluster_id=contribution.destination_cluster_id,
                 detail_code=detail_code,detail=detail))
+    quality_facts.extend(build_stockout_tariff_quality_facts(
+        stockout_episode_impacts=result.stockout_episode_impacts,
+        products=products.records,tariffs=analysis_tariffs))
     # Structured SKU identities improve labels and classify stock/economics gaps.
     for diagnostic in diagnostic_views:
         if diagnostic.code not in {"MISSING_SELLER_AVAILABLE_STOCK", "CONFLICTING_FBS_AVAILABLE_STOCK", "MISSING_PRODUCT_ECONOMICS", "MISSING_PRODUCT_VOLUME", "INCOMPLETE_LOGISTICS_COVERAGE"}:
@@ -360,10 +370,21 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
             detail_code = "NO_AVAILABILITY_FOR_SKU" if not rows else "FBS_VALUE_MISSING"
         elif diagnostic.code == "CONFLICTING_FBS_AVAILABLE_STOCK":
             detail_code = "CONFLICTING_FBS_AVAILABLE_STOCK"
+        elif diagnostic.code == "MISSING_PRODUCT_ECONOMICS":
+            candidates={x.article for x in analysis_availability
+                        if x.sku==diagnostic.sku and x.article}
+            candidates.update(x.article for x in analysis_orders
+                              if x.sku==diagnostic.sku and x.article)
+            detail_code, detail = classify_product_economics_gap(
+                diagnostic.sku,candidates,raw_unitka_products,
+                current_article_skus,fallback)
+        else:
+            detail = None
         origin = diagnostic.cluster_id if diagnostic.code == "INCOMPLETE_LOGISTICS_COVERAGE" else None
         key = f"{diagnostic.sku}::{origin}" if origin else diagnostic.sku
         quality_facts.append(DataQualityFact(diagnostic.code,"calculation" if origin else "sku",key,label or diagnostic.sku,
-            diagnostic.severity,sku=diagnostic.sku,article=article or None,origin_cluster_id=origin,detail_code=detail_code))
+            diagnostic.severity,sku=diagnostic.sku,article=article or None,origin_cluster_id=origin,
+            detail_code=detail_code,detail=detail if diagnostic.code=="MISSING_PRODUCT_ECONOMICS" else None))
     data_quality = build_data_quality_presentation(diagnostics=diagnostic_views,
                                                    structured_facts=quality_facts)
     snapshot=assemble_snapshot(scenario=scenario,report_meta=report_meta,input_statuses=status_views,
