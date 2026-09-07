@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from backend.analytics.flows import aggregate_clean_flows, aggregate_observed_flows
 from backend.domain.signals import SignalConfidence
-from .contracts import (AnalysisSnapshot, DecisionRow, DecisionSummary, DiagnosticView,
+from .contracts import (AnalysisSnapshot, DataQualityPresentation, DecisionRow, DecisionSummary, DiagnosticView,
                         FlowEconomicsAggregate, FlowLinkView, FlowView, FlowViewAggregates, RouteSkuBreakdown)
 from .explanations import explain_decision
 from .impact import build_stockout_impact_presentation
@@ -217,8 +217,9 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
                       needs, observed_routes, clean_routes, stockout_signals,
                       distortion_signals, route_economics, unit_economics,
                       placements, safe_allocations, calculated_allocations,
-                      products, diagnostics, freshness_warnings=(), product_identities=None,
+                      products, diagnostics, data_quality: DataQualityPresentation | None = None, freshness_warnings=(), product_identities=None,
                       daily_locality=(), stockout_episode_impacts=()):
+    data_quality = data_quality or DataQualityPresentation((), len(diagnostics), 0, 0, 0)
     demand={(x.sku,x.destination_cluster_id):x for x in demand_estimates}
     placement={(x.sku,x.cluster_id):x for x in placements}
     safe={(d.sku,d.cluster_id):d for r in safe_allocations for d in r.decisions}
@@ -297,6 +298,7 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
                    evidence_source="clean")),
         build_stockout_impact_presentation(
             daily_locality, stockout_episode_impacts, product_identities),
+        data_quality,
         tuple(sorted(diagnostics,key=lambda x:(x.sku or "",x.cluster_id or "",
                                                 x.destination_cluster_id or "",
                                                 x.code,x.message))))

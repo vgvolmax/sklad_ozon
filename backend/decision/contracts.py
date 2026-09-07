@@ -68,6 +68,51 @@ class DiagnosticView:
     destination_cluster_id: str | None = None
 
 
+class DataQualityLevel(str, Enum):
+    BLOCKING = "blocking"
+    WARNING = "warning"
+    TECHNICAL = "technical"
+
+
+@dataclass(frozen=True, slots=True)
+class DataQualityAffectedEntity:
+    entity_type: str
+    key: str
+    label: str
+    sku: str | None = None
+    article: str | None = None
+    origin_cluster_id: str | None = None
+    destination_cluster_id: str | None = None
+    source_name: str | None = None
+    source_row: int | None = None
+    detail_code: str | None = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DataQualityIssueGroup:
+    level: DataQualityLevel
+    primary_code: str
+    related_codes: tuple[str, ...]
+    user_title: str
+    user_explanation: str
+    affected_count: int
+    affected_entity_type: str
+    affected_entities: tuple[DataQualityAffectedEntity, ...]
+    raw_diagnostic_count: int
+    blocks: tuple[str, ...]
+    action_hint: str
+
+
+@dataclass(frozen=True, slots=True)
+class DataQualityPresentation:
+    groups: tuple[DataQualityIssueGroup, ...]
+    raw_diagnostic_count: int
+    blocking_group_count: int
+    warning_group_count: int
+    technical_group_count: int
+
+
 @dataclass(frozen=True, slots=True)
 class InputStatusView:
     ok: bool
@@ -262,4 +307,5 @@ class AnalysisSnapshot:
     calculated_allocations: tuple[OptimizationResult, ...]
     flow_view_aggregates: FlowViewAggregates
     stockout_impact: StockoutImpactPresentation
+    data_quality: DataQualityPresentation
     diagnostics: tuple[DiagnosticView, ...]

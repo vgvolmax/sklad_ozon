@@ -253,6 +253,16 @@ def test_product_completion_snapshot_excludes_buyer_pii(product_completion_paylo
         assert marker not in serialized
 
 
+def test_data_quality_preserves_raw_count_and_excludes_buyer_pii(product_completion_payload):
+    snapshot = product_completion_payload["snapshot"]
+    quality = snapshot["data_quality"]
+    assert quality["raw_diagnostic_count"] == len(snapshot["diagnostics"])
+    serialized = json.dumps(quality, ensure_ascii=False)
+    for marker in ("PII_BUYER_12345", "PII_PHONE_12345", "PII_EMAIL_12345",
+                   "PII_ADDRESS_12345"):
+        assert marker not in serialized
+
+
 def test_product_completion_stockout_impact_is_bounded_reconciled_and_pii_free(
     product_completion_payload,
 ):
