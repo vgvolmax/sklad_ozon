@@ -14,8 +14,13 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from backend.application import analyze
-from backend.decision import (DiagnosticView, InputStatusView, ScenarioSettings,
-                              assemble_snapshot)
+from backend.economics import LogisticsContext
+from backend.decision import (DataQualityFact, DiagnosticView, InputStatusView,
+                              ScenarioSettings, assemble_snapshot,
+                              build_data_quality_presentation,
+                              build_stockout_tariff_quality_facts,
+                              classify_product_economics_gap,
+                              classify_tariff_gap, tariff_gap_user_detail)
 from backend.decision.snapshot import first_nonblank
 from backend.supply import AllocationObjective
 from backend.ingestion.cluster_resolution import resolve_analysis_clusters
@@ -248,6 +253,10 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     analysis_orders = resolution.orders
     analysis_tariffs = replace(tariffs, records=resolution.tariffs)
     join_started=perf_counter()
+    raw_unitka_products=products.records
+    current_article_skus={}
+    for item in analysis_availability:
+        if item.article:current_article_skus.setdefault(item.article,set()).add(item.sku)
     primary={}; primary_conflicts=set()
     for item in analysis_availability:
         if not item.article: continue
@@ -256,19 +265,24 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     fallback={}
     for item in analysis_orders:
         if item.article:fallback.setdefault(item.article,set()).add(item.sku)
-    joined=[]; join_diags=[]
-    for product in products.records:
+    joined=[]; join_diags=[]; quality_facts=[]
+    product_sources = products.record_sources or (None,) * len(products.records)
+    for product, source_row in zip(products.records, product_sources):
         if product.sku:joined.append(product);continue
         if product.article in primary_conflicts:
-            join_diags.append(ImportDiagnostic('warning','CONFLICTING_ARTICLE_TO_SKU','Unitka article has conflicting availability mappings; affected current SKU remain blocked without economics.'));continue
+            join_diags.append(ImportDiagnostic('warning','CONFLICTING_ARTICLE_TO_SKU','Unitka article has conflicting availability mappings; affected current SKU remain blocked without economics.'))
+            quality_facts.append(DataQualityFact('CONFLICTING_ARTICLE_TO_SKU','article',product.article,product.article,'warning',article=product.article,source_name=products.meta.source_name,source_row=source_row));continue
         sku=primary.get(product.article)
         if sku is None:
             candidates=fallback.get(product.article,set())
             if len(candidates)>1:
-                join_diags.append(ImportDiagnostic('warning','AMBIGUOUS_ARTICLE_TO_SKU_FALLBACK','Unitka article has ambiguous historical mappings; affected current SKU remain blocked without economics.'));continue
+                join_diags.append(ImportDiagnostic('warning','AMBIGUOUS_ARTICLE_TO_SKU_FALLBACK','Unitka article has ambiguous historical mappings; affected current SKU remain blocked without economics.'))
+                quality_facts.append(DataQualityFact('AMBIGUOUS_ARTICLE_TO_SKU_FALLBACK','article',product.article,product.article,'warning',article=product.article,source_name=products.meta.source_name,source_row=source_row));continue
             sku=next(iter(candidates),None)
         if sku:joined.append(replace(product,sku=sku))
-        else:join_diags.append(ImportDiagnostic('warning','MISSING_ARTICLE_TO_SKU','Unitka article is outside the current SKU universe.'))
+        else:
+            join_diags.append(ImportDiagnostic('warning','MISSING_ARTICLE_TO_SKU','Unitka article is outside the current SKU universe.'))
+            quality_facts.append(DataQualityFact('MISSING_ARTICLE_TO_SKU','article',product.article,product.article,'warning',article=product.article,source_name=products.meta.source_name,source_row=source_row))
     products=replace(products,records=tuple(joined),diagnostics=products.diagnostics+tuple(join_diags))
     logger.info("[analysis %s] article_join done %.3fs rows=%d",request_id,perf_counter()-join_started,len(products.records))
     logger.info("[analysis %s] reports done %.3fs",request_id,perf_counter()-reports_started)
@@ -308,12 +322,77 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
             first_nonblank(previous[0], item.article),
             first_nonblank(previous[1], item.product_name),
         )
+    # Import recovery evidence retains source/row without copying arbitrary source data.
+    for imported_result in imported:
+        for occurrence, diagnostic in enumerate(imported_result.diagnostics):
+            if diagnostic.code == "WORKSHEET_DIMENSION_REPAIRED":
+                row = diagnostic.row
+                key = f"{imported_result.meta.source_name}::{row if row is not None else occurrence}"
+                quality_facts.append(DataQualityFact(diagnostic.code, "worksheet", key,
+                    imported_result.meta.source_name, diagnostic.severity,
+                    source_name=imported_result.meta.source_name, source_row=row))
+    # Canonical logistics results remain the sole money lookup. These facts only
+    # explain its already-incomplete contributions.
+    product_map = {item.sku: item for item in products.records}
+    for logistics in result.logistics:
+        product = product_map.get(logistics.sku)
+        if product is None:
+            continue
+        context = LogisticsContext(
+            logistics.sku, logistics.origin_cluster_id, product.volume_liters,
+            product.price, logistics.route_profile_source)
+        for contribution in logistics.contributions:
+            if contribution.lookup_status.value == "matched":
+                continue
+            code = "AMBIGUOUS_TARIFF_MATCH" if contribution.lookup_status.value == "ambiguous" else (
+                "PRICE_REQUIRED_FOR_TARIFF_LOOKUP" if classify_tariff_gap(
+                    analysis_tariffs, context, contribution.destination_cluster_id) == "PRICE_REQUIRED" else "MISSING_TARIFF")
+            detail_code = classify_tariff_gap(analysis_tariffs, context, contribution.destination_cluster_id)
+            key = f"{logistics.sku}::{logistics.origin_cluster_id}::{contribution.destination_cluster_id}::{product.volume_liters}::{product.price}"
+            detail = tariff_gap_user_detail(detail_code,product.volume_liters,product.price)
+            quality_facts.append(DataQualityFact(code,"route",key,
+                f"{logistics.origin_cluster_id} → {contribution.destination_cluster_id} · {logistics.sku}",
+                "error",sku=logistics.sku,origin_cluster_id=logistics.origin_cluster_id,
+                destination_cluster_id=contribution.destination_cluster_id,
+                detail_code=detail_code,detail=detail))
+    quality_facts.extend(build_stockout_tariff_quality_facts(
+        stockout_episode_impacts=result.stockout_episode_impacts,
+        products=products.records,tariffs=analysis_tariffs))
+    # Structured SKU identities improve labels and classify stock/economics gaps.
+    for diagnostic in diagnostic_views:
+        if diagnostic.code not in {"MISSING_SELLER_AVAILABLE_STOCK", "CONFLICTING_FBS_AVAILABLE_STOCK", "MISSING_PRODUCT_ECONOMICS", "MISSING_PRODUCT_VOLUME", "INCOMPLETE_LOGISTICS_COVERAGE"}:
+            continue
+        article, name = product_identities.get(diagnostic.sku, ("", ""))
+        label = " · ".join(x for x in (article, diagnostic.sku, name) if x)
+        detail_code = None
+        if diagnostic.code == "MISSING_SELLER_AVAILABLE_STOCK":
+            rows = [x for x in availability.records if x.sku == diagnostic.sku]
+            detail_code = "NO_AVAILABILITY_FOR_SKU" if not rows else "FBS_VALUE_MISSING"
+        elif diagnostic.code == "CONFLICTING_FBS_AVAILABLE_STOCK":
+            detail_code = "CONFLICTING_FBS_AVAILABLE_STOCK"
+        elif diagnostic.code == "MISSING_PRODUCT_ECONOMICS":
+            candidates={x.article for x in analysis_availability
+                        if x.sku==diagnostic.sku and x.article}
+            candidates.update(x.article for x in analysis_orders
+                              if x.sku==diagnostic.sku and x.article)
+            detail_code, detail = classify_product_economics_gap(
+                diagnostic.sku,candidates,raw_unitka_products,
+                current_article_skus,fallback)
+        else:
+            detail = None
+        origin = diagnostic.cluster_id if diagnostic.code == "INCOMPLETE_LOGISTICS_COVERAGE" else None
+        key = f"{diagnostic.sku}::{origin}" if origin else diagnostic.sku
+        quality_facts.append(DataQualityFact(diagnostic.code,"calculation" if origin else "sku",key,label or diagnostic.sku,
+            diagnostic.severity,sku=diagnostic.sku,article=article or None,origin_cluster_id=origin,
+            detail_code=detail_code,detail=detail if diagnostic.code=="MISSING_PRODUCT_ECONOMICS" else None))
+    data_quality = build_data_quality_presentation(diagnostics=diagnostic_views,
+                                                   structured_facts=quality_facts)
     snapshot=assemble_snapshot(scenario=scenario,report_meta=report_meta,input_statuses=status_views,
         demand_estimates=result.demand_estimates,needs=result.needs,observed_routes=result.observed_routes,
         clean_routes=result.clean_routes,stockout_signals=result.stockouts,distortion_signals=result.distortions,
         route_economics=result.route_economics,unit_economics=result.economics,placements=result.placements,
         safe_allocations=result.safe_allocations,calculated_allocations=result.allocations,products=products.records,
-        diagnostics=diagnostic_views,freshness_warnings=tuple(warnings),
+        diagnostics=diagnostic_views,data_quality=data_quality,freshness_warnings=tuple(warnings),
         product_identities=product_identities, daily_locality=result.daily_locality,
         stockout_episode_impacts=result.stockout_episode_impacts)
     return {"api_version":1,"complete":complete,"snapshot":wire(snapshot),"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"safe_allocations":wire(result.safe_allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}

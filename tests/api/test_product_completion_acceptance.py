@@ -253,6 +253,34 @@ def test_product_completion_snapshot_excludes_buyer_pii(product_completion_paylo
         assert marker not in serialized
 
 
+def test_data_quality_preserves_raw_count_and_excludes_buyer_pii(product_completion_payload):
+    snapshot = product_completion_payload["snapshot"]
+    quality = snapshot["data_quality"]
+    assert quality["raw_diagnostic_count"] == len(snapshot["diagnostics"])
+    serialized = json.dumps(quality, ensure_ascii=False)
+    for marker in ("PII_BUYER_12345", "PII_PHONE_12345", "PII_EMAIL_12345",
+                   "PII_ADDRESS_12345"):
+        assert marker not in serialized
+
+
+def test_stockout_only_tariff_gap_is_explained_and_remains_fail_closed(
+    product_completion_payload,
+):
+    snapshot = product_completion_payload["snapshot"]
+    group = next(group for group in snapshot["data_quality"]["groups"]
+                 if group["primary_code"] == "MISSING_TARIFF")
+    entity = next(entity for entity in group["affected_entities"]
+                  if entity["label"] == "Самара → Москва · SKU-1")
+    assert entity["detail_code"] == "ROUTE_PAIR_ABSENT"
+    assert entity["detail"] == "Нет тарифа для этого маршрута."
+    assert {"Экономика маршрутов", "Экономика stockout-эпизодов"} <= set(group["blocks"])
+    route = next(route for episode in snapshot["stockout_impact"]["episodes"]
+                 for route in episode["donors"]
+                 if route["origin_cluster_id"] == "Самара")
+    assert route["economics"]["complete"] is False
+    assert route["economics"]["extra_logistics_rub"] is None
+
+
 def test_product_completion_stockout_impact_is_bounded_reconciled_and_pii_free(
     product_completion_payload,
 ):
