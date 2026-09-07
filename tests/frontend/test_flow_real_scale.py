@@ -44,3 +44,30 @@ def test_sku_episode_without_route_resolves_timeline_destination():
         'selectedEpisode': 'm1',
         'points': [{'date': '2026-08-01', 'destination_demand_qty': 10, 'local_share': 0.5}],
     }
+
+
+def test_sku_render_offers_bounded_episodes_before_destination_is_resolved():
+    js = r"""(()=>{const makeEpisode=(id,destination)=>({episode_id:id,sku:'A',destination_cluster_id:destination,start_date:'2026-08-01',end_date:'2026-08-02',external_quantity:3,economics:{complete:false}});const episodes=[makeEpisode('m1','Москва'),makeEpisode('k1','Казань'),...Array.from({length:33},(_,i)=>makeEpisode('x'+i,'Город '+i))];const snapshot={stockout_impact:{episodes,destination_daily_series:[]}},render=episodePage=>{const state={selectedEpisodeId:null,dailyPage:1,episodePage},container={innerHTML:'',querySelectorAll:()=>[]};SkladOzon.FlowTimeline.render(container,snapshot,{mode:'sku',key:'A',destination:null},state,()=>{});return container.innerHTML},html=render(1),page2=render(2);return {html,rendered:(html.match(/data-episode=/g)||[]).length,page2Rendered:(page2.match(/data-episode=/g)||[]).length,page2};})()"""
+    rendered = node(js)
+    assert 'Выберите маршрут или период замещения.' in rendered['html']
+    assert 'Вероятные периоды замещения' in rendered['html']
+    assert 'Москва' in rendered['html'] and 'Казань' in rendered['html']
+    assert 'data-episode="m1"' in rendered['html']
+    assert 'data-episode="k1"' in rendered['html']
+    assert rendered['rendered'] == 20
+    assert '1 / 2' in rendered['html']
+    assert rendered['page2Rendered'] == 15
+    assert '2 / 2' in rendered['page2']
+
+
+def test_sku_pre_destination_episode_button_updates_selected_episode():
+    js = r"""(()=>{const episode={episode_id:'m1',sku:'A',destination_cluster_id:'Москва',start_date:'2026-08-01',end_date:'2026-08-02',external_quantity:3,economics:{complete:false}};let changed=null;const button={dataset:{episode:'m1'},onclick:null};const container={innerHTML:'',querySelectorAll:selector=>selector==='[data-episode]'?[button]:[]};const state={selectedEpisodeId:null,dailyPage:1,episodePage:1};SkladOzon.FlowTimeline.render(container,{stockout_impact:{episodes:[episode],destination_daily_series:[]}},{mode:'sku',key:'A',destination:null},state,next=>{changed=next});button.onclick();return changed.selectedEpisodeId;})()"""
+    assert node(js) == 'm1'
+
+
+def test_unresolved_timeline_empty_and_origin_copy_remain_explicit():
+    js = r"""(()=>{const snapshot={stockout_impact:{episodes:[],destination_daily_series:[]}},state={selectedEpisodeId:null,dailyPage:1,episodePage:1},render=mode=>{const container={innerHTML:'',querySelectorAll:()=>[]};SkladOzon.FlowTimeline.render(container,snapshot,{mode,key:'A',destination:null},state,()=>{});return container.innerHTML};return [render('sku'),render('origin')]})()"""
+    sku, origin = node(js)
+    assert 'Вероятных периодов замещения не обнаружено.' in sku
+    assert 'Выберите destination-маршрут.' in origin
+    assert 'Вероятные периоды замещения' not in origin
