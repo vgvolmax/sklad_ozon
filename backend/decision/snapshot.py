@@ -175,6 +175,13 @@ def _metric_overviews(links):
     return tuple(result)
 
 
+def _flow_daily_locality(daily_locality, included_weeks):
+    """Scope Flow demand to the observed RouteProfile evidence universe."""
+    weeks = set(included_weeks)
+    return tuple(point for point in daily_locality
+                 if tuple(point.day.isocalendar()[:2]) in weeks)
+
+
 def _views(flows, products, opportunities, product_identities=None,
            daily_locality=(),
            *, evidence_source="observed"):
@@ -237,10 +244,14 @@ def _views(flows, products, opportunities, product_identities=None,
             origins = {flow.origin_cluster_id for flow in selected}
             own_demand = (destination_demand[key] if mode in {"destination", "origin"}
                           else sku_demand[key])
-            counterparties = (origins if mode == "destination" else destinations
+            counterparties = ({origin for origin in origins if origin != key}
+                              if mode == "destination" else
+                              {destination for destination in destinations
+                               if destination != key}
                               if mode == "origin" else
                               {(flow.origin_cluster_id, flow.destination_cluster_id)
-                               for flow in selected})
+                               for flow in selected
+                               if flow.origin_cluster_id != flow.destination_cluster_id})
             summary = FlowContextSummary(
                 min(period_days) if period_days else None,
                 max(period_days) if period_days else None,
@@ -339,16 +350,18 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
             route_complete="ROUTE_ECONOMICS_INCOMPLETE" not in r.status_codes,
         ) for r in rows))
     observed_flows=aggregate_observed_flows(observed_routes); clean_flows=aggregate_clean_flows(clean_routes)
+    flow_daily_locality = _flow_daily_locality(
+        daily_locality, observed_routes.window.included_weeks)
     return AnalysisSnapshot(uuid4().hex,datetime.now(timezone.utc).isoformat(),dict(report_meta),tuple(freshness_warnings),scenario,
         dict(input_statuses),summary,tuple(rows),tuple(sorted(demand_estimates,key=lambda x:(x.sku,x.destination_cluster_id))),
         observed_routes,clean_routes,tuple(stockout_signals),tuple(distortion_signals),tuple(route_economics),
         tuple(unit_economics),tuple(safe_allocations),tuple(calculated_allocations),
         FlowViewAggregates(
             _views(observed_flows, products, route_economics, product_identities,
-                   daily_locality,
+                   flow_daily_locality,
                    evidence_source="observed"),
             _views(clean_flows, products, route_economics, product_identities,
-                   daily_locality,
+                   flow_daily_locality,
                    evidence_source="clean")),
         build_stockout_impact_presentation(
             daily_locality, stockout_episode_impacts, product_identities),
