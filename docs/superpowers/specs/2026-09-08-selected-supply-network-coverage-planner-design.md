@@ -100,7 +100,7 @@ user-selected supply clusters
 ∩ physically feasible clusters from restrictions
 ```
 
-The user selects the global operational network only. Per-SKU feasible origins are chosen/filter\-ed automatically by the backend.
+The user selects the global operational network only. Per-SKU feasible origins are chosen/filtered automatically by the backend.
 
 Unknown or conflicting restriction evidence remains fail-closed.
 
@@ -423,15 +423,13 @@ This avoids unnecessary micro-stock fragmentation.
 
 A greedy planner must not consume a scarce origin for a destination with alternatives while stranding a destination that has only that origin.
 
-After LOCAL assignment, process residual destinations by:
+After LOCAL assignment, choose the next residual destination **iteratively**. Before every destination assignment, recompute its currently feasible selected-origin count from the remaining capacity state, then choose by:
 
 1. fewer currently feasible selected origins first;
 2. larger residual target first;
 3. stable destination cluster ID.
 
-Within each destination, use §8.4 route ranking.
-
-The feasible-origin count is evaluated from the current remaining-capacity state before that destination is assigned. Deterministic tests must cover re-evaluation after prior assignments consume capacity.
+Within that chosen destination, use §8.4 route ranking and update remaining origin capacities before selecting the next destination.
 
 This is intentionally a bounded deterministic heuristic, not a general LP/min-cost-flow solver.
 
@@ -467,7 +465,11 @@ Existing minimum profit/margin/ROI and economics-completeness checks remain elig
 
 ### 9.3 Three distinct kinds of uncovered target
 
-Do not collapse all unmet target into one reason.
+Classification is causal and non-overlapping:
+
+1. Coverage Planner first creates desired legs and `network_uncovered_qty`.
+2. Before seller-stock allocation, classify every desired leg as allocation-eligible or allocation-blocked using the existing economics/threshold policy. The desired quantity of ineligible legs becomes `allocation_blocked_qty`.
+3. Run seller-stock scarcity only over allocation-eligible desired quantities. Any eligible desired quantity left unfilled because stock is exhausted becomes `stock_uncovered_qty`.
 
 ```text
 network_uncovered_qty
@@ -479,7 +481,7 @@ Selected network/route/capacity could not produce a desired leg.
 allocation_blocked_qty
 ```
 
-A desired leg existed, seller stock was conceptually available, but the leg failed allocation eligibility, e.g. incomplete economics, non-positive profit or configured threshold.
+A desired leg existed but failed allocation eligibility, e.g. incomplete economics, non-positive profit or configured threshold.
 
 ```text
 stock_uncovered_qty
@@ -765,7 +767,7 @@ Implementation stays split into small mergeable PRs.
 - derive `SKU × selected origin` feasibility;
 - implement non-additive multi-warehouse cluster ceiling from §7.3;
 - LOCAL-first assignment;
-- constrained-destination ordering;
+- iterative constrained-destination ordering;
 - route-fee ranking;
 - capacity-aware sequential fill;
 - `network_uncovered_qty` and reason codes;
@@ -776,7 +778,7 @@ Implementation stays split into small mergeable PRs.
 - reuse/extract the existing allocation ranking/eligibility policy;
 - allocate over `origin → destination` coverage legs;
 - preserve existing economics thresholds;
-- introduce `allocation_blocked_qty` and `stock_uncovered_qty`;
+- introduce causal `allocation_blocked_qty` and `stock_uncovered_qty`;
 - prove seller-stock conservation and deterministic ties.
 
 ### PR-D — Planning snapshots, persistence and replan API
@@ -813,9 +815,9 @@ At minimum implementation must prove:
 7. **Shared origin capacity:** one SKU's origin ceiling is consumed across all destinations served by that origin.
 8. **Local first:** selected feasible local destination is assigned locally before non-local routes.
 9. **Capacity spillover:** cheapest route fills to its finite ceiling, then residual goes to the next route.
-10. **Constrained destination:** a one-origin destination is not stranded because an earlier flexible destination consumed that origin.
+10. **Constrained destination:** the planner iteratively recomputes feasible-origin counts so a one-origin destination is not stranded by a flexible destination.
 11. **Network uncovered:** no feasible/tariff-complete selected route produces explicit network-uncovered quantity.
-12. **Allocation blocked:** sufficient seller stock plus incomplete/threshold-failing economics is not mislabeled as seller-stock shortage.
+12. **Allocation blocked:** ineligible desired quantity is classified before stock scarcity and is not mislabeled as seller-stock shortage.
 13. **Seller-stock scarcity:** eligible desired coverage may remain unmet specifically because seller stock is exhausted.
 14. **Conservation:** final + network-uncovered + allocation-blocked + stock-uncovered equals destination target.
 15. **First-run network:** absent persisted selection defaults to all current candidate clusters.
