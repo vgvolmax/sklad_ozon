@@ -2,68 +2,66 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `frontend-design`, `frontend-design-premium`, and superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task-by-task with TDD and review checkpoints.
 
-**Goal:** Make `PlanningSnapshot` the authoritative user-facing plan, add explicit draft/applied selected-network editing with one `Пересчитать план` action, show cluster-level physical supply roll-up, and add a separate planned-placement Flow surface that explains historical Flow, RouteCostIndex, concrete SKU tariff and capacity as distinct evidence.
+**Goal:** Make `PlanningSnapshot` the authoritative user-facing plan, add draft/applied supply-network editing with explicit `Пересчитать план`, show the backend physical origin roll-up, and add a separate `План размещения` Flow surface that explains historical Flow, exact SKU tariff, pair-level `RouteCostIndex` and physical capacity without conflating them.
 
-**Architecture:** Preserve the current four-tab engineering-console shell and current visual language. Reuse existing `SearchField`, native checkboxes, native `<details>` disclosures and existing busy/status patterns; do not add a new overlay/modal primitive. Checkbox edits change draft state only. `Пересчитать план` calls full analysis when upstream inputs are dirty and `/api/replan` when only network draft differs. Frontend only joins and presents backend PlanningBasis/PlanningSnapshot data; it performs no planning arithmetic.
+**Architecture:** Preserve the existing four-tab engineering-console shell and current visual language. Add one compact network editor to the Plan scenario area; checkbox changes edit draft state only. The single existing `Пересчитать план` action selects full analysis when upstream inputs are stale and `/api/replan` when only the network changed. The visible destination plan, physical origin roll-up, gap causes and planned route evidence come from backend `PlanningSnapshot`; frontend owns state transitions, joins, filtering and presentation only.
 
-**Tech Stack:** existing dependency-free browser JS, semantic HTML, existing frontend primitives, `frontend/assets/css/app.css`, pytest frontend/static tests; no new framework or dependency.
+**Tech Stack:** existing dependency-free browser JavaScript, semantic HTML, current `DataTable`/`SearchField`/`DetailDrawer`, `frontend/assets/css/app.css`, pytest static/browser-model tests; no new dependency or frontend framework.
 
 **Spec:** `docs/superpowers/specs/2026-09-08-selected-supply-network-coverage-planner-design.md`
 
-**Behavior authority:** root `DESIGN.md`, root `UX-CONTRACT.md`, Frontend Design Premium canonical UI/interaction rules.
+**Behavior authority:** `DESIGN.md`, `UX-CONTRACT.md`, Frontend Design Premium canonical UI/interaction rules.
+
+**Approved implementation clarification (2026-09-08):** `RouteCostIndex` is a SKU-independent structural characteristic of a route pair. Exact direct tariff remains the concrete SKU route price. Do not introduce hardcoded visual bands such as `<0.8 good` or `>1.3 bad` in this PR.
 
 ## Global Constraints
 
-- Preserve tabs exactly: `План`, `Потоки спроса`, `Экономика`, `Данные`.
-- Preserve decision line `Ozon → Наша потребность → Наш план`.
-- Displayed Safe/Calculated plan quantities come from `PlanningSnapshot`, never legacy `DecisionRow.*_plan_qty` after this PR.
-- Checkbox changes never request backend automatically.
-- Draft network and applied network are distinct state; visible plan belongs to applied network until success.
-- One `Пересчитать план` button chooses request depth:
-  - upstream snapshot stale/no snapshot → full analysis with current draft network;
-  - only network draft dirty → `/api/replan`;
-  - nothing dirty → existing full refresh behavior.
-- Failure preserves prior PlanningSnapshot and current draft for retry.
-- Controls are disabled during active calculation without geometry shift.
-- Frontend never computes route ranking, RouteCostIndex, capacity, economics, destination conservation or physical roll-up totals.
-- Historical Flow %, RouteCostIndex, direct SKU tariff and capacity are separately labeled.
-- RouteCostIndex uses `1,00` as median-relative explanation only; no hard `0.8/1.3` categories.
-- Flow taxonomy is `История | План размещения`; `Наблюдаемое | Очищенное` remains inside History only.
-- Network editor uses existing `SearchField`, semantic checkboxes/labels and native buttons.
-- Candidate cluster list shows names only in this PR; no frontend-derived SKU availability counts.
-- Do not add global Sankey, KPI-card mosaic, modal framework, new dependency or new design token.
-- Root `DESIGN.md` is read and must remain unchanged unless implementation demonstrably needs a durable token; this plan expects no DESIGN.md diff.
-- `UX-CONTRACT.md` must be updated because workflow/state ownership changes are durable.
-- Cross-docking wording/costs never appear in route planning UI.
+- Preserve tabs: `План`, `Потоки спроса`, `Экономика`, `Данные`.
+- Preserve decision line: `Ozon → Наша потребность → Наш план`.
+- `Наш план` becomes authoritative from `PlanningSnapshot`, not legacy `DecisionRow.safe_plan_qty/calculated_plan_qty`.
+- Network checkbox changes never call backend.
+- Draft network and applied network remain distinct; visible plan always belongs to the applied network until successful recalculation.
+- One `Пересчитать план` button is the only plan commit action.
+- Network-only dirty state uses `/api/replan`; any upstream stale state uses full analysis with the current network draft.
+- A failed request keeps the previous applied plan visible and preserves the current draft for retry.
+- During calculation, keep primary-action geometry stable and disable controls that would create competing drafts.
+- Frontend does not calculate route ranking, coverage quantities, capacity, RouteCostIndex or unit economics.
+- Summing backend `PlanningLegView.expected_profit` only for a destination display/sort value is permitted as presentation aggregation; it must never feed a decision or request.
+- Historical Flow, `RouteCostIndex`, direct tariff and Capacity are separate labeled evidence concepts.
+- `1,00` may be explained as the median-relative RouteCostIndex reference; no category thresholds are hardcoded.
+- Historical Flow remains `История → Наблюдаемое | Очищенное`; planned placement is a sibling surface, not a third evidence source.
+- Network editor uses native checkbox/label semantics, clearable search, visible focus, disabled/busy state and no clickable `div`/`span` controls.
+- No global Sankey/chord or KPI-card mosaic.
+- Reuse existing CSS tokens; this plan introduces no new durable color/shadow/radius token and therefore does not modify `DESIGN.md`.
+- `UX-CONTRACT.md` must be updated because state ownership and recalculation behavior are durable.
+- Cross-docking terminology/cost never appears in route-plan UI.
 
 ---
 
 ## File Structure
 
-- Modify `frontend/assets/js/core.js` — network state, dirty/request-depth helpers, replan request body, PlanningSnapshot joins/presenters.
-- Modify `frontend/assets/js/app.js` — Plan network editor, action routing, authoritative destination plan, cluster physical roll-up and detail drawer.
-- Modify `frontend/assets/js/flow.js` — History/Planned surface and planned route evidence rendering.
-- Modify `frontend/assets/css/app.css` — network editor, physical roll-up and evidence layout using existing tokens.
-- Modify `UX-CONTRACT.md` — applied/draft/recalculate/failure and Flow taxonomy.
-- Modify `tests/frontend/test_ui_state.py` — network state transitions.
-- Modify `tests/frontend/test_analysis_submit.py` — request depth/bodies/no-auto-request.
-- Modify `tests/frontend/test_plan_view.py` — authoritative plan/roll-up/gaps/capacity evidence.
-- Modify `tests/frontend/test_flow_view.py` — History/Planned and route evidence.
-- Modify `tests/frontend/test_flow_real_scale.py` — bounded planned-flow behavior at real scale.
-- Run `tests/frontend/test_product_shell.py` unchanged as shell regression.
-- Run `tests/api/test_analysis.py`, `tests/api/test_replan.py`, `tests/api/test_product_completion_acceptance.py` unchanged as backend contract regressions.
+- Modify `frontend/assets/js/core.js` — network draft/applied state, recalculation-kind selection, request builders, planning joins/presenters and planned-flow state.
+- Modify `frontend/assets/js/app.js` — network editor, analysis-vs-replan routing, authoritative Plan rendering, physical origin roll-up and destination drawer.
+- Modify `frontend/assets/js/flow.js` — `История | План размещения` surface and planned-route rendering.
+- Modify `frontend/assets/css/app.css` — network editor, physical roll-up and planned evidence styling using existing tokens.
+- Modify `UX-CONTRACT.md` — applied/draft/recalc/failure semantics and Flow evidence taxonomy.
+- Modify `tests/frontend/test_ui_state.py` — network state and planned/history surface state.
+- Modify `tests/frontend/test_analysis_submit.py` — request depth, selected network body and no-auto-request behavior.
+- Modify `tests/frontend/test_plan_view.py` — authoritative planning joins, gap labels, network editor, roll-up and route evidence.
+- Modify `tests/frontend/test_flow_view.py` — history/planning surface semantics and planned link evidence.
+- Modify `tests/frontend/test_flow_real_scale.py` — bounded 40+ destination planned-flow behavior.
 
-`frontend/assets/js/components.js` is intentionally unchanged: existing `SearchField`, `DataTable` and `DetailDrawer` plus native disclosure/checkbox controls are sufficient.
+No backend production file belongs in PR-E.
 
 ---
 
-### Task 1: Add explicit applied/draft network state
+### Task 1: Add explicit applied/draft supply-network state
 
 **Files:**
 - Modify: `frontend/assets/js/core.js`
 - Modify: `tests/frontend/test_ui_state.py`
 
-**New state:**
+**State addition:**
 
 ```javascript
 networkView: {
@@ -76,15 +74,13 @@ networkView: {
 }
 ```
 
-Keep the full existing `flowView` unchanged in this task.
+- [ ] **Step 1: Add initial-state test**
 
-- [ ] **Step 1: Add exact initial-state assertion**
-
-Assert the new `networkView` object equals the contract above immediately after `S.createInitialState()`.
+Assert `S.createInitialState().networkView` equals the contract exactly.
 
 - [ ] **Step 2: Add snapshot initialization test**
 
-Fixture:
+Given:
 
 ```javascript
 const snapshot = {
@@ -93,24 +89,41 @@ const snapshot = {
 };
 ```
 
-Assert initialization produces sorted candidate/applied/draft arrays and `dirty:false`.
+assert candidate/applied/draft are sorted as:
 
-- [ ] **Step 3: Add exact pure helpers**
+```javascript
+['Казань','Москва','Питер']
+['Москва','Питер']
+['Москва','Питер']
+```
+
+and `dirty === false`.
+
+- [ ] **Step 3: Add draft toggle/revert tests**
+
+```javascript
+let next = S.toggleNetworkDraft(state, 'Казань', true);
+assert.deepEqual(next.networkView.draftClusters, ['Казань','Москва','Питер']);
+assert.equal(next.networkView.dirty, true);
+assert.deepEqual(next.networkView.appliedClusters, ['Москва','Питер']);
+next = S.toggleNetworkDraft(next, 'Казань', false);
+assert.equal(next.networkView.dirty, false);
+```
+
+- [ ] **Step 4: Implement state helpers**
 
 ```javascript
 S.initializeNetworkView = function(state, snapshot) {
-  const candidates = Array.from(
-    snapshot?.planning_basis?.candidate_supply_clusters || []
-  ).sort((a,b)=>a.localeCompare(b,'ru'));
-  const applied = Array.from(
-    snapshot?.planning_snapshot?.applied_supply_network || []
-  ).sort((a,b)=>a.localeCompare(b,'ru'));
+  const candidates = [...(snapshot?.planning_basis?.candidate_supply_clusters || [])]
+    .sort((a,b)=>a.localeCompare(b,'ru'));
+  const applied = [...(snapshot?.planning_snapshot?.applied_supply_network || [])]
+    .sort((a,b)=>a.localeCompare(b,'ru'));
   return {
     ...state,
     networkView:{
       candidateClusters:candidates,
       appliedClusters:applied,
-      draftClusters:Array.from(applied),
+      draftClusters:[...applied],
       dirty:false,
       editorOpen:false,
       search:''
@@ -119,96 +132,71 @@ S.initializeNetworkView = function(state, snapshot) {
 };
 
 S.toggleNetworkDraft = function(state, cluster, selected) {
-  const values = new Set(state.networkView.draftClusters);
-  if (selected) values.add(cluster); else values.delete(cluster);
-  const draft = Array.from(values).sort((a,b)=>a.localeCompare(b,'ru'));
+  const selectedSet = new Set(state.networkView.draftClusters);
+  if (selected) selectedSet.add(cluster); else selectedSet.delete(cluster);
+  const draft = [...selectedSet].sort((a,b)=>a.localeCompare(b,'ru'));
   const applied = state.networkView.appliedClusters;
   const dirty = draft.length !== applied.length || draft.some((x,i)=>x !== applied[i]);
   return {...state,networkView:{...state.networkView,draftClusters:draft,dirty}};
 };
 
-S.setNetworkEditorOpen = (state,editorOpen)=>({
-  ...state,networkView:{...state.networkView,editorOpen:Boolean(editorOpen)}
+S.setNetworkEditorOpen = (state, editorOpen) => ({
+  ...state, networkView:{...state.networkView,editorOpen:Boolean(editorOpen)}
 });
 
-S.setNetworkSearch = (state,search)=>({
-  ...state,networkView:{...state.networkView,search:String(search)}
+S.setNetworkSearch = (state, search) => ({
+  ...state, networkView:{...state.networkView,search:String(search || '')}
 });
 ```
 
-- [ ] **Step 4: Add toggle/revert tests**
+- [ ] **Step 5: Add success/failure state transition tests**
 
-Select Kazan from applied Moscow/Peter; assert dirty true and applied unchanged. Unselect Kazan again; assert draft equals applied and dirty false.
+`S.applyPlanningResult(state, planningSnapshot)` sets applied/draft from returned `applied_supply_network` and clears dirty. `S.preserveNetworkDraftAfterFailure(state)` returns a state where applied plan/network and dirty draft remain unchanged.
 
-- [ ] **Step 5: Add successful planning-result helper**
-
-```javascript
-S.applyPlanningResult = function(state, planningSnapshot) {
-  const applied = Array.from(
-    planningSnapshot?.applied_supply_network || []
-  ).sort((a,b)=>a.localeCompare(b,'ru'));
-  return {
-    ...state,
-    networkView:{
-      ...state.networkView,
-      appliedClusters:applied,
-      draftClusters:Array.from(applied),
-      dirty:false
-    }
-  };
-};
-```
-
-Failure has no state helper that resets network; failure handler simply leaves `networkView` unchanged.
-
-- [ ] **Step 6: Run state tests**
+- [ ] **Step 6: Run tests and commit**
 
 ```bash
 python -m pytest tests/frontend/test_ui_state.py -q
-```
-
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
-
-```bash
 git add frontend/assets/js/core.js tests/frontend/test_ui_state.py
 git commit -m "feat: add selected network draft state"
 ```
 
 ---
 
-### Task 2: Route one recalculation button to full analysis or replan
+### Task 2: Route `Пересчитать план` to full analysis or `/api/replan`
 
 **Files:**
 - Modify: `frontend/assets/js/core.js`
 - Modify: `frontend/assets/js/app.js`
 - Modify: `tests/frontend/test_analysis_submit.py`
 
-- [ ] **Step 1: Add request-depth helper tests**
+- [ ] **Step 1: Add recalculation-kind tests**
 
-Required results:
-
-```text
-no snapshot -> analysis
-staleSnapshot true + network dirty -> analysis
-staleSnapshot false + network dirty -> replan
-staleSnapshot false + network clean -> analysis
-```
-
-- [ ] **Step 2: Implement request-depth helper**
+Canonical helper:
 
 ```javascript
 S.resolveRecalculationKind = function(state) {
-  if (!state.snapshot || state.staleSnapshot) return 'analysis';
+  if (!state.snapshot || state.staleSnapshot || !state.snapshot.planning_basis) {
+    return 'analysis';
+  }
   if (state.networkView.dirty) return 'replan';
   return 'analysis';
 };
 ```
 
-- [ ] **Step 3: Extend full-analysis body with the current network draft**
+Assert:
 
-Change signature:
+```text
+no snapshot -> analysis
+stale upstream + network dirty -> analysis
+clean upstream + network dirty -> replan
+clean upstream + clean network -> analysis
+legacy snapshot without planning_basis -> analysis
+```
+
+- [ ] **Step 2: Extend full-analysis request builder**
+
+Change signature to:
 
 ```javascript
 S.buildAnalysisRequestBody = function(
@@ -218,79 +206,68 @@ S.buildAnalysisRequestBody = function(
   FormDataCtor=globalThis.FormData
 ) {
   const body = new FormDataCtor(form);
-  body.set('horizon_days',String(scenario.horizonDays));
-  body.set('include_inbound',String(scenario.includeInbound));
-  body.set('selected_supply_clusters',JSON.stringify(selectedSupplyClusters));
+  body.set('horizon_days', String(scenario.horizonDays));
+  body.set('include_inbound', String(scenario.includeInbound));
+  body.set('selected_supply_clusters', JSON.stringify(selectedSupplyClusters));
   return body;
 };
 ```
 
-Update all callers/tests to pass `state.networkView.draftClusters`.
+Update every existing caller/test to pass `state.networkView.draftClusters`.
 
-- [ ] **Step 4: Add/implement exact replan JSON builder**
+- [ ] **Step 3: Add replan request builder**
 
 ```javascript
 S.buildReplanRequestBody = function(state) {
   return {
-    planning_basis:state.snapshot.planning_basis,
-    selected_supply_clusters:Array.from(state.networkView.draftClusters)
+    planning_basis: state.snapshot.planning_basis,
+    selected_supply_clusters:[...state.networkView.draftClusters]
   };
 };
 ```
 
-Test that empty draft serializes as `[]`.
+Assert an explicit empty draft serializes as `[]`.
 
-- [ ] **Step 5: Implement `runReplan()` using existing run-sequence stale-response protection**
+- [ ] **Step 4: Implement `runReplan()` using current run sequencing**
 
-The function:
+Behavior is exact:
 
-```text
-increments runSequence and captures run id
-sets analysisActive=true without clearing state.snapshot
-POSTs JSON to /api/replan
-ignores result when run id is no longer current
-on success replaces only state.snapshot.planning_snapshot
-calls S.applyPlanningResult with returned planning snapshot
-clears analysisError
-on HTTP/network failure preserves old planning snapshot and network draft, sets inline analysisError
-finally clears analysisActive only for current run
-```
+1. allocate a new run sequence ID using the same stale-response mechanism as full analysis;
+2. set the shared busy state without clearing `state.snapshot`;
+3. POST `JSON.stringify(S.buildReplanRequestBody(state))` to `/api/replan` with `Content-Type: application/json`;
+4. ignore result/error when its run ID is no longer active;
+5. on success replace only `state.snapshot.planning_snapshot`, preserve `planning_basis` and every upstream AnalysisSnapshot field, then apply returned network to `networkView`;
+6. on failure preserve previous `planning_snapshot`, applied network and current draft, and render the inline analysis error owner;
+7. clear busy state only for the active run.
 
-Use `fetch('/api/replan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(S.buildReplanRequestBody(state))})`.
-
-- [ ] **Step 6: Update `#recalculate` handler**
-
-After existing horizon validation:
+- [ ] **Step 5: Route the existing recalculate button**
 
 ```javascript
 const kind = S.resolveRecalculationKind(state);
-if (kind === 'replan') runReplan(); else runAnalysis();
+if (kind === 'replan') {
+  runReplan();
+} else {
+  runAnalysis();
+}
 ```
 
-Successful full analysis initializes network state from returned nested PlanningBasis/PlanningSnapshot.
+Successful full analysis calls `S.initializeNetworkView()` using the newly returned snapshot.
 
-- [ ] **Step 7: Add no-auto-request regression**
+- [ ] **Step 6: Prove checkboxes never submit**
 
-The checkbox change binding must call only `S.toggleNetworkDraft`/state render. Test source/behavior to prove neither `runAnalysis()` nor `runReplan()` is invoked from network checkbox `change`.
+Add a static/behavior test asserting the checkbox `change` handler only calls `S.toggleNetworkDraft()` + render and does not reference `runAnalysis`/`runReplan`. Only the existing recalculate action invokes backend calculation.
 
-- [ ] **Step 8: Run submit/state tests**
+- [ ] **Step 7: Run tests and commit**
 
 ```bash
 python -m pytest tests/frontend/test_analysis_submit.py tests/frontend/test_ui_state.py -q
-```
-
-Expected: PASS.
-
-- [ ] **Step 9: Commit**
-
-```bash
 git add frontend/assets/js/core.js frontend/assets/js/app.js tests/frontend/test_analysis_submit.py tests/frontend/test_ui_state.py
-git commit -m "feat: apply network only on explicit recalculation"
+git commit -m "feat: replan network only on explicit action"
 ```
 
 ---
 
-### Task 3: Add compact searchable network editor to Plan scenario area
+### Task 3: Add compact searchable supply-network editor
 
 **Files:**
 - Modify: `frontend/assets/js/core.js`
@@ -298,39 +275,50 @@ git commit -m "feat: apply network only on explicit recalculation"
 - Modify: `frontend/assets/css/app.css`
 - Modify: `tests/frontend/test_plan_view.py`
 
-**UI contract:**
-
-Collapsed:
+**V1 UI:**
 
 ```text
 Сеть поставки
 Москва · Санкт-Петербург · +2                         [Изменить]
-```
 
-Expanded:
-
-```text
 Куда готовы поставлять
-[ Поиск кластера ]
+[ Поиск кластера…                                      × ]
 ☑ Москва
 ☑ Санкт-Петербург
 ☐ Казань
 ☐ Пермь
-Выбрано: 2
+Выбрано: 4
 ```
 
-No SKU count is shown in this PR.
+V1 intentionally shows no calculated `SKU доступны` count; the basis supplies candidate cluster identities only.
 
-- [ ] **Step 1: Add pure list/summary helpers**
+- [ ] **Step 1: Add semantic markup assertions**
+
+Generated control uses:
+
+```text
+button for Изменить
+input type=search with aria-label="Поиск кластера"
+input type=checkbox associated with a label
+button for clear-search action
+```
+
+Assert no clickable `div`/`span` is used for these actions.
+
+- [ ] **Step 2: Implement filtered list helper**
 
 ```javascript
 S.filteredNetworkClusters = function(state) {
-  const q = (state.networkView.search || '').trim().toLocaleLowerCase('ru');
-  return state.networkView.candidateClusters.filter(
-    x => !q || x.toLocaleLowerCase('ru').includes(q)
+  const query = (state.networkView.search || '').trim().toLocaleLowerCase('ru');
+  return state.networkView.candidateClusters.filter(cluster =>
+    !query || cluster.toLocaleLowerCase('ru').includes(query)
   );
 };
+```
 
+- [ ] **Step 3: Implement summary helper**
+
+```javascript
 S.networkSummary = function(clusters) {
   if (!clusters.length) return 'Кластеры не выбраны';
   if (clusters.length <= 2) return clusters.join(' · ');
@@ -338,159 +326,195 @@ S.networkSummary = function(clusters) {
 };
 ```
 
-- [ ] **Step 2: Add semantic markup tests**
+While dirty, summary shows the draft set, because that is what the user is editing.
 
-Rendered editor must contain:
+- [ ] **Step 4: Render exact stale-plan notice**
 
-```text
-button#network-edit
-existing SearchField output with accessible search input and clear action
-input[type=checkbox][data-network-cluster] associated with label
-```
-
-No `div`/`span` receives click handlers.
-
-- [ ] **Step 3: Render summary from draft selection**
-
-While dirty, summary reflects draft but add exact warning:
+When `networkView.dirty`:
 
 ```text
 Сеть поставки изменена. План ниже рассчитан для предыдущей сети.
 ```
 
-This warning is absent when clean.
+The visible plan itself remains unchanged until success.
 
-- [ ] **Step 4: Render editor with existing `SearchField`**
+- [ ] **Step 5: Implement clear-search behavior**
 
-Use `S.SearchField.render()` for search/clear. Candidate list comes only from `S.filteredNetworkClusters(state)`. Each checkbox checked state uses `draftClusters.includes(cluster)`.
+Clear button exists only for nonempty search, sets search to `''`, re-renders and restores focus to the search input.
 
-- [ ] **Step 5: Busy-state behavior**
+- [ ] **Step 6: Implement busy state**
 
-When `analysisActive`, disable Edit button, search/clear and checkboxes. Keep editor and primary button geometry stable; do not clear draft.
+While calculation is active disable `Изменить`, search, clear-search and all network checkboxes. Keep editor/list height and recalculate button width stable; preserve the draft state.
 
-- [ ] **Step 6: Add CSS classes using existing tokens**
+- [ ] **Step 7: Add CSS classes with existing tokens only**
 
 ```text
 .network-summary
 .network-editor
+.network-editor-head
+.network-search
 .network-list
 .network-option
 .network-dirty
 ```
 
-Reuse current panel/background/border/radius/spacing values from `app.css`. Add no root token.
+Reuse existing panel border/background/radius/spacing/focus tokens. Do not add root colors or shadows.
 
-- [ ] **Step 7: Run Plan tests**
+- [ ] **Step 8: Run tests and commit**
 
 ```bash
 python -m pytest tests/frontend/test_plan_view.py tests/frontend/test_ui_state.py -q
-```
-
-Expected: PASS.
-
-- [ ] **Step 8: Commit**
-
-```bash
 git add frontend/assets/js/core.js frontend/assets/js/app.js frontend/assets/css/app.css tests/frontend/test_plan_view.py
 git commit -m "feat: add supply network editor"
 ```
 
 ---
 
-### Task 4: Switch Plan to authoritative `PlanningSnapshot`
+### Task 4: Join PlanningSnapshot into authoritative Plan rows
 
 **Files:**
 - Modify: `frontend/assets/js/core.js`
 - Modify: `frontend/assets/js/app.js`
 - Modify: `tests/frontend/test_plan_view.py`
 
-- [ ] **Step 1: Add destination-plan maps**
+- [ ] **Step 1: Add planning destination index helpers**
 
 ```javascript
 S.planningDestinationKey = row => `${row.sku}\0${row.destination_cluster_id}`;
 
 S.destinationPlanMap = function(snapshot, family) {
-  const rows = snapshot?.planning_snapshot?.[family]?.destination_views || [];
-  return new Map(rows.map(x=>[S.planningDestinationKey(x),x]));
+  const block = snapshot?.planning_snapshot?.[family];
+  return new Map((block?.destination_views || []).map(item => [
+    S.planningDestinationKey(item), item
+  ]));
 };
 ```
 
-- [ ] **Step 2: Add legacy-conflict ownership test**
+- [ ] **Step 2: Replace plan-owned row values in `S.buildPlanRows()`**
 
-Fixture has:
+For every legacy `DecisionRow`, join calculated/safe destination views. Returned presentation row must set:
+
+```javascript
+safe_plan_qty: safe?.final_allocated_qty ?? null,
+calculated_plan_qty: calculated?.final_allocated_qty ?? null,
+network_uncovered_qty: calculated?.network_uncovered_qty ?? null,
+allocation_blocked_qty: calculated?.allocation_blocked_qty ?? null,
+stock_uncovered_qty: calculated?.stock_uncovered_qty ?? null,
+planning_legs: calculated?.legs || []
+```
+
+Add display-only planned profit:
+
+```javascript
+planned_expected_profit: calculated
+  ? calculated.legs.reduce((total,leg)=>total + Number(leg.expected_profit || 0),0)
+  : null
+```
+
+This sum is presentation-only and is never sent back to backend.
+
+- [ ] **Step 3: Add conflicting legacy-value regression**
+
+Fixture:
 
 ```text
 DecisionRow.calculated_plan_qty = 999
-PlanningSnapshot calculated destination final_allocated_qty = 40
-DecisionRow.safe_plan_qty = 888
-PlanningSnapshot safe destination final_allocated_qty = 30
+PlanningSnapshot.calculated destination final_allocated_qty = 40
 ```
 
-Assert displayed calculated is 40 and Safe is 30.
+Assert table/drawer row uses `40`. Do the same for Safe.
 
-- [ ] **Step 3: Update decision-line model**
+- [ ] **Step 4: Make decision-line plan totals authoritative**
 
-Ozon/Need totals remain existing upstream summary values. Plan totals use:
+`S.buildDecisionLineModel(snapshot)` keeps Ozon/Need from `snapshot.summary`, but uses:
 
 ```javascript
 snapshot.planning_snapshot.calculated.total_allocated_qty
 snapshot.planning_snapshot.safe.total_allocated_qty
 ```
 
-- [ ] **Step 4: Join destination rows for table rendering**
+for Calculated/Safe plan values.
 
-`S.buildPlanRows(snapshot)` attaches:
+- [ ] **Step 5: Update plan sort/blocked filter ownership**
+
+`profit` sort uses `planned_expected_profit`. `blocked` matches when any of:
 
 ```javascript
-planningCalculated:calculatedMap.get(key) || null
-planningSafe:safeMap.get(key) || null
+row.network_uncovered_qty > 0
+row.allocation_blocked_qty > 0
+row.stock_uncovered_qty > 0
 ```
 
-Plan columns render planning final quantities; missing planning view displays `Не рассчитано`, never legacy quantity fallback.
+or Calculated plan is unavailable. Do not use legacy `PHYSICALLY_INFEASIBLE` as the new selected-network blocked owner.
 
-- [ ] **Step 5: Show three causal gap values separately**
+- [ ] **Step 6: Run tests and commit**
 
-Use backend fields with labels:
-
-```text
-network_uncovered_qty -> Сеть не покрывает
-allocation_blocked_qty -> Заблокировано
-stock_uncovered_qty -> Не хватило товара
+```bash
+python -m pytest tests/frontend/test_plan_view.py -q
+git add frontend/assets/js/core.js frontend/assets/js/app.js tests/frontend/test_plan_view.py
+git commit -m "feat: render authoritative selected-network plan"
 ```
 
-- [ ] **Step 6: Update drawer Решение section**
+---
 
-For calculated destination view show:
+### Task 5: Show causal destination gaps and placement in DetailDrawer
+
+**Files:**
+- Modify: `frontend/assets/js/core.js`
+- Modify: `frontend/assets/js/app.js`
+- Modify: `tests/frontend/test_plan_view.py`
+
+- [ ] **Step 1: Add exact presentation labels**
+
+For the selected destination show:
 
 ```text
 Цель направления
 Покрыто планом
 Сеть не покрывает
-Заблокировано
+Заблокировано экономикой/данными
 Не хватило товара
 Где разместить
 ```
 
-`Где разместить` lists only `PlanningLegView` rows with positive `final_allocated_qty`, as `origin — qty`. No frontend totals are recomputed.
+- [ ] **Step 2: Render gap quantities separately**
 
-- [ ] **Step 7: Run Plan tests**
+Map only backend values:
+
+```text
+network_uncovered_qty -> Сеть не покрывает
+allocation_blocked_qty -> Заблокировано экономикой/данными
+stock_uncovered_qty -> Не хватило товара
+```
+
+Never display their sum as generic `Не покрыто`.
+
+- [ ] **Step 3: Render final placement legs**
+
+Under `Где разместить`, list only legs with `final_allocated_qty > 0`:
+
+```text
+Москва — 70 шт.
+Питер — 30 шт.
+```
+
+Sorting by `final_allocated_qty DESC`, then origin label, is presentation only.
+
+- [ ] **Step 4: Preserve upstream evidence sections**
+
+`Динамика спроса`, `Ozon vs наша модель`, historical execution and diagnostics continue to use the base AnalysisSnapshot. Replan must not replace them.
+
+- [ ] **Step 5: Run tests and commit**
 
 ```bash
 python -m pytest tests/frontend/test_plan_view.py -q
-```
-
-Expected: PASS.
-
-- [ ] **Step 8: Commit**
-
-```bash
 git add frontend/assets/js/core.js frontend/assets/js/app.js tests/frontend/test_plan_view.py
-git commit -m "feat: render authoritative planning snapshot"
+git commit -m "feat: explain destination coverage plan"
 ```
 
 ---
 
-### Task 5: Render cluster-level physical supply roll-up
+### Task 6: Add physical `Куда поставить` cluster roll-up
 
 **Files:**
 - Modify: `frontend/assets/js/app.js`
@@ -499,25 +523,35 @@ git commit -m "feat: render authoritative planning snapshot"
 
 **Backend source:** `snapshot.planning_snapshot.calculated.origin_views`.
 
-- [ ] **Step 1: Add exact fixture/render expectation**
+- [ ] **Step 1: Add exact backend-shape fixture**
 
-Fixture:
-
-```javascript
-const origin = {
-  origin_cluster_id:'Москва',
-  total_qty:600,
-  own_destination_qty:500,
-  external_destination_qty:100,
-  destinations:[
-    {destination_cluster_id:'Москва',quantity:500,sku_breakdown:[{sku:'A',quantity:500}]},
-    {destination_cluster_id:'Казань',quantity:50,sku_breakdown:[{sku:'B',quantity:50}]},
-    {destination_cluster_id:'Тверь',quantity:50,sku_breakdown:[{sku:'C',quantity:50}]}
+```json
+{
+  "origin_cluster_id": "Москва",
+  "total_qty": 600,
+  "own_destination_qty": 500,
+  "external_destination_qty": 100,
+  "destinations": [
+    {
+      "destination_cluster_id":"Москва",
+      "quantity":500,
+      "sku_breakdown":[{"sku":"SKU-A","quantity":500}]
+    },
+    {
+      "destination_cluster_id":"Казань",
+      "quantity":50,
+      "sku_breakdown":[{"sku":"SKU-B","quantity":50}]
+    },
+    {
+      "destination_cluster_id":"Тверь",
+      "quantity":50,
+      "sku_breakdown":[{"sku":"SKU-C","quantity":50}]
+    }
   ]
-};
+}
 ```
 
-Assert UI contains:
+Assert rendered values include:
 
 ```text
 Москва — 600 шт.
@@ -527,53 +561,65 @@ Assert UI contains:
 Тверь — 50 шт.
 ```
 
-- [ ] **Step 2: Render `Куда поставить` panel**
+- [ ] **Step 2: Render compact panel after decision line and before destination table**
 
-Place after decision line and before destination table. Each origin uses native `<details>`/`<summary>`; summary shows origin and backend `total_qty`. Expanded body shows backend own/external totals then destination breakdowns. LOCAL destination may appear but should not be duplicated under external subsection.
+Heading: `Куда поставить`.
 
-- [ ] **Step 3: Empty state**
+Each origin uses native `<details>/<summary>`:
 
-When `origin_views` is empty show:
+```text
+Москва                                      600 шт.
+  Свой спрос                                500 шт.
+  Другие кластеры                           100 шт.
+```
+
+Expanded section iterates backend `destinations`; optional nested SKU breakdown is rendered only from each backend `sku_breakdown` array and is never recomputed from raw restrictions/flows.
+
+- [ ] **Step 3: Empty/gap state**
+
+When no origin has allocated quantity:
 
 ```text
 Нет рассчитанной поставки для выбранной сети.
 ```
 
-If family gap totals are nonzero, render the three backend family gap totals immediately below.
+If Calculated totals contain gaps, show directly below:
 
-- [ ] **Step 4: Add dense CSS using existing tokens**
+```text
+Сеть не покрывает: N
+Заблокировано: N
+Не хватило товара: N
+```
 
-No new KPI cards. Keep row hierarchy and numeric alignment consistent with current Plan table/panels.
+from family totals.
 
-- [ ] **Step 5: Run Plan tests**
+- [ ] **Step 4: Add dense CSS using current detail/panel tokens**
+
+No new KPI cards. Keep origin rows scan-friendly at normal and narrow width.
+
+- [ ] **Step 5: Run tests and commit**
 
 ```bash
 python -m pytest tests/frontend/test_plan_view.py -q
-```
-
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
 git add frontend/assets/js/app.js frontend/assets/css/app.css tests/frontend/test_plan_view.py
 git commit -m "feat: show physical origin supply plan"
 ```
 
 ---
 
-### Task 6: Add `История | План размещения` Flow surface state
+### Task 7: Split Flow into `История | План размещения`
 
 **Files:**
 - Modify: `frontend/assets/js/core.js`
 - Modify: `frontend/assets/js/flow.js`
+- Modify: `tests/frontend/test_ui_state.py`
 - Modify: `tests/frontend/test_flow_view.py`
 - Modify: `tests/frontend/test_flow_real_scale.py`
 
-**Full `flowView` after change:**
+**Exact initial `flowView` after this task:**
 
 ```javascript
-flowView: {
+flowView:{
   surface:'history',
   mode:'destination',
   metric:'units',
@@ -593,63 +639,55 @@ flowView: {
 }
 ```
 
-- [ ] **Step 1: Add state validation helper**
+- [ ] **Step 1: Add state validation helper/tests**
 
-```javascript
-S.setFlowSurface = function(state, surface) {
-  if (!['history','planning'].includes(surface)) throw new Error('invalid flow surface');
-  return {...state,flowView:{...state.flowView,surface,selectedRoute:null,routePage:1}};
-};
-```
+`surface` accepts only `history` or `planning`. Existing `evidence` remains `observed|clean` and affects history only.
 
-Test both valid values and invalid rejection.
-
-- [ ] **Step 2: Render top-level controls**
+- [ ] **Step 2: Render top-level surface controls**
 
 ```text
 [ История ] [ План размещения ]
 ```
 
-History retains current `Наблюдаемое | Очищенное`. Hide those evidence buttons in Planning surface; do not create a third evidence source.
+When `surface==='history'`, preserve existing:
 
-- [ ] **Step 3: Build planned route rows only from `PlanningLegView`**
+```text
+[ Наблюдаемое ] [ Очищенное ]
+```
 
-Calculated plan is the visual planning source:
+Do not render `План` as a third evidence source.
+
+- [ ] **Step 3: Define one planned-leg source**
 
 ```javascript
-S.plannedLegs = snapshot => (
-  snapshot?.planning_snapshot?.calculated?.destination_views || []
-).flatMap(x=>x.legs || []).filter(x=>Number(x.final_allocated_qty)>0);
+S.plannedLegs = function(snapshot) {
+  const destinations = snapshot?.planning_snapshot?.calculated?.destination_views || [];
+  return destinations.flatMap(item => item.legs || [])
+    .filter(leg => Number(leg.final_allocated_qty) > 0);
+};
 ```
 
-Destination mode filters by destination, origin mode by origin, SKU mode by SKU. Route quantity is `final_allocated_qty` from the leg.
+Destination mode filters these legs by `destination_cluster_id`; origin mode filters by `origin_cluster_id`; SKU mode filters by `sku`. Do not read `origin_views` to reconstruct links because origin roll-up is intentionally aggregated across SKUs.
 
-- [ ] **Step 4: Keep current History path untouched**
+- [ ] **Step 4: Preserve History behavior unchanged**
 
-When `surface==='history'`, existing Flow selectors/evidence/daily/episodes use current code/data unchanged.
+Existing Flow selectors, observed/clean evidence, timeline and history link rendering remain the history code path. Add regression assertions that the same history fixture renders the same primary text when `surface='history'`.
 
-- [ ] **Step 5: Add real-scale planned-flow test**
+- [ ] **Step 5: Add 40-destination real-scale planned fixture**
 
-Fixture at least 40 destination legs across several origins. Assert existing selector pagination/top-N route presentation remains bounded and no all-network global diagram is created.
+Use at least 40 final planned destination legs across several origins and multiple SKUs. Assert selector/top-N/pagination remains bounded and no all-network SVG/Sankey/chord is created.
 
-- [ ] **Step 6: Run Flow regressions**
-
-```bash
-python -m pytest tests/frontend/test_flow_view.py tests/frontend/test_flow_real_scale.py -q
-```
-
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Run tests and commit**
 
 ```bash
-git add frontend/assets/js/core.js frontend/assets/js/flow.js tests/frontend/test_flow_view.py tests/frontend/test_flow_real_scale.py
+python -m pytest tests/frontend/test_ui_state.py tests/frontend/test_flow_view.py tests/frontend/test_flow_real_scale.py -q
+git add frontend/assets/js/core.js frontend/assets/js/flow.js tests/frontend/test_ui_state.py tests/frontend/test_flow_view.py tests/frontend/test_flow_real_scale.py
 git commit -m "feat: add planned placement flow surface"
 ```
 
 ---
 
-### Task 7: Present route evidence as four separate concepts
+### Task 8: Present Flow, RouteCostIndex, direct tariff and Capacity separately
 
 **Files:**
 - Modify: `frontend/assets/js/core.js`
@@ -658,11 +696,11 @@ git commit -m "feat: add planned placement flow surface"
 - Modify: `tests/frontend/test_flow_view.py`
 - Modify: `tests/frontend/test_plan_view.py`
 
-- [ ] **Step 1: Add RouteCostIndex presenter**
+- [ ] **Step 1: Add RouteCostIndex presenter for `PlanningLegView` fields**
 
 ```javascript
 S.presentRouteCostIndex = function(leg) {
-  if (leg?.route_cost_index === null || leg?.route_cost_index === undefined) {
+  if (!leg || leg.route_cost_index === null || leg.route_cost_index === undefined) {
     return {value:'Не рассчитано',coverage:'Не рассчитано',spread:'Не рассчитано'};
   }
   return {
@@ -673,128 +711,103 @@ S.presentRouteCostIndex = function(leg) {
 };
 ```
 
-- [ ] **Step 2: Add exact helper copy test**
-
-Render exactly:
+- [ ] **Step 2: Add exact explanatory copy test**
 
 ```text
 1,00 — медианная стоимость маршрута среди сопоставимых тарифных классов. Ниже 1,00 — маршрут обычно дешевле медианы; выше 1,00 — дороже.
 ```
 
-Assert no copy introduces `0,8`, `1,3`, `сильная связка` or `слабая связка` as fixed categories.
+Assert no `0,8`, `1,3`, `сильная связка` or `слабая связка` category label appears.
 
-- [ ] **Step 3: Add SKU-origin capacity lookup from PlanningBasis**
+- [ ] **Step 3: Render non-local planned-route evidence rows**
 
-```javascript
-S.capacityForLeg = function(snapshot, leg) {
-  return (snapshot?.planning_basis?.sku_origins || []).find(
-    x => x.sku === leg.sku && x.origin_cluster_id === leg.origin_cluster_id
-  )?.feasibility || null;
-};
-```
-
-Presenter rules:
+Use the backend leg directly:
 
 ```text
-FINITE -> max_supply_qty + " шт."
-UNLIMITED -> "Без ограничений"
-UNKNOWN/missing -> "Не подтверждено"
+Исторический поток       63%
+Индекс маршрута          0,72
+Тариф этого SKU          51 ₽
+Capacity origin          240 шт.
 ```
 
-Use serialized enum field `capacity_kind`.
+`Исторический поток` uses `observed_flow_share`; missing history shows `Не наблюдался`, not `0%`.
 
-- [ ] **Step 4: Planned non-local route detail shows four distinct rows**
-
-From `PlanningLegView` + capacity lookup:
+Capacity presentation is exact:
 
 ```text
-Фактический поток
-Индекс маршрута
-Тариф этого SKU
-Capacity origin
+FINITE    -> N шт.
+UNLIMITED -> Без ограничений
+UNKNOWN   -> Не подтверждён
 ```
 
-Historical Flow uses `observed_flow_share`; if absent show `Не наблюдался`, not 0%. Direct tariff is `direct_route_fee` in ₽. Route index quality appears beneath the index as `Покрытие классов` and `Разброс IQR`.
+from `origin_capacity_kind/origin_capacity_qty`.
 
-- [ ] **Step 5: Add historical-route index join**
-
-For History surface, index by pair from `snapshot.planning_basis.route_cost_indices`. Show it in route detail under label:
+- [ ] **Step 4: Show RouteCostIndex quality as secondary evidence**
 
 ```text
-Структура текущей тарифной матрицы
+Покрытие тарифных классов: 97%
+Разброс IQR: 0,08
 ```
 
-History Flow quantities/shares stay from historical Flow data and are never replaced by planning legs.
+Quality values never recolor/block the route by hard threshold.
 
-- [ ] **Step 6: LOCAL presentation**
+- [ ] **Step 5: LOCAL presentation**
 
-For `coverage_type==='local'` show `Локальное размещение`. Omit non-local RouteCostIndex and direct route tariff rows instead of displaying zero. Capacity may still be shown from SKU-origin feasibility.
+For `coverage_type==='local'` show `Локальное размещение`. Omit external RouteCostIndex and external-route labels; direct local tariff may be displayed as `Тариф локального исполнения` only when backend `direct_route_fee` is present, otherwise `Не рассчитано`.
 
-- [ ] **Step 7: Run evidence tests**
+- [ ] **Step 6: Keep history and planning semantics separate**
+
+History route detail may show pair-level current RouteCostIndex by joining `snapshot.planning_basis.route_cost_indices` on origin+destination. It remains labeled `Структура текущей тарифной матрицы`; historical observed/clean share is not converted into plan quantity.
+
+- [ ] **Step 7: Run evidence tests and commit**
 
 ```bash
 python -m pytest tests/frontend/test_flow_view.py tests/frontend/test_plan_view.py -q
-```
-
-Expected: PASS.
-
-- [ ] **Step 8: Commit**
-
-```bash
 git add frontend/assets/js/core.js frontend/assets/js/flow.js frontend/assets/js/app.js tests/frontend/test_flow_view.py tests/frontend/test_plan_view.py
 git commit -m "feat: explain planned route evidence"
 ```
 
 ---
 
-### Task 8: Update durable UX contract
+### Task 9: Update durable UX contract
 
 **Files:**
 - Modify: `UX-CONTRACT.md`
 
-- [ ] **Step 1: Document applied/draft state**
+- [ ] **Step 1: Document applied/draft network ownership**
 
-Add normative rules:
+Add exactly:
 
 ```text
-applied network = network of visible successful PlanningSnapshot
-draft network = current checkbox state
+applied network = network represented by the visible successful PlanningSnapshot
+draft network = current checkbox edits
 checkbox edit = no request
-dirty draft = visible prior-plan notice
-Пересчитать план = only apply action
-success = returned network becomes applied and draft resets to it
-failure = prior PlanningSnapshot remains visible and draft is preserved
+network dirty = stale-plan notice
+Пересчитать план = only action that can apply draft
+successful calculation = returned network becomes applied
+a failed calculation = previous applied plan stays visible and draft is preserved
 ```
 
-- [ ] **Step 2: Document request depth**
+- [ ] **Step 2: Document request-depth ownership**
 
 ```text
 network-only dirty -> /api/replan
-upstream stale/no snapshot -> full /api/analysis with current draft network
+upstream dirty -> full analysis carrying current network draft
 ```
 
-- [ ] **Step 3: Document plan ownership**
-
-`PlanningSnapshot` owns displayed Safe/Calculated destination allocations, gaps, planned legs and physical origin roll-up. Legacy plan fields in `DecisionRow` are not display-authoritative after PR-E.
-
-- [ ] **Step 4: Document Flow taxonomy/evidence**
+- [ ] **Step 3: Document Flow taxonomy**
 
 ```text
-История -> Наблюдаемое | Очищенное
-План размещения -> PlanningLegView final allocations
-Flow % -> historical observation
-RouteCostIndex -> current tariff-topology evidence
-Direct tariff -> concrete SKU route cost
-Capacity -> physical SKU-origin restriction evidence
+История -> Наблюдаемое / Очищенное
+План размещения -> final Calculated PlanningLegView links
+RouteCostIndex -> pair-level tariff-topology evidence
+Direct tariff -> concrete SKU execution route price
+Capacity -> physical SKU × origin restriction evidence
 ```
 
-State explicitly that these are not collapsed into one score.
+Explicitly prohibit collapsing these into one opaque route score.
 
-- [ ] **Step 5: Confirm root DESIGN.md has no diff**
-
-This implementation adds no durable visual token/component family; visual changes use existing tokens and primitives.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add UX-CONTRACT.md
@@ -803,7 +816,7 @@ git commit -m "docs: define selected network UI workflow"
 
 ---
 
-### Task 9: Production verification
+### Task 10: Frontend production verification
 
 **Files:** no new production files
 
@@ -815,7 +828,7 @@ python -m pytest tests/frontend -q
 
 Expected: PASS.
 
-- [ ] **Step 2: Run relevant API acceptance**
+- [ ] **Step 2: Run planning API acceptance**
 
 ```bash
 python -m pytest tests/api/test_analysis.py tests/api/test_replan.py tests/api/test_product_completion_acceptance.py -q
@@ -831,16 +844,16 @@ python -m pytest -q
 
 Expected: PASS.
 
-- [ ] **Step 4: Run static anti-pattern scan**
+- [ ] **Step 4: Static anti-pattern scan**
 
 ```bash
 python - <<'PY'
 from pathlib import Path
-paths = [
+paths = (
     Path('frontend/assets/js/app.js'),
     Path('frontend/assets/js/core.js'),
     Path('frontend/assets/js/flow.js'),
-]
+)
 text = '\n'.join(path.read_text('utf-8') for path in paths)
 for forbidden in ('alert(', 'confirm(', 'prompt(', 'onclick='):
     assert forbidden not in text, forbidden
@@ -852,34 +865,32 @@ PY
 
 Expected: `frontend anti-pattern scan: ok`.
 
-- [ ] **Step 5: Verify real browser workflow**
+- [ ] **Step 5: Manual browser workflow verification**
 
-Using normal repository local launch, verify:
+Verify in one real session:
 
-1. initial Plan reflects persisted/default applied network;
-2. Edit/search/clear/toggle network works by keyboard with visible focus;
-3. toggling clusters performs no request and shows stale-plan warning;
-4. `Пересчитать план` with network-only dirty performs one replan and applies returned network;
-5. changing horizon plus network performs one full analysis with that draft network;
-6. failed replan keeps previous plan visible and preserves draft;
-7. `Куда поставить` shows cluster totals and nested destination/SKU breakdown correctly;
-8. destination drawer shows three causal gap types separately;
-9. History Flow remains unchanged in observed/clean modes;
-10. Planned Placement shows final planned links only;
-11. non-local planned link separately shows Flow %, RouteCostIndex, exact SKU tariff and capacity;
-12. LOCAL link does not show fake external index/tariff;
-13. narrow viewport and 200% zoom keep primary action/network controls accessible;
-14. Tab/Shift+Tab reaches every enabled network control.
+1. initial Plan loads persisted/default applied network;
+2. keyboard opens network editor;
+3. search and clear-search work;
+4. toggle several clusters: no request occurs and stale-plan notice appears;
+5. press `Пересчитать план`: exactly one network-only replan updates plan;
+6. change horizon plus network: one full analysis applies both;
+7. exercise failed replan: old plan remains and draft is preserved;
+8. inspect `Куда поставить` cluster roll-up and nested destination/SKU breakdown;
+9. inspect destination drawer with all three gap causes;
+10. switch `Потоки спроса → История` and verify current observed/clean behavior;
+11. switch `План размещения` and inspect non-local route Flow/RouteIndex/tariff/capacity evidence;
+12. inspect LOCAL route and verify no fake external RouteIndex;
+13. at narrow viewport and 200% browser zoom, primary actions remain accessible;
+14. Tab/Shift+Tab reaches search, clear, checkboxes, editor action, recalculate and flow surface controls with visible focus.
 
-- [ ] **Step 6: Run Frontend Design Premium project audit when skill runtime is available**
-
-Use the installed Premium skill `audit_project.py` in strict mode against repository root, then run any project commands configured by `premium-ui.json`. Treat blocking findings as failures and fix before completion.
-
-- [ ] **Step 7: Commit verification-driven corrections only if required**
+- [ ] **Step 6: Commit verification-driven corrections when present**
 
 ```bash
 git add frontend UX-CONTRACT.md tests
-if ! git diff --cached --quiet; then git commit -m "fix: harden selected network workflow"; fi
+if ! git diff --cached --quiet; then
+  git commit -m "fix: harden selected network product workflow"
+fi
 ```
 
 ---
@@ -889,19 +900,19 @@ if ! git diff --cached --quiet; then git commit -m "fix: harden selected network
 PR-E is complete only when all are true:
 
 1. Network checkboxes are draft-only and never auto-request.
-2. One explicit `Пересчитать план` applies draft network.
-3. Network-only dirty uses `/api/replan`; upstream stale uses full analysis.
-4. Failure leaves prior plan visible and draft intact.
-5. PlanningSnapshot owns displayed Safe/Calculated quantities.
-6. Demand destination remains distinct from physical origin placement.
-7. `Куда поставить` uses backend cluster-level roll-up and nested breakdowns.
-8. Three causal gap types are visibly distinct.
-9. Flow surface is `История | План размещения`; planned mode is not a third history evidence source.
-10. Historical Flow %, RouteCostIndex, direct SKU tariff and capacity are separate concepts in UI.
-11. RouteCostIndex shows numeric value + coverage/IQR without fixed 0.8/1.3 bands.
-12. LOCAL does not show fake external index/tariff.
-13. Current History Flow behavior remains regression-green.
-14. Search, checkboxes and actions are semantic, keyboard-accessible and visibly focused.
-15. No new dependency, modal system, global Sankey, KPI-card mosaic or design token is added.
-16. UX-CONTRACT matches runtime behavior and DESIGN.md remains unchanged.
-17. Frontend/API/full tests and manual browser verification pass.
+2. One explicit `Пересчитать план` applies the network.
+3. Network-only changes use `/api/replan`; upstream changes use full analysis carrying the same draft.
+4. Failed recalculation leaves prior applied plan visible and draft intact.
+5. `PlanningSnapshot`, not legacy plan quantities, owns displayed Safe/Calculated plan.
+6. Destination demand identity remains separate from physical origin placement.
+7. `Куда поставить` consumes backend cluster roll-up and does not reconstruct physical totals from raw data.
+8. `network_uncovered`, `allocation_blocked`, `stock_uncovered` remain visibly distinct.
+9. Flow has `История | План размещения`; planned mode is not an evidence-source toggle.
+10. Planned Flow links come from final `PlanningLegView` rows; historical links remain unchanged.
+11. Historical Flow, RouteCostIndex, direct SKU tariff and capacity are separately labeled.
+12. RouteCostIndex is numeric with coverage/IQR context and no invented 0.8/1.3 hard bands.
+13. LOCAL routes do not show fake external RouteCostIndex values.
+14. Search/checkbox/actions are semantic, keyboard accessible and visibly focused.
+15. No new dependency, modal system, global Sankey or KPI mosaic is introduced.
+16. `UX-CONTRACT.md` matches runtime behavior.
+17. Frontend, API and full suites are green and manual success/failure/loading/narrow/keyboard workflow passes.
