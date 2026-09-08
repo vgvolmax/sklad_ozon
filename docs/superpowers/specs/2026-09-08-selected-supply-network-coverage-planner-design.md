@@ -1,7 +1,7 @@
 # Selected Supply Network & Coverage Planner — Design
 
 **Date:** 2026-09-08  
-**Status:** approved design; implementation plan pending user review  
+**Status:** approved design; written spec pending user review  
 **Scope:** Product Completion planning layer after real-data PR5  
 **Supersedes:** any earlier proposal to use observed/clean historical route shares as allocation weights for future supply placement; the `physical_ceiling` placement semantics in `2026-09-02-ozon-fbo-product-completion-design.md` where destination and placement cluster were assumed to be the same object  
 **Does not supersede:** destination-demand semantics, demand estimate, stockout/clean-route analytics, current route-impact analytics, Safe/Calculated plan families, fixed `MAX_MARGIN` scarcity strategy, SCOZ-lite runtime architecture, existing Flow historical evidence semantics
@@ -252,26 +252,44 @@ For `SKU × selected cluster`, placement is feasible only if at least one wareho
 
 ### 7.2 Capacity source
 
-`max_supply_qty` from the restrictions report is the physical ceiling source. No new capacity file or manually maintained capacity table is introduced.
+The restrictions report is the only physical capacity source for this feature. No new capacity file or manually maintained capacity table is introduced.
+
+The importer must preserve three distinct capacity states for an allowed warehouse row:
+
+```text
+FINITE(value)     # explicit numeric maximum
+UNLIMITED         # source explicitly says "Без ограничений"
+UNKNOWN           # blank/missing/unparseable-as-known capacity evidence
+```
+
+`None` must not ambiguously mean both `UNLIMITED` and `UNKNOWN` in the new planning contract. If the existing normalized record cannot distinguish them, the importer/domain contract must be extended before Coverage Planner consumes capacity.
 
 ### 7.3 Multiple warehouses inside one cluster
 
 The current implementation uses the minimum explicit warehouse maximum when several warehouses in a cluster are allowed. That rule is no longer canonical for cluster planning.
 
-The planning abstraction is a **cluster supply point**, while warehouse rows describe alternative receiving warehouses inside that cluster. Current Ozon guidance states that when several warehouses can accept the products, Ozon may offer one of the available warehouses, and cluster-level recommended quantity can be placed on one warehouse or distributed across several.
+The planning abstraction is a **cluster supply point**, while warehouse rows describe alternative receiving warehouses inside that cluster. Current Ozon guidance states that when several warehouses can accept products, Ozon may offer one of the available warehouses, and cluster-level recommended quantity can be placed on one warehouse or distributed across several.
 
-For this feature, the conservative cluster-level ceiling is therefore:
+This feature intentionally plans clusters, not multiple warehouse-level supply requests. Therefore it must not sum independent warehouse limits that are not guaranteed to be simultaneously usable.
+
+Cluster capacity is derived as follows:
 
 ```text
-if any eligible warehouse has max_supply_qty = None:
-    cluster_max_supply_qty = None
+eligible = explicitly ALLOWED warehouse rows for SKU × cluster
+
+if eligible is empty:
+    cluster placement is infeasible
+elif any eligible capacity is UNKNOWN:
+    cluster capacity is UNKNOWN unless another eligible warehouse alone proves a usable finite/unlimited ceiling
+elif any eligible capacity is UNLIMITED:
+    cluster capacity is UNLIMITED
 else:
-    cluster_max_supply_qty = max(explicit max_supply_qty of eligible warehouses)
+    cluster capacity = max(FINITE values among eligible warehouses)
 ```
 
-Rationale: the cluster plan must be achievable through at least one eligible receiving warehouse without assuming that independent warehouse ceilings are simultaneously additive. The feature does not plan multiple warehouse-level supply requests, so summing warehouse ceilings would overstate guaranteed cluster capacity.
+Operationally, a cluster is usable when at least one allowed warehouse provides a known usable ceiling. Unknown capacity on one alternative warehouse does not invalidate another independently known allowed warehouse.
 
-A later warehouse-level planning feature may intentionally supersede this aggregation rule.
+Rationale: the cluster plan must be achievable through at least one eligible receiving warehouse without assuming additive warehouse ceilings. A later warehouse-level planning feature may intentionally supersede this rule and model distribution across several warehouses.
 
 ## 8. Coverage Planner
 
@@ -383,7 +401,7 @@ Reason families include at least:
 
 - no selected feasible origin;
 - tariff evidence unavailable/ambiguous for all candidate routes;
-- origin physical capacity exhausted.
+- origin physical capacity exhausted or unknown.
 
 ## 9. Seller Stock Allocation
 
@@ -638,6 +656,7 @@ Backend foundation only:
 
 ### PR-B — Physical supply network and Coverage Planner
 
+- preserve explicit `FINITE / UNLIMITED / UNKNOWN` capacity evidence from restrictions;
 - derive effective `SKU × selected origin` feasibility from restrictions;
 - replace current multi-warehouse `min` rule for this planning path with §7.3 cluster ceiling semantics;
 - implement LOCAL-first assignment;
@@ -681,17 +700,19 @@ At minimum the implementation must prove:
 2. **Historical-share trap:** a historically rare cheap route can rank ahead of a historically frequent expensive route; historical shares are informational only.
 3. **Tariff-class reuse:** two SKUs in the same tariff class share route ordering without a duplicated persisted SKU route matrix.
 4. **Restriction filter:** a user-selected cluster that is prohibited for one SKU is automatically excluded for that SKU without removing it from the global user selection.
-5. **Local first:** selected feasible local destination covers itself before non-local candidates.
-6. **Capacity spillover:** best route fills to its finite ceiling, then residual target goes to the next route.
-7. **Constrained destination:** a destination with one feasible origin is not stranded because another destination with alternatives consumed that origin first.
-8. **Network uncovered:** no feasible/tariff-complete selected route yields explicit uncovered quantity, not fabricated placement.
-9. **Seller-stock scarcity:** desired coverage can be fully network-feasible while final coverage is reduced by seller stock under MAX_MARGIN.
-10. **Draft network:** toggling checkboxes alone does not alter the applied plan.
-11. **Explicit recalc:** pressing `Пересчитать план` applies the new network only after successful backend result.
-12. **Failure recovery:** failed replan leaves the previous successful plan applied and the changed network available for retry.
-13. **No upstream rerun:** network-only replan does not recompute demand/stockout/clean-route history.
-14. **Historical Flow unchanged:** observed/clean evidence remains historical and is not overwritten by plan routing.
-15. **Real-scale bounded UI:** planned Flow/roll-up does not render an unbounded all-network graph.
+5. **Capacity evidence:** explicit unlimited capacity is distinguishable from unknown/missing capacity; unknown is never treated as unlimited.
+6. **Multi-warehouse cluster:** cluster capacity uses one independently proven eligible warehouse ceiling and does not sum alternative warehouse maxima.
+7. **Local first:** selected feasible local destination covers itself before non-local candidates.
+8. **Capacity spillover:** best route fills to its finite ceiling, then residual target goes to the next route.
+9. **Constrained destination:** a destination with one feasible origin is not stranded because another destination with alternatives consumed that origin first.
+10. **Network uncovered:** no feasible/tariff-complete selected route yields explicit uncovered quantity, not fabricated placement.
+11. **Seller-stock scarcity:** desired coverage can be fully network-feasible while final coverage is reduced by seller stock under MAX_MARGIN.
+12. **Draft network:** toggling checkboxes alone does not alter the applied plan.
+13. **Explicit recalc:** pressing `Пересчитать план` applies the new network only after successful backend result.
+14. **Failure recovery:** failed replan leaves the previous successful plan applied and the changed network available for retry.
+15. **No upstream rerun:** network-only replan does not recompute demand/stockout/clean-route history.
+16. **Historical Flow unchanged:** observed/clean evidence remains historical and is not overwritten by plan routing.
+17. **Real-scale bounded UI:** planned Flow/roll-up does not render an unbounded all-network graph.
 
 ## 16. Canonical precedence after approval
 
