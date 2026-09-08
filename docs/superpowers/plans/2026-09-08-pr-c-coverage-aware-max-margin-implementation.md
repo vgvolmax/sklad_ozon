@@ -2,55 +2,49 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Reuse the existing allocation eligibility and `MAX_MARGIN` scarcity policy at `SKU × origin × destination` coverage-leg granularity, producing final coverage legs plus causally distinct allocation-blocked and seller-stock-uncovered quantities.
+**Goal:** Reuse the existing economics eligibility and deterministic `MAX_MARGIN` scarcity policy for desired `SKU × origin × destination` coverage legs, producing final allocated legs plus distinct allocation-blocked and seller-stock-uncovered quantities.
 
-**Architecture:** Do not invent a second optimizer. Extract the current threshold classification and deterministic MAX_MARGIN ordering from `backend/supply/optimizer.py` into reusable pure helpers, keep the legacy `optimize_allocations()` behavior covered by existing tests, and add one coverage-leg allocator that treats every `DesiredCoverageLeg.desired_qty` as a hard ceiling. Eligibility is classified before scarcity; seller stock is then consumed only by eligible legs.
+**Architecture:** Keep PR-B as the sole owner of route choice. Refactor the current optimizer mechanically: extract the economics-only eligibility block and the current stable MAX_MARGIN tie-break ordering into shared helpers, prove legacy `optimize_allocations()` remains behaviorally identical, then add `allocate_coverage_legs()` that treats each desired leg quantity as a hard ceiling. Eligibility is classified before seller-stock scarcity, so blocked quantity never consumes stock.
 
-**Tech Stack:** Python 3, frozen dataclasses, `Decimal`, pytest; PR-A direct route economics + PR-B coverage contracts; no new dependencies.
+**Tech Stack:** Python 3, frozen dataclasses, `Decimal`, pytest; PR-A route economics + PR-B coverage contracts; no new dependencies.
 
 **Spec:** `docs/superpowers/specs/2026-09-08-selected-supply-network-coverage-planner-design.md`
 
 ## Global Constraints
 
-- Coverage Planner remains the only owner of desired route placement. PR-C must not re-rank routes by tariff or fabricate alternate desired legs.
-- Existing optimizer thresholds remain unchanged: economics complete, positive profit, minimum profit/unit, minimum margin rate, minimum ROI.
-- Product allocation objective remains fixed `MAX_MARGIN`; do not add a new user-selectable objective.
-- Reuse one threshold classifier and one MAX_MARGIN ordering policy. Do not fork legacy and coverage implementations.
-- Each desired coverage leg has a hard ceiling equal to `desired_qty`.
-- Classification is causal and non-overlapping:
-  1. PR-B network gaps stay network gaps.
-  2. Ineligible desired leg quantity becomes `allocation_blocked_qty`.
-  3. Seller-stock scarcity runs only over eligible desired quantities.
-  4. Eligible desired quantity left unfilled because stock is exhausted becomes `stock_uncovered_qty`.
-- Seller stock is one quantity per SKU, shared across all origins/destinations.
-- Direct route economics is route-specific `origin → destination`; historical expected logistics must not be substituted.
-- Final allocation never changes destination demand/target identity.
-- Keep legacy `optimize_allocations()` passing until later migration removes its callers; this PR adds the new path beside it.
-- No application/snapshot/API/frontend integration in PR-C.
-- Use TDD and no new dependencies.
+- PR-C never creates, removes, re-ranks or reroutes desired coverage legs.
+- Existing economics gates remain unchanged: complete economics, positive profit, min profit/unit, min margin rate, min ROI.
+- `MAX_MARGIN` is the only new coverage allocator objective. Do not expose MAX_PROFIT as a new product choice.
+- Legacy `optimize_allocations()` keeps current MAX_PROFIT compatibility because existing tests/API still reference the enum.
+- One economics classifier and one MAX_MARGIN ordering implementation must serve both legacy and coverage paths.
+- Each final leg allocation is `0 <= final_allocated_qty <= desired_qty`.
+- `allocation_blocked_qty` is classified before scarcity and consumes zero seller stock.
+- `stock_uncovered_qty` exists only for an economics-eligible desired quantity that was not filled because known seller stock was exhausted.
+- Unknown seller stock must not be passed as zero to this allocator. PR-D handles unknown seller stock as an explicit incomplete planning case.
+- Seller stock is shared across all eligible desired legs for one SKU.
+- Direct route economics identity is `SKU × origin`; coverage identity additionally preserves destination.
+- No application, snapshot, API or frontend integration belongs in PR-C.
 
 ---
 
 ## File Structure
 
-- Modify `backend/supply/contracts.py` — coverage allocation candidate/decision/gap/result contracts.
-- Modify `backend/supply/optimizer.py` — extract reusable eligibility/order helpers and add `allocate_coverage_legs()` while preserving legacy optimizer behavior.
-- Modify `backend/supply/__init__.py` — export approved coverage-allocation API.
-- Modify `tests/supply/test_optimizer.py` — regression-prove legacy behavior plus new coverage allocation semantics.
-- Modify `tests/supply/test_coverage.py` only for helper fixtures/contracts shared with PR-C if necessary; route selection behavior remains PR-B-owned.
-
-No `backend/application.py`, `backend/api.py`, decision snapshot, project persistence or frontend files belong in PR-C.
+- Modify `backend/supply/contracts.py` — coverage allocation contracts.
+- Modify `backend/supply/optimizer.py` — shared eligibility/order helpers and `allocate_coverage_legs()`.
+- Modify `backend/supply/__init__.py` — public coverage-allocation exports.
+- Modify `tests/supply/test_optimizer.py` — legacy characterization + coverage allocation tests.
+- Run `tests/supply/test_coverage.py` unchanged as PR-B route-choice regression.
+- Run `tests/api/test_product_completion_acceptance.py` unchanged as legacy end-to-end regression.
 
 ---
 
-### Task 1: Define coverage allocation contracts
+### Task 1: Add coverage allocation contracts and exact test builder
 
 **Files:**
 - Modify: `backend/supply/contracts.py`
-- Test: `tests/supply/test_optimizer.py`
+- Modify: `tests/supply/test_optimizer.py`
 
 **Interfaces:**
-- Produces:
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -59,16 +53,12 @@ class CoverageAllocationCandidate:
     economics: UnitEconomicsResult
     destination_target_qty: int
     demand_confidence: SignalConfidence
-    distortion_signal: RecommendationDistortionSignal | None
+    distortion_confidence: SignalConfidence | None
 
 
 @dataclass(frozen=True, slots=True)
 class FinalCoverageLeg:
-    sku: str
-    origin_cluster_id: str
-    destination_cluster_id: str
-    coverage_type: CoverageType
-    desired_qty: int
+    leg: DesiredCoverageLeg
     final_allocated_qty: int
     expected_profit_per_unit: Decimal | None
     expected_profit: Decimal
@@ -97,34 +87,118 @@ class CoverageAllocationResult:
     objective_profit: Decimal
 ```
 
-`NetworkCoverageGap` remains owned by PR-B and is not duplicated here.
+`NetworkCoverageGap` stays in PR-B and is not duplicated.
 
-- [ ] **Step 1: Write failing identity/validation tests**
+- [ ] **Step 1: Extend test imports and add an exact coverage candidate builder**
+
+Reuse the existing `thresholds()` and `candidate()` helpers already present in `tests/supply/test_optimizer.py`. Add imports for PR-B contracts and PR-A VolumeBand, then add:
 
 ```python
-def test_coverage_allocation_candidate_preserves_leg_identity():
-    candidate = CoverageAllocationCandidate(
-        leg=desired_leg("SKU-1", "Москва", "Казань", 50),
-        economics=complete_economics("SKU-1", "Москва", margin="0.2"),
-        destination_target_qty=100,
-        demand_confidence=SignalConfidence.HIGH,
-        distortion_signal=None,
+from backend.economics import VolumeBand
+from backend.supply import (
+    CoverageAllocationCandidate,
+    CoverageType,
+    DesiredCoverageLeg,
+    allocate_coverage_legs as _allocate_coverage_legs,
+)
+
+
+def coverage_candidate(
+    origin: str,
+    destination: str,
+    desired: int,
+    *,
+    sku: str = "SKU-1",
+    target: int | None = None,
+    profit: str | None = "30",
+    margin: str | None = "0.30",
+    roi: str | None = "0.40",
+    complete: bool = True,
+    route: RouteConfidence = RouteConfidence.MEDIUM,
+    demand: SignalConfidence = SignalConfidence.MEDIUM,
+    distortion_confidence: SignalConfidence | None = None,
+) -> CoverageAllocationCandidate:
+    legacy = candidate(
+        origin,
+        sku=sku,
+        recommendation=max(desired, 1),
+        need=max(desired, 1),
+        complete=complete,
+        profit=profit,
+        margin=margin,
+        roi=roi,
+        route=route,
+        demand=demand,
     )
-    assert candidate.leg.origin_cluster_id == "Москва"
-    assert candidate.leg.destination_cluster_id == "Казань"
+    leg = DesiredCoverageLeg(
+        sku=sku,
+        origin_cluster_id=origin,
+        destination_cluster_id=destination,
+        desired_qty=desired,
+        coverage_type=(
+            CoverageType.LOCAL if origin == destination else CoverageType.ROUTE
+        ),
+        direct_route_fee=(None if origin == destination else Decimal("47")),
+        volume_band=(None if origin == destination else VolumeBand(Decimal("0"), Decimal("1"))),
+        route_confidence=route,
+        reason_codes=("fixture",),
+    )
+    return CoverageAllocationCandidate(
+        leg=leg,
+        economics=legacy.economics,
+        destination_target_qty=desired if target is None else target,
+        demand_confidence=demand,
+        distortion_confidence=distortion_confidence,
+    )
 
 
-def test_final_coverage_leg_cannot_exceed_desired_quantity():
+def allocate_coverage_legs(
+    candidates,
+    stock,
+    limits,
+    *,
+    plan_family=PlanFamily.CALCULATED,
+):
+    return _allocate_coverage_legs(
+        candidates,
+        stock,
+        limits,
+        plan_family=plan_family,
+    )
+```
+
+- [ ] **Step 2: Add failing contract validation tests**
+
+```python
+def test_coverage_candidate_requires_economics_origin_identity():
+    item = coverage_candidate("Москва", "Казань", 10)
+    wrong = replace(item, economics=candidate("Питер").economics)
+    with pytest.raises(ValueError, match="economics identity"):
+        CoverageAllocationCandidate(
+            wrong.leg,
+            wrong.economics,
+            wrong.destination_target_qty,
+            wrong.demand_confidence,
+            wrong.distortion_confidence,
+        )
+
+
+def test_final_leg_cannot_exceed_desired_qty():
+    item = coverage_candidate("Москва", "Казань", 10)
     with pytest.raises(ValueError, match="final_allocated_qty"):
         FinalCoverageLeg(
-            "SKU-1", "Москва", "Казань", CoverageType.ROUTE,
-            50, 51, Decimal("10"), Decimal("510"), True, (),
+            item.leg,
+            11,
+            Decimal("30"),
+            Decimal("330"),
+            True,
+            ("ALLOCATED",),
         )
 ```
 
-Also validate candidate economics identity (`economics.sku == leg.sku` and `economics.placement_cluster_id == leg.origin_cluster_id`), nonnegative quantities and one plan family per result.
+Also add one `DestinationAllocationGap` test asserting negative blocked/stock quantities are rejected and a zero+zero gap row is rejected.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [ ] **Step 3: Run tests and verify RED**
 
 ```bash
 python -m pytest tests/supply/test_optimizer.py -q
@@ -132,21 +206,47 @@ python -m pytest tests/supply/test_optimizer.py -q
 
 Expected: new contract imports fail.
 
-- [ ] **Step 3: Implement immutable contracts and validation**
+- [ ] **Step 4: Implement contract validation in `backend/supply/contracts.py`**
 
-Keep new fields explicit; do not overload legacy `AllocationDecision.cluster_id`, because it cannot represent destination identity.
+Use existing `_require_nonblank()` / `_require_nonnegative_int()` helpers. In `CoverageAllocationCandidate.__post_init__`:
 
-`DestinationAllocationGap` may contain both blocked and stock quantities for the same destination, but each component must be nonnegative and at least one must be positive when a gap row is emitted.
+```python
+from backend.economics import UnitEconomicsResult
 
-- [ ] **Step 4: Run focused tests and verify GREEN**
+if not isinstance(self.leg, DesiredCoverageLeg):
+    raise TypeError("leg must be DesiredCoverageLeg")
+if not isinstance(self.economics, UnitEconomicsResult):
+    raise TypeError("economics must be UnitEconomicsResult")
+if self.economics.sku != self.leg.sku:
+    raise ValueError("economics identity must match coverage leg SKU")
+if self.economics.placement_cluster_id != self.leg.origin_cluster_id:
+    raise ValueError("economics identity must match coverage leg origin")
+_require_nonnegative_int(self.destination_target_qty, "destination_target_qty")
+if self.destination_target_qty < self.leg.desired_qty:
+    raise ValueError("destination_target_qty must cover desired leg quantity")
+if not isinstance(self.demand_confidence, SignalConfidence):
+    raise TypeError("demand_confidence must be SignalConfidence")
+if self.distortion_confidence is not None and not isinstance(
+    self.distortion_confidence, SignalConfidence
+):
+    raise TypeError("distortion_confidence must be SignalConfidence or None")
+```
+
+In `FinalCoverageLeg.__post_init__`, require nonnegative allocation and `final_allocated_qty <= leg.desired_qty`; expected profit must be a finite Decimal.
+
+In `DestinationAllocationGap.__post_init__`, require nonnegative quantities and reject both zero.
+
+In `CoverageAllocationResult.__post_init__`, validate nonnegative stock/allocation fields and exact `allocated_qty + unallocated_stock == available_stock`.
+
+- [ ] **Step 5: Run tests and verify GREEN**
 
 ```bash
 python -m pytest tests/supply/test_optimizer.py -q
 ```
 
-Expected: contract tests pass while later allocator tests remain absent.
+Expected: contract tests pass.
 
-- [ ] **Step 5: Commit contract slice**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add backend/supply/contracts.py tests/supply/test_optimizer.py
@@ -155,96 +255,109 @@ git commit -m "feat: add coverage allocation contracts"
 
 ---
 
-### Task 2: Extract one reusable economics eligibility classifier
+### Task 2: Extract the economics-only eligibility policy without changing legacy behavior
 
 **Files:**
 - Modify: `backend/supply/optimizer.py`
 - Modify: `tests/supply/test_optimizer.py`
 
 **Interfaces:**
-- Existing legacy behavior to preserve:
-
-```python
-optimize_allocations(...)
-```
-
-- New private helper concept:
 
 ```python
 def _classify_economics(
     economics: UnitEconomicsResult,
     thresholds: OptimizerThresholds,
 ) -> tuple[bool, set[str]]:
-    ...
 ```
 
-- Legacy candidate-specific ceiling/feasibility reasons remain in the legacy wrapper; economics threshold reasons come from the shared helper.
+- [ ] **Step 1: Run the current optimizer suite as a characterization baseline**
 
-- [ ] **Step 1: Add parameterized legacy eligibility regression tests**
+```bash
+python -m pytest tests/supply/test_optimizer.py -q
+```
 
-For the same complete base candidate, independently vary:
-- incomplete economics;
-- non-positive profit;
-- profit below threshold;
-- margin below threshold;
-- ROI below threshold;
-- valid economics.
+Expected: PASS before refactor.
 
-Assert existing reason codes remain exactly:
+- [ ] **Step 2: Add a parameterized characterization test for economics reasons**
+
+Use the existing `candidate()` helper:
 
 ```python
-(
-    "ECONOMICS_INCOMPLETE",
-    "MARGIN_RATE_UNAVAILABLE",
-    "ROI_UNAVAILABLE",
-    "NON_POSITIVE_PROFIT",
-    "BELOW_MIN_PROFIT_PER_UNIT",
-    "BELOW_MIN_MARGIN_RATE",
-    "BELOW_MIN_ROI",
-    "ELIGIBLE_FOR_ALLOCATION",
+@pytest.mark.parametrize("changes,expected", [
+    ({"complete": False}, ("ECONOMICS_INCOMPLETE",)),
+    ({"profit": "0"}, ("NON_POSITIVE_PROFIT", "BELOW_MIN_PROFIT_PER_UNIT")),
+    ({"profit": "9"}, ("BELOW_MIN_PROFIT_PER_UNIT",)),
+    ({"margin": None}, ("MARGIN_RATE_UNAVAILABLE",)),
+    ({"margin": "0.09"}, ("BELOW_MIN_MARGIN_RATE",)),
+    ({"roi": None}, ("ROI_UNAVAILABLE",)),
+    ({"roi": "0.19"}, ("BELOW_MIN_ROI",)),
+])
+def test_legacy_economics_reason_characterization(changes, expected):
+    decision = optimize_allocations(
+        [candidate(**changes)],
+        10,
+        thresholds(),
+        plan_family=PlanFamily.CALCULATED,
+        objective=AllocationObjective.MAX_MARGIN,
+    ).decisions[0]
+    assert tuple(code for code in decision.reason_codes if code in expected) == expected
+```
+
+This supplements, not replaces, existing exact reason-order tests.
+
+- [ ] **Step 3: Extract `_classify_economics()` mechanically**
+
+Move the current block beginning `economics = candidate.economics` through the final ROI threshold check into:
+
+```python
+def _classify_economics(
+    economics,
+    thresholds: OptimizerThresholds,
+) -> tuple[bool, set[str]]:
+    reasons: set[str] = set()
+    if not economics.complete:
+        reasons.add("ECONOMICS_INCOMPLETE")
+    else:
+        profit = economics.profit_per_unit
+        margin = economics.margin_rate
+        roi = economics.roi
+        if margin is None:
+            reasons.add("MARGIN_RATE_UNAVAILABLE")
+        if roi is None:
+            reasons.add("ROI_UNAVAILABLE")
+        if profit is None or profit <= _ZERO:
+            reasons.add("NON_POSITIVE_PROFIT")
+        if profit is not None and profit < thresholds.min_profit_per_unit:
+            reasons.add("BELOW_MIN_PROFIT_PER_UNIT")
+        if margin is not None and margin < thresholds.min_margin_rate:
+            reasons.add("BELOW_MIN_MARGIN_RATE")
+        if roi is not None and roi < thresholds.min_roi:
+            reasons.add("BELOW_MIN_ROI")
+    return not reasons, reasons
+```
+
+In legacy `_classify()` replace the moved block with:
+
+```python
+economics_eligible, economics_reasons = _classify_economics(
+    candidate.economics,
+    thresholds,
 )
+reasons.update(economics_reasons)
+eligible = not reasons and economics_eligible and ceiling > 0
 ```
 
-as applicable under the existing `_REASON_ORDER`.
+Keep all legacy ceiling/feasibility reasons and `ELIGIBLE_FOR_ALLOCATION` behavior unchanged.
 
-- [ ] **Step 2: Run regression tests before refactor and verify GREEN baseline**
+- [ ] **Step 4: Run optimizer tests**
 
 ```bash
 python -m pytest tests/supply/test_optimizer.py -q
 ```
 
-Expected: PASS before refactor. This is the characterization baseline.
+Expected: PASS with no changed legacy decision/reason output.
 
-- [ ] **Step 3: Extract economics-only classification without changing semantics**
-
-Move only the `candidate.economics` block from `_classify()` into `_classify_economics()`. The helper validates thresholds once through the existing threshold-validation path and emits the same reason codes.
-
-Legacy `_classify()` becomes:
-
-```python
-def _classify(candidate, ceiling, thresholds, plan_family):
-    reasons = _legacy_ceiling_and_feasibility_reasons(...)
-    economics_eligible, economics_reasons = _classify_economics(
-        candidate.economics, thresholds
-    )
-    reasons.update(economics_reasons)
-    eligible = not reasons and economics_eligible and ceiling > 0
-    if eligible:
-        reasons.add("ELIGIBLE_FOR_ALLOCATION")
-    return eligible, reasons
-```
-
-Do not alter ceiling semantics yet; legacy optimizer remains a compatibility path.
-
-- [ ] **Step 4: Run optimizer regression tests and verify no output change**
-
-```bash
-python -m pytest tests/supply/test_optimizer.py -q
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit eligibility refactor**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add backend/supply/optimizer.py tests/supply/test_optimizer.py
@@ -253,14 +366,13 @@ git commit -m "refactor: share allocation economics eligibility"
 
 ---
 
-### Task 3: Extract deterministic MAX_MARGIN ordering policy
+### Task 3: Extract the current deterministic MAX_MARGIN ordering
 
 **Files:**
 - Modify: `backend/supply/optimizer.py`
 - Modify: `tests/supply/test_optimizer.py`
 
 **Interfaces:**
-- New private ordering helper takes a generic ranking projection rather than one concrete dataclass:
 
 ```python
 def _max_margin_order(
@@ -273,51 +385,52 @@ def _max_margin_order(
     target_quantity,
     stable_key,
 ):
-    ...
 ```
 
-- [ ] **Step 1: Add exact legacy order characterization test**
-
-Construct multiple eligible legacy candidates where each tie-break is isolated. Assert current `MAX_MARGIN` decision priority remains:
-
-1. higher `margin_rate`;
-2. higher `route_confidence`;
-3. higher `demand_confidence`;
-4. existing distortion-confidence ordering exactly as currently implemented;
-5. larger calculated-need quantity;
-6. stable cluster ID.
-
-Do not “correct” the distortion tie-break in this PR; preserve current product behavior unless a separate approved design changes it.
-
-- [ ] **Step 2: Run the characterization test and verify GREEN baseline**
-
-```bash
-python -m pytest tests/supply/test_optimizer.py -q
-```
-
-Expected: PASS before extraction.
-
-- [ ] **Step 3: Extract the stable least-significant-first ordering implementation**
-
-Move the current stable-sort sequence into `_max_margin_order()`. Keep `MAX_PROFIT` legacy compatibility inside `optimize_allocations()` if existing tests/API still reference the enum, but the new coverage allocator will call only MAX_MARGIN.
-
-Example shape:
+- [ ] **Step 1: Add exact tie-break characterization using current helpers**
 
 ```python
-def _max_margin_order(items, *, margin_rate, route_confidence,
-                      demand_confidence, distortion_confidence,
-                      target_quantity, stable_key):
-    ordered = list(items)
-    ordered.sort(key=stable_key)
-    ordered.sort(key=target_quantity, reverse=True)
-    ordered.sort(key=lambda item: _DISTORTION_RANK[distortion_confidence(item)])
-    ordered.sort(key=lambda item: _DEMAND_RANK[demand_confidence(item)], reverse=True)
-    ordered.sort(key=lambda item: _ROUTE_RANK[route_confidence(item)], reverse=True)
-    ordered.sort(key=margin_rate, reverse=True)
-    return ordered
+def test_max_margin_tie_break_order_is_characterized():
+    route_winner = optimize_allocations(
+        [
+            candidate("A", margin="0.30", route=RouteConfidence.HIGH),
+            candidate("B", margin="0.30", route=RouteConfidence.LOW),
+        ],
+        1,
+        thresholds(),
+        plan_family=PlanFamily.CALCULATED,
+        objective=AllocationObjective.MAX_MARGIN,
+    )
+    assert allocations(route_winner) == {"A": 1, "B": 0}
+
+    demand_winner = optimize_allocations(
+        [
+            candidate("A", margin="0.30", demand=SignalConfidence.HIGH),
+            candidate("B", margin="0.30", demand=SignalConfidence.LOW),
+        ],
+        1,
+        thresholds(),
+        plan_family=PlanFamily.CALCULATED,
+        objective=AllocationObjective.MAX_MARGIN,
+    )
+    assert allocations(demand_winner) == {"A": 1, "B": 0}
+
+    distortion_winner = optimize_allocations(
+        [
+            candidate("A", margin="0.30", distortion=distortion("A", SignalConfidence.HIGH)),
+            candidate("B", margin="0.30", distortion=distortion("B", SignalConfidence.LOW)),
+        ],
+        1,
+        thresholds(),
+        plan_family=PlanFamily.CALCULATED,
+        objective=AllocationObjective.MAX_MARGIN,
+    )
+    assert allocations(distortion_winner) == {"A": 0, "B": 1}
 ```
 
-- [ ] **Step 4: Run legacy optimizer tests and verify unchanged output**
+Existing tests already cover larger need and stable cluster ID; keep them.
+
+- [ ] **Step 2: Run characterization baseline**
 
 ```bash
 python -m pytest tests/supply/test_optimizer.py -q
@@ -325,7 +438,76 @@ python -m pytest tests/supply/test_optimizer.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit ordering refactor**
+- [ ] **Step 3: Add shared ordering helper with the exact current stable-sort order**
+
+```python
+def _max_margin_order(
+    items,
+    *,
+    margin_rate,
+    route_confidence,
+    demand_confidence,
+    distortion_confidence,
+    target_quantity,
+    stable_key,
+):
+    ordered = list(items)
+    ordered.sort(key=stable_key)
+    ordered.sort(key=target_quantity, reverse=True)
+    ordered.sort(
+        key=lambda item: _DISTORTION_RANK[distortion_confidence(item)]
+    )
+    ordered.sort(
+        key=lambda item: _DEMAND_RANK[demand_confidence(item)],
+        reverse=True,
+    )
+    ordered.sort(
+        key=lambda item: _ROUTE_RANK[route_confidence(item)],
+        reverse=True,
+    )
+    ordered.sort(key=margin_rate, reverse=True)
+    return ordered
+```
+
+Replace only the MAX_MARGIN path's six stable sorts in `optimize_allocations()` with:
+
+```python
+if objective is AllocationObjective.MAX_MARGIN:
+    eligible = _max_margin_order(
+        eligible,
+        margin_rate=lambda item: item.economics.margin_rate,
+        route_confidence=lambda item: item.route_confidence,
+        demand_confidence=lambda item: item.demand_confidence,
+        distortion_confidence=lambda item: (
+            None
+            if item.distortion_signal is None
+            else item.distortion_signal.confidence
+        ),
+        target_quantity=lambda item: item.calculated_need_qty,
+        stable_key=lambda item: item.cluster_id,
+    )
+else:
+    eligible.sort(key=lambda item: item.cluster_id)
+    eligible.sort(key=lambda item: item.calculated_need_qty, reverse=True)
+    eligible.sort(key=lambda item: _DISTORTION_RANK[
+        None if item.distortion_signal is None else item.distortion_signal.confidence
+    ])
+    eligible.sort(key=lambda item: _DEMAND_RANK[item.demand_confidence], reverse=True)
+    eligible.sort(key=lambda item: _ROUTE_RANK[item.route_confidence], reverse=True)
+    eligible.sort(key=lambda item: item.economics.profit_per_unit, reverse=True)
+```
+
+This deliberately leaves legacy MAX_PROFIT compatibility intact while sharing the product's MAX_MARGIN path.
+
+- [ ] **Step 4: Run optimizer tests**
+
+```bash
+python -m pytest tests/supply/test_optimizer.py -q
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add backend/supply/optimizer.py tests/supply/test_optimizer.py
@@ -334,14 +516,13 @@ git commit -m "refactor: share MAX_MARGIN ordering policy"
 
 ---
 
-### Task 4: Classify coverage legs before seller-stock scarcity
+### Task 4: Classify desired coverage legs before scarcity
 
 **Files:**
 - Modify: `backend/supply/optimizer.py`
 - Modify: `tests/supply/test_optimizer.py`
 
 **Interfaces:**
-- Produces new public function:
 
 ```python
 def allocate_coverage_legs(
@@ -351,65 +532,117 @@ def allocate_coverage_legs(
     *,
     plan_family: PlanFamily,
 ) -> CoverageAllocationResult:
-    ...
 ```
 
-All candidates must share one SKU. Duplicate `(origin, destination)` legs are rejected.
-
-- [ ] **Step 1: Write failing allocation-blocked tests**
+- [ ] **Step 1: Add failing allocation-blocked test**
 
 ```python
-def test_ineligible_desired_leg_becomes_allocation_blocked_not_stock_shortage():
+def test_ineligible_desired_leg_is_allocation_blocked_with_abundant_stock():
     result = allocate_coverage_legs(
-        candidates=(coverage_candidate(
-            origin="Москва", destination="Казань", desired=50,
-            economics=incomplete_economics("SKU-1", "Москва"),
-        ),),
-        available_stock=100,
-        thresholds=thresholds(),
-        plan_family=PlanFamily.CALCULATED,
+        [coverage_candidate(
+            "Москва",
+            "Казань",
+            50,
+            complete=False,
+        )],
+        100,
+        thresholds(),
     )
     assert result.allocated_qty == 0
-    assert result.allocation_gaps[0].allocation_blocked_qty == 50
-    assert result.allocation_gaps[0].stock_uncovered_qty == 0
-    assert "ECONOMICS_INCOMPLETE" in result.final_legs[0].reason_codes
+    assert result.unallocated_stock == 100
+    assert result.final_legs[0].final_allocated_qty == 0
+    assert result.final_legs[0].eligible is False
+    assert result.final_legs[0].reason_codes == ("ECONOMICS_INCOMPLETE",)
+    assert result.allocation_gaps == (
+        DestinationAllocationGap(
+            "SKU-1",
+            "Казань",
+            50,
+            0,
+            ("ECONOMICS_INCOMPLETE",),
+        ),
+    )
 ```
 
-Add a threshold-failure case with abundant stock and assert it is also blocked, never seller-stock shortage.
+- [ ] **Step 2: Add failing threshold-block test**
 
-- [ ] **Step 2: Run focused tests and verify RED**
+Use desired=30, profit `9`, margin/ROI above thresholds, seller stock=100. Assert blocked=30, stock gap=0, reason `BELOW_MIN_PROFIT_PER_UNIT`.
+
+- [ ] **Step 3: Run tests and verify RED**
 
 ```bash
 python -m pytest tests/supply/test_optimizer.py -q
 ```
 
-Expected: FAIL because `allocate_coverage_legs` is absent.
+Expected: `allocate_coverage_legs()` absent.
 
-- [ ] **Step 3: Implement validation and pre-scarcity classification**
+- [ ] **Step 4: Implement exact validation and pre-scarcity classification**
 
-For every candidate:
+At function start:
 
 ```python
-eligible, reasons = _classify_economics(candidate.economics, thresholds)
-if eligible:
-    reasons.add("ELIGIBLE_FOR_ALLOCATION")
-else:
-    blocked_by_destination[candidate.leg.destination_cluster_id] += candidate.leg.desired_qty
+if isinstance(available_stock, bool) or not isinstance(available_stock, int):
+    raise TypeError("available_stock must be an int")
+if available_stock < 0:
+    raise ValueError("available_stock must be nonnegative")
+if not isinstance(plan_family, PlanFamily):
+    raise TypeError("plan_family must be PlanFamily")
+thresholds = _validate_thresholds(thresholds)
+items = tuple(candidates)
+if not items:
+    raise ValueError("candidates must not be empty")
+if any(not isinstance(item, CoverageAllocationCandidate) for item in items):
+    raise TypeError("candidates must contain CoverageAllocationCandidate values")
+sku = items[0].leg.sku
+if any(item.leg.sku != sku for item in items):
+    raise ValueError("all candidates must have the same SKU")
+keys = [
+    (item.leg.origin_cluster_id, item.leg.destination_cluster_id)
+    for item in items
+]
+if len(keys) != len(set(keys)):
+    raise ValueError("duplicate origin and destination coverage leg")
 ```
 
-Do not classify `available_stock == 0` here; stock is the later scarcity phase.
+Classify:
 
-Create a `FinalCoverageLeg` for every desired leg, including blocked legs with `final_allocated_qty=0`, so plan evidence remains inspectable.
+```python
+classified = {
+    (item.leg.origin_cluster_id, item.leg.destination_cluster_id):
+        _classify_economics(item.economics, thresholds)
+    for item in items
+}
+blocked_by_destination: dict[str, int] = {}
+blocked_reasons: dict[str, set[str]] = {}
+eligible: list[CoverageAllocationCandidate] = []
+for item in items:
+    key = (item.leg.origin_cluster_id, item.leg.destination_cluster_id)
+    is_eligible, reasons = classified[key]
+    if is_eligible:
+        eligible.append(item)
+    else:
+        destination = item.leg.destination_cluster_id
+        blocked_by_destination[destination] = (
+            blocked_by_destination.get(destination, 0) + item.leg.desired_qty
+        )
+        blocked_reasons.setdefault(destination, set()).update(reasons)
+```
 
-- [ ] **Step 4: Run blocking tests and verify GREEN for classification slice**
+Do not inspect seller stock during this phase.
+
+- [ ] **Step 5: Build blocked final legs with zero allocation**
+
+Use `_ordered(reasons)` for canonical reason order. The scarcity phase in Task 5 fills eligible legs; blocked legs always stay zero.
+
+- [ ] **Step 6: Run blocking tests**
 
 ```bash
 python -m pytest tests/supply/test_optimizer.py -q
 ```
 
-Expected: blocked-cause tests pass; scarcity tests are added next.
+Expected: new blocked tests pass. Existing legacy tests remain green.
 
-- [ ] **Step 5: Commit coverage eligibility slice**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add backend/supply/optimizer.py tests/supply/test_optimizer.py
@@ -418,81 +651,77 @@ git commit -m "feat: classify coverage allocation eligibility"
 
 ---
 
-### Task 5: Allocate scarce seller stock across eligible coverage legs
+### Task 5: Apply known seller-stock scarcity over eligible legs only
 
 **Files:**
 - Modify: `backend/supply/optimizer.py`
 - Modify: `tests/supply/test_optimizer.py`
 
-**Interfaces:**
-- Completes `allocate_coverage_legs(...)` using `_max_margin_order()`.
-
-- [ ] **Step 1: Write failing MAX_MARGIN scarce-stock test**
+- [ ] **Step 1: Add failing MAX_MARGIN scarcity test**
 
 ```python
 def test_coverage_scarcity_prefers_higher_margin_leg():
     result = allocate_coverage_legs(
-        candidates=(
+        [
             coverage_candidate("Москва", "Казань", 50, margin="0.20"),
             coverage_candidate("Питер", "Тверь", 50, margin="0.30"),
-        ),
-        available_stock=60,
-        thresholds=thresholds(),
-        plan_family=PlanFamily.CALCULATED,
+        ],
+        60,
+        thresholds(),
     )
     allocated = {
-        (x.origin_cluster_id, x.destination_cluster_id): x.final_allocated_qty
-        for x in result.final_legs
+        (item.leg.origin_cluster_id, item.leg.destination_cluster_id):
+            item.final_allocated_qty
+        for item in result.final_legs
     }
-    assert allocated[("Питер", "Тверь")] == 50
-    assert allocated[("Москва", "Казань")] == 10
+    assert allocated == {
+        ("Москва", "Казань"): 10,
+        ("Питер", "Тверь"): 50,
+    }
 ```
 
-- [ ] **Step 2: Write seller-stock-only gap test**
+- [ ] **Step 2: Add failing mixed blocked + scarce causal test**
 
 ```python
-def test_eligible_unfilled_quantity_is_stock_uncovered():
-    result = allocate_coverage_legs(... desired total 100, available_stock=60 ...)
-    assert sum(g.allocation_blocked_qty for g in result.allocation_gaps) == 0
-    assert sum(g.stock_uncovered_qty for g in result.allocation_gaps) == 40
+def test_blocked_quantity_never_consumes_stock_and_stock_gap_is_separate():
+    result = allocate_coverage_legs(
+        [
+            coverage_candidate("A", "D1", 30, complete=False),
+            coverage_candidate("B", "D2", 50, margin="0.30"),
+            coverage_candidate("C", "D3", 50, margin="0.20"),
+        ],
+        60,
+        thresholds(),
+    )
+    gaps = {item.destination_cluster_id: item for item in result.allocation_gaps}
+    assert gaps["D1"].allocation_blocked_qty == 30
+    assert gaps["D1"].stock_uncovered_qty == 0
+    assert gaps["D3"].allocation_blocked_qty == 0
+    assert gaps["D3"].stock_uncovered_qty == 40
+    assert result.allocated_qty == 60
 ```
 
-- [ ] **Step 3: Write mixed blocked+scarce causal test**
+- [ ] **Step 3: Add failing zero-stock test**
 
-Use three legs for one SKU:
-- destination A desired 30, economics blocked;
-- destination B desired 50, eligible high margin;
-- destination C desired 50, eligible lower margin;
-- seller stock 60.
+Two eligible desired legs total 70, available stock 0. Assert final allocated=0 and stock_uncovered total=70; allocation_blocked total=0.
 
-Assert:
-- blocked = 30;
-- B gets 50;
-- C gets 10;
-- stock uncovered = 40;
-- blocked quantity never consumes seller stock.
-
-- [ ] **Step 4: Run focused tests and verify RED**
+- [ ] **Step 4: Run tests and verify RED**
 
 ```bash
 python -m pytest tests/supply/test_optimizer.py -q
 ```
 
-Expected: new scarcity/gap tests fail before implementation.
+Expected: scarcity assertions fail before completion.
 
-- [ ] **Step 5: Implement MAX_MARGIN scarcity only over eligible candidates**
-
-Order eligible candidates with the extracted helper:
+- [ ] **Step 5: Order eligible coverage candidates with the shared MAX_MARGIN helper**
 
 ```python
-eligible = _max_margin_order(
+ordered_eligible = _max_margin_order(
     eligible,
     margin_rate=lambda item: item.economics.margin_rate,
     route_confidence=lambda item: item.leg.route_confidence,
     demand_confidence=lambda item: item.demand_confidence,
-    distortion_confidence=lambda item: (
-        None if item.distortion_signal is None else item.distortion_signal.confidence
-    ),
+    distortion_confidence=lambda item: item.distortion_confidence,
     target_quantity=lambda item: item.destination_target_qty,
     stable_key=lambda item: (
         item.leg.origin_cluster_id,
@@ -501,38 +730,60 @@ eligible = _max_margin_order(
 )
 ```
 
-Then sequentially allocate:
+- [ ] **Step 6: Allocate sequentially and classify stock gaps**
 
 ```python
 remaining = available_stock
-for item in eligible:
+allocated_by_key: dict[tuple[str, str], int] = {}
+stock_by_destination: dict[str, int] = {}
+for item in ordered_eligible:
+    key = (item.leg.origin_cluster_id, item.leg.destination_cluster_id)
     quantity = min(remaining, item.leg.desired_qty)
+    allocated_by_key[key] = quantity
     remaining -= quantity
+    missing = item.leg.desired_qty - quantity
+    if missing:
+        destination = item.leg.destination_cluster_id
+        stock_by_destination[destination] = (
+            stock_by_destination.get(destination, 0) + missing
+        )
 ```
 
-For every eligible leg:
+Build `FinalCoverageLeg` for every candidate in stable `(origin,destination)` order. For eligible legs start reasons with `ELIGIBLE_FOR_ALLOCATION`; add `SELLER_STOCK_EXHAUSTED` whenever allocation is below desired, `PARTIAL_BY_SELLER_STOCK` only when `0 < quantity < desired`, and `ALLOCATED` when quantity > 0. Blocked legs keep only their economics reasons and zero allocation.
+
+- [ ] **Step 7: Build per-destination gap rows**
+
+For the sorted union of blocked and stock destination IDs:
 
 ```python
-stock_gap = item.leg.desired_qty - quantity
-```
-
-Aggregate stock gaps by destination. Add `PARTIAL_BY_SELLER_STOCK`, `SELLER_STOCK_EXHAUSTED` and `ALLOCATED` using the existing reason vocabulary where applicable.
-
-- [ ] **Step 6: Calculate expected profit with existing Decimal discipline**
-
-Within the existing `localcontext(prec=40, rounding=ROUND_HALF_EVEN)` pattern:
-
-```python
-expected_profit = (
-    Decimal("0")
-    if economics.profit_per_unit is None
-    else Decimal(quantity) * economics.profit_per_unit
+DestinationAllocationGap(
+    sku=sku,
+    destination_cluster_id=destination,
+    allocation_blocked_qty=blocked_by_destination.get(destination, 0),
+    stock_uncovered_qty=stock_by_destination.get(destination, 0),
+    reason_codes=_ordered(
+        blocked_reasons.get(destination, set())
+        | ({"SELLER_STOCK_EXHAUSTED"} if stock_by_destination.get(destination, 0) else set())
+    ),
 )
 ```
 
-`objective_profit` is the sum of final-leg expected profits.
+- [ ] **Step 8: Compute profit with current Decimal discipline**
 
-- [ ] **Step 7: Run optimizer tests and verify GREEN**
+Use the same `localcontext()` precision/rounding as legacy optimizer. For each final leg:
+
+```python
+profit_per_unit = item.economics.profit_per_unit
+expected_profit = (
+    _ZERO
+    if profit_per_unit is None
+    else Decimal(quantity) * profit_per_unit
+)
+```
+
+`objective_profit` is the sum of final-leg expected profits. `allocated_qty` is the sum of final allocations. `unallocated_stock = available_stock - allocated_qty`.
+
+- [ ] **Step 9: Run optimizer tests**
 
 ```bash
 python -m pytest tests/supply/test_optimizer.py -q
@@ -540,7 +791,7 @@ python -m pytest tests/supply/test_optimizer.py -q
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit scarcity slice**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add backend/supply/optimizer.py tests/supply/test_optimizer.py
@@ -549,56 +800,68 @@ git commit -m "feat: allocate seller stock across coverage legs"
 
 ---
 
-### Task 6: Prove conservation, deterministic ties and legacy compatibility
+### Task 6: Prove conservation, deterministic input order and public export
 
 **Files:**
 - Modify: `backend/supply/__init__.py`
 - Modify: `tests/supply/test_optimizer.py`
+- Regression: `tests/supply/test_coverage.py`
 - Regression: `tests/api/test_product_completion_acceptance.py`
 
-**Interfaces:**
-- Public exports: `CoverageAllocationCandidate`, `FinalCoverageLeg`, `DestinationAllocationGap`, `CoverageAllocationResult`, `allocate_coverage_legs`.
-
-- [ ] **Step 1: Add conservation test joining PR-B network gaps with PR-C gaps**
-
-The allocator does not own network gaps, so prove composition explicitly in the test:
+- [ ] **Step 1: Add exact conservation test across all three unmet classes**
 
 ```python
-def test_final_coverage_conservation_with_all_gap_classes():
+def test_coverage_allocation_composes_with_network_gap_to_conserve_target():
     target_qty = 120
     network_uncovered = 20
-    result = allocate_coverage_legs(... desired legs total 100 ...)
-    final = sum(x.final_allocated_qty for x in result.final_legs)
-    blocked = sum(x.allocation_blocked_qty for x in result.allocation_gaps)
-    stock = sum(x.stock_uncovered_qty for x in result.allocation_gaps)
+    result = allocate_coverage_legs(
+        [
+            coverage_candidate("A", "Казань", 30, complete=False, target=120),
+            coverage_candidate("B", "Казань", 70, margin="0.30", target=120),
+        ],
+        50,
+        thresholds(),
+    )
+    final = sum(item.final_allocated_qty for item in result.final_legs)
+    blocked = sum(item.allocation_blocked_qty for item in result.allocation_gaps)
+    stock = sum(item.stock_uncovered_qty for item in result.allocation_gaps)
     assert final + network_uncovered + blocked + stock == target_qty
+    assert final <= result.available_stock
+    assert all(
+        item.final_allocated_qty <= item.leg.desired_qty
+        for item in result.final_legs
+    )
 ```
 
-Also assert:
+Here desired legs total 100; 20 is the PR-B network gap; blocked 30; eligible 70 with stock 50; the invariant is 50 + 20 + 30 + 20 = 120.
 
-```python
-sum(x.final_allocated_qty for x in result.final_legs) <= result.available_stock
-```
+- [ ] **Step 2: Add exact input-order invariance test**
 
-and every final leg is `<= desired_qty`.
+Create three equal-margin eligible coverage candidates with distinct route/demand/distortion/tie values. Call `allocate_coverage_legs()` for every `itertools.permutations(items)` and assert the set of `CoverageAllocationResult` values has length 1.
 
-- [ ] **Step 2: Add stable-tie/input-order invariance test**
-
-Reverse candidate input order while keeping facts equal and assert the same final legs/gaps/result ordering.
-
-- [ ] **Step 3: Add public export smoke test and verify RED**
+- [ ] **Step 3: Add failing export smoke test**
 
 ```python
 def test_coverage_allocator_is_exported():
-    from backend.supply import allocate_coverage_legs
+    from backend.supply import CoverageAllocationResult, allocate_coverage_legs
+
+    assert CoverageAllocationResult.__name__ == "CoverageAllocationResult"
     assert callable(allocate_coverage_legs)
 ```
 
-- [ ] **Step 4: Export only the approved coverage allocation surface**
+- [ ] **Step 4: Run export test and verify RED**
 
-Update `backend/supply/__init__.py`. Do not export internal eligibility/order helpers.
+```bash
+python -m pytest tests/supply/test_optimizer.py::test_coverage_allocator_is_exported -q
+```
 
-- [ ] **Step 5: Run PR-C regression suite**
+Expected: import failure until exports are added.
+
+- [ ] **Step 5: Export approved allocation surface**
+
+Update `backend/supply/__init__.py` to export `CoverageAllocationCandidate`, `FinalCoverageLeg`, `DestinationAllocationGap`, `CoverageAllocationResult`, and `allocate_coverage_legs`. Do not export `_classify_economics` or `_max_margin_order`.
+
+- [ ] **Step 6: Run PR-C regression suite**
 
 ```bash
 python -m pytest \
@@ -607,9 +870,9 @@ python -m pytest \
   tests/api/test_product_completion_acceptance.py -q
 ```
 
-Expected: PASS, including all existing legacy optimizer Product Completion behavior.
+Expected: PASS.
 
-- [ ] **Step 6: Run full repository verification**
+- [ ] **Step 7: Run full repository verification**
 
 ```bash
 python -m pytest -q
@@ -620,9 +883,9 @@ node --check frontend/assets/js/flow.js
 node --check frontend/assets/js/app.js
 ```
 
-Expected: all commands exit 0.
+Expected: every command exits 0.
 
-- [ ] **Step 7: Commit export/acceptance slice**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add backend/supply/__init__.py tests/supply/test_optimizer.py
@@ -633,22 +896,18 @@ git commit -m "test: verify coverage MAX_MARGIN invariants"
 
 ## PR-C Acceptance Gate
 
-Before opening PR-C, verify from fresh output:
+Fresh `python -m pytest -q` output must prove:
 
-```bash
-python -m pytest -q
-```
-
-Required proofs:
-
-- Existing legacy `optimize_allocations()` tests remain green; one eligibility/order policy is reused rather than duplicated.
-- Coverage allocator never re-ranks or creates routes; every final leg corresponds to one PR-B desired leg.
-- Existing economics completeness/profit/margin/ROI thresholds remain eligibility gates.
-- Ineligible desired quantity becomes `allocation_blocked_qty` even when seller stock is abundant.
-- Seller-stock scarcity runs only over eligible desired quantities.
-- Eligible unfilled quantity becomes `stock_uncovered_qty`, never allocation-blocked.
-- MAX_MARGIN remains primary ranking; current deterministic tie-break intent is preserved.
-- Blocked legs consume zero seller stock.
-- Sum of final allocation never exceeds seller available stock or any desired-leg ceiling.
-- Final + network-uncovered + allocation-blocked + stock-uncovered can conserve the original destination target exactly.
-- No application orchestration, snapshot/API or frontend behavior is switched in PR-C.
+- legacy optimizer outputs remain green after the shared eligibility/order refactor;
+- coverage allocator never changes PR-B desired routes;
+- existing economics completeness/profit/margin/ROI gates remain exact;
+- ineligible desired quantity becomes allocation-blocked with abundant stock;
+- blocked quantity consumes zero stock;
+- only eligible desired quantity can become seller-stock-uncovered;
+- known seller stock is shared across all origins/destinations for the SKU;
+- MAX_MARGIN and the existing tie-break intent are preserved;
+- final allocation never exceeds seller stock or a desired-leg ceiling;
+- final + network-uncovered + allocation-blocked + stock-uncovered conserves the original destination target;
+- input order cannot change the result;
+- unknown seller stock is not coerced to zero in PR-C or its tests;
+- application/snapshot/API/frontend are not switched in PR-C.
