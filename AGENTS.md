@@ -4,14 +4,15 @@
 
 Before implementing selected supply-network / coverage-planning work, read, in order:
 
-1. `docs/superpowers/specs/2026-09-08-selected-supply-network-coverage-planner-design.md`;
-2. `docs/superpowers/specs/2026-09-03-real-data-demand-stockout-flow-design.md`;
-3. the matching PR-specific 2026-09-03 design brief/spec (`pr1` … `pr5`) when the work touches those already-built layers;
-4. `docs/superpowers/specs/2026-09-02-ozon-fbo-product-completion-design.md`;
-5. `UX-CONTRACT.md`;
-6. `DESIGN.md`;
-7. `docs/superpowers/specs/2026-08-20-scoz-lite-portable-architecture-design.md`;
-8. the matching current implementation plan under `docs/superpowers/plans/`, when present.
+1. `docs/superpowers/specs/2026-09-08-route-cost-index-amendment.md` when the work touches route tariffs, RouteCostIndex, direct route economics, planned route evidence or replan tariff data;
+2. `docs/superpowers/specs/2026-09-08-selected-supply-network-coverage-planner-design.md`;
+3. `docs/superpowers/specs/2026-09-03-real-data-demand-stockout-flow-design.md`;
+4. the matching PR-specific 2026-09-03 design brief/spec (`pr1` … `pr5`) when the work touches those already-built layers;
+5. `docs/superpowers/specs/2026-09-02-ozon-fbo-product-completion-design.md`;
+6. `UX-CONTRACT.md`;
+7. `DESIGN.md`;
+8. `docs/superpowers/specs/2026-08-20-scoz-lite-portable-architecture-design.md`;
+9. the matching current implementation plan under `docs/superpowers/plans/`, when present.
 
 For work confined to the already-completed real-data demand/stockout/Flow roadmap and unrelated to selected-network planning, read, in order:
 
@@ -30,7 +31,8 @@ For PR1 specifically, the implementation plan is:
 Selected-network planning precedence is:
 
 ```text
-2026-09-08 Selected Supply Network & Coverage Planner
+2026-09-08 Route Cost Index amendment (within its explicit tariff-topology scope)
+→ 2026-09-08 Selected Supply Network & Coverage Planner
 → 2026-09-03 real-data roadmap + matching PR specs
 → 2026-09-02 Product Completion design
 → UX-CONTRACT.md / DESIGN.md for frontend behavior and visual system
@@ -39,7 +41,9 @@ Selected-network planning precedence is:
 → older implementation plans / issue summaries
 ```
 
-The 2026-09-08 design supersedes earlier sources only where it is more specific about selected supply networks, destination-to-origin coverage assignment, tariff-based route ranking, physical-capacity ownership, planning snapshot/replan semantics and planned-flow UI.
+The Route Cost Index amendment supersedes the selected-network design only where it is explicitly more specific about the current customer-delivery tariff matrix, pair-level normalized RouteCostIndex, exact-fee tie behavior, PlanningBasis tariff scale and historical Flow percentage denominator. All other selected-network semantics remain in force.
+
+The 2026-09-08 selected-network design supersedes earlier sources only where it is more specific about selected supply networks, destination-to-origin coverage assignment, tariff-based route ranking, physical-capacity ownership, planning snapshot/replan semantics and planned-flow UI.
 
 The 2026-09-03 roadmap supersedes the earlier Product Completion design only where it is more specific about real-data demand/routing separation, daily stockout evidence, financial-impact presentation, diagnostics and real-scale Flow UI. Other Product Completion business rules remain in force.
 
@@ -68,8 +72,8 @@ sklad_ozon is deliberately SCOZ-lite. Do not copy SQLite, migrations, repository
 
 - Work outside `main`; use TDD for behavior changes and implement only the current approved PR scope and acceptance fixes.
 - Do not collapse the five-PR real-data roadmap into one large implementation PR.
-- Do not collapse the selected-network implementation sequence (PR-A … PR-E in the 2026-09-08 design) into one large implementation PR.
-- Before any UI change, read `DESIGN.md`, `UX-CONTRACT.md`, the applicable canonical product design, and the matching PR-specific UI design brief/plan.
+- Do not collapse the selected-network implementation sequence (PR-A … PR-E) into one large implementation PR.
+- Before any UI change, read `DESIGN.md`, `UX-CONTRACT.md`, the applicable canonical product design/amendment, and the matching PR-specific UI design brief/plan.
 - Production frontend remains committed vanilla HTML/CSS/JavaScript: no npm, TypeScript, framework, compiler, bundler, or frontend build.
 - Python owns ingestion, domain rules, analytics, demand, stockout, economics, feasibility, coverage planning, optimization, diagnostic causal grouping and business presentation aggregates. FastAPI routes are a thin application/transport shell.
 - Use dependency-free functional cores and imperative shells; test Python with `python -m pytest -q`.
@@ -91,9 +95,13 @@ sklad_ozon is deliberately SCOZ-lite. Do not copy SQLite, migrations, repository
 - Daily stockout/substitution detection is performed at `SKU × destination` before any cluster-level presentation aggregation.
 - Current availability corroborates historical stockout evidence but does not define historical stock state.
 - Historical observed/clean route shares are evidence only. They MUST NOT become future coverage weights or be renormalized across the selected network.
-- For selected-network planning, non-local route preference is based on current direct Ozon tariff within the relevant volume band, after restrictions/physical feasibility filtering.
+- For selected-network planning, LOCAL is preferred first. A non-local candidate must have complete current direct customer-delivery tariff evidence for the concrete SKU conditions after restrictions/physical feasibility filtering.
+- Non-local route ordering is exact direct fee ascending. A pair-level SKU-independent `RouteCostIndex` may break an exact direct-fee tie; it never substitutes for an incomplete direct quote.
+- `RouteCostIndex` is normalized only within identical price+volume tariff classes, excludes LOCAL rows, is stored once per route pair, and is not an allocation/margin score.
+- The normalized customer-delivery tariff matrix is carried once. Do not persist or precompute a Cartesian `SKU × origin × destination` route-affinity/economics matrix.
+- Cross-docking / seller supply-delivery tariffs are outside RouteCostIndex and DirectRouteQuote.
+- When historical Flow % is shown for a concrete SKU route, use the destination-oriented denominator represented by `FulfillmentFlowCell.destination_share`; do not substitute the origin-profile `RouteDistributionCell.share`.
 - The user selects the global operational supply network; per-SKU feasible origins are filtered/selected automatically by restrictions and route tariffs.
-- Do not persist a separate route-affinity matrix per SKU when SKUs share the same tariff volume band.
 - Do not save daily historical inventory snapshots for the selected-network feature.
 - Restrictions are the physical eligibility/capacity source. Explicit finite, explicit unlimited and unknown capacity evidence must remain distinct; unknown is never treated as unlimited.
 - Multiple allowed warehouse maxima inside one cluster are not summed by the cluster-level planner unless a later warehouse-level design explicitly proves additive capacity.
@@ -106,10 +114,12 @@ sklad_ozon is deliberately SCOZ-lite. Do not copy SQLite, migrations, repository
 - **Calculated destination target** is own calculated need and is not capped by Ozon recommendation. Physical feasibility applies downstream to selected origins in Coverage Planner. Calculated remains the primary `Наш план` family.
 - The single supported product allocation objective is `MAX_MARGIN`; it is not user-selectable.
 - Coverage Planner decides desired placement inside the selected network; MAX_MARGIN remains the allocation eligibility/scarcity policy.
-- Keep `network_uncovered`, allocation-policy-blocked quantity, and seller-stock-uncovered quantity causally distinct.
+- Numeric RouteCostIndex MUST NOT be a MAX_MARGIN scarcity sort key; scarcity uses exact direct/local route economics on desired legs.
+- Keep `network_uncovered`, allocation-policy/data-blocked quantity, and seller-stock-uncovered quantity causally distinct.
 - A network-only replan must create a new immutable PlanningSnapshot referencing the unchanged AnalysisSnapshot; it must not mutate/relabel the base analysis.
+- Network-only replan may perform exact direct tariff lookup/economics from its immutable normalized PlanningBasis, but it must not rerun ingestion, demand, stockout, clean-route history or RouteCostIndex derivation.
 - Checkbox edits are draft only. The selected network becomes applied only after explicit `Пересчитать план` succeeds.
-- Frontend code must not calculate demand, stockout, route cleaning, route economics, unit economics, coverage quantities, weighted margin/profit aggregates, or optimizer formulas.
+- Frontend code must not calculate demand, stockout, route cleaning, route economics, unit economics, coverage quantities, RouteCostIndex, weighted margin/profit aggregates, or optimizer formulas.
 - Do not serialize raw order/buyer PII or an unbounded daily route matrix to the frontend. Presentation contracts must remain bounded backend aggregates.
 - Preserve metadata, lifecycle semantics, the PII boundary, fail-closed ingestion, incomplete-period handling, tariff coverage without renormalization, spreadsheet parity, and correct tax/VAT/co-invest, feasibility, and counterfactual economics contracts unless an approved later design explicitly changes them.
 
