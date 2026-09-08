@@ -4,7 +4,7 @@
 
 **Goal:** Convert the existing Calculated Plan into an operational whole-pack plan that respects supplier multiplicity, seller stock, Ozon cluster capacity and product volume without changing upstream demand semantics.
 
-**Architecture:** Keep the current `optimize_allocations()` and analytical `AnalysisSnapshot` behavior intact. Extract the existing deterministic per-SKU eligibility/ranking policy into reusable helpers, then add a pure whole-pack operationalizer that takes the already-calculated per-cluster allocation as its desired baseline. A thin decision adapter builds UI-ready `ShippableLine` views; API wiring comes later in PR-D.
+**Architecture:** Keep the current `optimize_allocations()` and analytical `AnalysisSnapshot` behavior intact. Extract the existing deterministic per-SKU eligibility/ranking policy into reusable helpers, then add a pure whole-pack operationalizer that takes the already-calculated per-cluster allocation as its desired baseline plus PR-A's explicit cluster-capacity evidence. A thin decision adapter builds UI-ready `ShippableLine` views; API wiring comes later in PR-D.
 
 **Tech Stack:** Python 3, frozen dataclasses, `Decimal`, pytest; no new dependencies.
 
@@ -103,7 +103,7 @@ Do not alter `_ceiling()` or reason vocabulary. Preserve exact stable sorting se
 python -m pytest tests/supply/test_optimizer.py -q
 ```
 
-Expected: byte-for-business-output behavior remains unchanged for existing cases.
+Expected: existing optimization results remain identical for all characterization fixtures.
 
 - [ ] **Step 5: Commit**
 
@@ -127,6 +127,8 @@ git commit -m "refactor: share supply allocation policy"
 class PackPlanCandidate:
     assessment: PlacementAssessment
     analytical_plan_qty: int
+    capacity_kind: RestrictionCapacityKind
+    max_supply_qty: int | None
 
 @dataclass(frozen=True, slots=True)
 class PackAllocationDecision:
@@ -155,17 +157,21 @@ class PackOptimizationResult:
     binding_reasons: tuple[str, ...]
 ```
 
+`RestrictionCapacityKind` is the PR-A domain enum. `PackPlanCandidate.max_supply_qty` is required for FINITE and must be `None` for UNLIMITED/UNKNOWN. Do not infer capacity kind from `PlacementAssessment.feasibility.max_supply_qty is None`, because legacy feasibility used `None` ambiguously.
+
 Validation:
 
 - `pack_multiple > 0` integer;
 - `analytical_plan_qty >= 0`;
 - all candidates are one SKU and unique clusters;
 - `seller_available_qty >= 0`;
+- FINITE candidate has a nonnegative integer `max_supply_qty`;
+- UNLIMITED/UNKNOWN candidate has `max_supply_qty is None`;
 - output `shippable_qty == allocation_pack_count * pack_multiple`.
 
 - [ ] **Step 1: Write contract validation tests**
 
-Assert bools/non-integers/zero multiplicity fail; mixed SKU and duplicate cluster fail; negative quantities fail.
+Assert bools/non-integers/zero multiplicity fail; mixed SKU and duplicate cluster fail; negative quantities fail; inconsistent capacity kind/value pairs fail.
 
 - [ ] **Step 2: Run RED**
 
@@ -215,13 +221,13 @@ For each candidate:
 desired_packs = ceil_div(analytical_plan_qty, pack_multiple)
 ```
 
-Physical pack ceiling:
+Physical pack ceiling uses the explicit fields on `PackPlanCandidate`:
 
 ```python
-if capacity_kind is UNLIMITED:
+if candidate.capacity_kind is RestrictionCapacityKind.UNLIMITED:
     capacity_packs = None
-elif capacity_kind is FINITE:
-    capacity_packs = max_supply_qty // pack_multiple
+elif candidate.capacity_kind is RestrictionCapacityKind.FINITE:
+    capacity_packs = candidate.max_supply_qty // pack_multiple
 else:
     candidate is blocked with CAPACITY_UNKNOWN
 ```
@@ -242,7 +248,7 @@ seller_available_packs = seller_available_qty // pack_multiple
 unshippable_remainder = seller_available_qty % pack_multiple
 ```
 
-Allocate complete packs in `sort_allocation_candidates(... MAX_MARGIN)` order.
+Allocate complete packs in `sort_allocation_candidates(... MAX_MARGIN)` order, while the candidate pack ceiling—not the old pieces ceiling—sets the quantity limit.
 
 - [ ] **Step 1: Add canonical rounding test**
 
@@ -320,7 +326,7 @@ git commit -m "feat: allocate supply in whole packs"
 
 ---
 
-### Task 4: Build presentation-ready shippable lines without changing AnalysisSnapshot
+### Task 4: Build presentation-ready shippable lines without changing existing analytical fields
 
 **Files:**
 - Modify: `backend/decision/contracts.py`
@@ -341,6 +347,7 @@ class ShippableLine:
     pack_multiple: int
     shippable_qty: int
     rounding_delta_qty: int
+    current_weekly_rate: Decimal | None
     current_fbo_stock: int | None
     inbound_qty: int | None
     seller_available_stock: int
@@ -379,6 +386,8 @@ class ShippablePlan:
     incomplete_sku_count: int
 ```
 
+`current_weekly_rate` is propagated unchanged from `DecisionRow.need.current_weekly_rate`; PR-C needs it for urgency. It is not recalculated in this adapter.
+
 Pure adapter signature:
 
 ```python
@@ -391,6 +400,8 @@ def assemble_shippable_plan(
     cluster_facts: Mapping[tuple[str, str], ClusterSupplyFacts],
 ) -> ShippablePlan: ...
 ```
+
+The caller creates each `PackPlanCandidate` by joining the analytical cluster candidate/assessment to `ClusterSupplyFacts.capacity_kind/max_supply_qty`; do not reconstruct capacity kind from legacy `SupplyFeasibility.max_supply_qty`.
 
 - [ ] **Step 1: Add identity/join tests**
 
@@ -405,9 +416,9 @@ assert plan.total_volume_l == sum(x.total_volume_l for x in plan.lines)
 
 Use `Decimal`; no float conversion.
 
-- [ ] **Step 3: Add FBO/inbound preservation test**
+- [ ] **Step 3: Add FBO/inbound/rate preservation test**
 
-The adapter copies `current_fbo_stock` and `inbound_qty` from the existing `DecisionRow` unchanged. It never subtracts them again.
+The adapter copies `current_fbo_stock`, `inbound_qty` and `need.current_weekly_rate` from the existing `DecisionRow` unchanged. It never subtracts inbound again and never changes the rate.
 
 - [ ] **Step 4: Add article aggregation test**
 
@@ -452,7 +463,7 @@ Existing analytical plan values must remain unchanged because PR-B adds a downst
 python -m pytest -q
 ```
 
-- [ ] **Step 4: Verify invariants manually from test fixtures**
+- [ ] **Step 4: Verify invariants from test fixtures**
 
 For every positive output line assert:
 
