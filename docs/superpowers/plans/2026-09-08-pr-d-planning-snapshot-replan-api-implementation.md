@@ -2,101 +2,92 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Integrate PR-A/B/C into the application without disturbing upstream demand/history semantics: full analysis produces an immutable `PlanningBasis` and authoritative `PlanningSnapshot`, persists the successfully applied supply network, and a stateless `/api/replan` recalculates only coverage/allocation when the network alone changes.
+**Goal:** Integrate PR-A/B/C into full analysis, produce an immutable compact `PlanningBasis` plus authoritative `PlanningSnapshot`, persist only successfully applied supply networks, and add stateless `/api/replan` that recalculates coverage/allocation without rerunning upstream analysis.
 
-**Architecture:** `AnalysisSnapshot` remains the immutable upstream evidence product. Add two nested immutable planning objects at its boundary: `PlanningBasis` contains all backend-resolved downstream inputs required for a network-only replan, while `PlanningSnapshot` contains one applied-network result. Full analysis computes the SKU-independent `RouteCostIndex` once from the normalized Ozon customer-delivery tariff matrix, then precomputes exact direct quotes/economics for the current SKU route candidate universe. Replan consumes those already-resolved inputs and never reruns ingestion, demand, stockout, historical route analysis, tariff-index normalization or direct tariff lookup.
+**Architecture:** Keep current `analyze()` as the upstream business-analysis pipeline. It gains only an explicit seller-stock result. `backend/api.py` first assembles the existing `AnalysisSnapshot`, then uses that snapshot ID plus `AnalysisResult` and normalized inputs to build `PlanningBasis`; this avoids creating a snapshot-ID dependency inside `application.py`. `PlanningBasis` contains only compact backend-resolved primitives needed for replan: destination targets, feasibility + local allocation economics, route index, direct route fee + compact allocation economics, seller stock and confidence evidence. The final `PlanningSnapshot` contains rich `PlanningLegView` rows plus backend-generated cluster-level physical roll-up.
 
-**Tech Stack:** Python 3, FastAPI, frozen dataclasses, JSON wire serialization, Project JSON schema migration, pytest; PR-A/B/C contracts; no new dependencies.
+**Tech Stack:** Python 3, FastAPI, frozen dataclasses, `Decimal`, Project JSON schema migration, strict JSON wire parsing, pytest; no new dependencies.
 
 **Spec:** `docs/superpowers/specs/2026-09-08-selected-supply-network-coverage-planner-design.md`
 
-**Approved implementation clarification (2026-09-08):** The raw Ozon customer-delivery tariff matrix is the source of both direct quotes and `RouteCostIndex`. Cross-docking tariffs are outside this pipeline. `RouteCostIndex` is stored once per route pair in planning evidence, not as a SKU matrix. Direct SKU economics still uses exact matched route fees.
-
 ## Global Constraints
 
-- Network selection remains downstream of `Calculated Need`; it cannot change demand history, stockout episodes, clean routes, `DemandEstimate` or `NeedComparison`.
-- Current `AnalysisSnapshot` evidence fields stay immutable and backwards-readable in this PR.
-- `PlanningSnapshot` is authoritative for the new physical plan; legacy `DecisionRow.safe_plan_qty/calculated_plan_qty` remain transitional until PR-E switches UI ownership.
-- `PlanningBasis` contains backend-resolved data only; frontend never computes route fees, route indices, capacities, economics, coverage or allocation.
-- Seller stock in `PlanningBasis` comes from the exact current `application.py` seller-stock resolution, not from a second Project JSON lookup.
-- Missing/conflicting seller stock remains unknown/blocked; it is never coerced to zero.
-- Route indices are computed once per full tariff dataset and keyed only by route pair.
-- Direct route evidence/economics is precomputed for the current `SKU × feasible origin × destination` candidate universe.
-- Project persistence distinguishes `None = no network has ever been successfully applied` from `() = user successfully applied an empty network`.
-- First-use default selects all current candidate clusters with at least one explicitly allowed SKU and known usable capacity evidence. Newly appearing clusters after persistence default unselected.
-- Draft network is persisted only after successful full analysis/replan.
-- Failed calculation preserves the prior applied network.
-- Network-only replan must not call ingestion, demand, stockout, clean-route, route-index, tariff-lookup or economics functions.
-- Existing `/api/analysis` and `/api/analysis/stream` remain usable by the current frontend before PR-E.
-- No new server/session state is introduced; the replan boundary is stateless apart from existing Project persistence.
-- Physical cluster roll-up is aggregated across SKUs on backend; per-SKU capacity evidence remains separate at `SKU × origin`.
+- Selected network remains downstream of `Calculated Need` and cannot change demand history, stockout, clean routes, `DemandEstimate` or `NeedComparison`.
+- Existing `AnalysisSnapshot` fields stay immutable/backwards-readable; PR-D only appends optional planning fields.
+- Current API root shape remains: `/api/analysis` returns `{"snapshot": wire(AnalysisSnapshot), ...}`. Planning fields live inside that nested snapshot.
+- Seller stock comes from current `application.py` resolution; Project JSON is not a second stock source.
+- Missing/conflicting seller stock remains unknown and is never coerced to zero.
+- `RouteCostIndex` is built once per full normalized customer-delivery tariff dataset, not per SKU.
+- Direct fee/economics is resolved once per relevant SKU route during full analysis and stored compactly.
+- LOCAL allocation economics is stored explicitly in `PlanningSkuOrigin`, so replan does not need original placements.
+- `PlanningBasis` contains no raw report bytes and no full `UnitEconomicsResult` objects.
+- `/api/replan` must not call ingestion, demand, stockout, clean-route, route-index, direct tariff lookup or economics functions.
+- Cross-docking tariffs never enter PlanningBasis.
+- Applied network persistence distinguishes `None` (never successfully applied) from `()` (successfully applied empty network).
+- First use with `None` defaults to all current candidate clusters; later new candidates never auto-expand persisted network.
+- Failed full analysis/replan never persists the draft network.
+- No new session/server state; replan is stateless except existing Project persistence.
+- Physical origin roll-up is backend aggregated across SKUs; physical capacity remains per `SKU × origin` and is never inferred from roll-up totals.
 - Use TDD and no new dependencies.
 
 ---
 
 ## File Structure
 
-- Modify `backend/project.py` — Project JSON v2 migration + `applied_supply_network` persistence.
-- Modify `backend/application.py` — expose resolved seller stock and provide upstream inputs for planning-basis assembly.
-- Modify `backend/decision/contracts.py` — `PlanningBasis`, `PlanningSnapshot`, route/capacity/target evidence, destination views and cluster-level origin roll-ups; append optional planning fields to `AnalysisSnapshot`.
-- Create `backend/decision/planning.py` — build planning basis, reconcile/default network, execute Safe/Calculated families, assemble destination and cluster-level origin views.
-- Modify `backend/decision/snapshot.py` — attach nested planning objects without changing legacy decision-row calculations yet.
-- Modify `backend/decision/__init__.py` — export planning contracts/functions.
-- Modify `backend/api.py` — optional network field on full analysis; JSON `/api/replan`; persist applied network only after success.
-- Modify `tests/test_project.py` — v1→v2 migration and null-vs-empty network semantics.
-- Create `tests/test_application.py` — direct `analyze()` characterization of seller-stock resolution and planning inputs.
-- Create `tests/decision/test_planning.py` — planning-basis construction, route-index reuse, network reconciliation, roll-ups and conservation.
-- Modify `tests/api/test_analysis.py` — transitional nested planning response and full-analysis selected-network behavior.
-- Create `tests/api/test_replan.py` — network-only replan behavior, strict wire validation and persistence.
-- Run `tests/api/test_product_completion_acceptance.py` unchanged as legacy-wire regression.
+- Modify `backend/project.py` — schema v2 + `applied_supply_network`.
+- Modify `backend/application.py` — explicit `ResolvedSellerStock` output using current semantics.
+- Modify `backend/decision/contracts.py` — compact PlanningBasis/PlanningSnapshot contracts and optional planning fields on AnalysisSnapshot.
+- Create `backend/decision/planning.py` — basis assembly, network reconciliation, Safe/Calculated execution, rich leg views and origin roll-up.
+- Create `backend/decision/planning_wire.py` — strict `PlanningBasis` JSON parser for `/api/replan`.
+- Modify `backend/decision/__init__.py` — public planning exports.
+- Modify `backend/api.py` — full-analysis planning integration + `/api/replan` + persistence.
+- Modify `tests/test_project.py` — schema migration/persistence.
+- Create `tests/test_application.py` — seller-stock characterization.
+- Create `tests/decision/test_planning.py` — basis/reconciliation/planning/roll-up tests.
+- Create `tests/decision/test_planning_wire.py` — strict wire roundtrip/rejection tests.
+- Modify `tests/api/test_analysis.py` — nested planning response and full-analysis network request.
+- Create `tests/api/test_replan.py` — stateless network-only recalculation/persistence.
+- Run `tests/api/test_product_completion_acceptance.py` unchanged as compatibility regression.
 
 ---
 
-### Task 1: Migrate Project JSON to explicit applied-network persistence
+### Task 1: Migrate Project persistence to schema v2
 
 **Files:**
 - Modify: `backend/project.py`
-- Test: `tests/test_project.py`
+- Modify: `tests/test_project.py`
 
-**Contract:** append one field and upgrade schema:
+**Contract:**
 
 ```python
 SCHEMA_VERSION = 2
-
-@dataclass(frozen=True, slots=True)
-class Project:
-    schema_version: int = field(default=SCHEMA_VERSION, init=False)
-    tariffs: tuple[TariffRow, ...] = ()
-    tariff_meta: ReportMeta | None = None
-    product_economics: tuple[ProductEconomicsInput, ...] = ()
-    product_economics_meta: ReportMeta | None = None
-    seller_available_stock: dict[str, int] = field(default_factory=dict)
-    manual_cluster_mappings: dict[str, str] = field(default_factory=dict)
-    economics_settings: EconomicsSettings | None = None
-    optimizer_thresholds: OptimizerThresholds | None = None
-    operational_snapshots: tuple[OperationalSnapshot, ...] = ()
-    applied_supply_network: tuple[str, ...] | None = None
 ```
 
-- [ ] **Step 1: Add schema-v1 migration test in `tests/test_project.py`**
+Append to `Project` after `operational_snapshots`:
 
-Start from the same valid payload used by current roundtrip tests, force:
+```python
+applied_supply_network: tuple[str, ...] | None = None
+```
+
+- [ ] **Step 1: Add schema-v1 migration test**
+
+Use the current valid persisted payload fixture, set:
 
 ```python
 payload["schema_version"] = 1
 payload.pop("applied_supply_network", None)
 ```
 
-Write/load and assert:
+Load it and assert:
 
 ```python
 assert project.schema_version == 2
 assert project.applied_supply_network is None
 ```
 
-- [ ] **Step 2: Add null-vs-empty roundtrip tests**
+- [ ] **Step 2: Add null/empty/nonempty roundtrip tests**
 
-Create two Projects using `dataclasses.replace(Project(), applied_supply_network=value)`:
+Write/load three Projects and assert:
 
 ```python
 assert roundtrip(None).applied_supply_network is None
@@ -104,19 +95,13 @@ assert roundtrip(()).applied_supply_network == ()
 assert roundtrip(("Питер", "Москва")).applied_supply_network == ("Москва", "Питер")
 ```
 
-`roundtrip()` in the test writes with `save_project_atomic()` and reloads with `load_project()`.
+The test helper uses `dataclasses.replace(Project(), applied_supply_network=value)`, `save_project_atomic()`, then `load_project()`.
 
-- [ ] **Step 3: Add invalid network tests**
+- [ ] **Step 3: Add invalid-network tests**
 
-Assert `ProjectValidationError` for:
+Assert `ProjectValidationError` for duplicate, blank and non-string members.
 
-```python
-("Москва", "Москва")
-("Москва", "")
-("Москва", 123)
-```
-
-- [ ] **Step 4: Implement versioned top-field validation**
+- [ ] **Step 4: Implement version-specific strict top fields**
 
 ```python
 _TOP_FIELDS_V1 = {
@@ -128,25 +113,21 @@ _TOP_FIELDS_V1 = {
 _TOP_FIELDS_V2 = _TOP_FIELDS_V1 | {"applied_supply_network"}
 ```
 
-In `load_project()`:
+`load_project()` accepts exactly v1/v2. V1 injects `raw_network=None`; v2 accepts only `null` or list of unique nonblank strings. Convert a valid list to `tuple(sorted(raw_network))`.
+
+- [ ] **Step 5: Save only schema v2**
+
+`_to_payload()` emits:
 
 ```python
-version = payload.get("schema_version")
-if version == 1:
-    _strict(payload, _TOP_FIELDS_V1, "project")
-    raw_network = None
-elif version == 2:
-    _strict(payload, _TOP_FIELDS_V2, "project")
-    raw_network = payload["applied_supply_network"]
-else:
-    raise ProjectValidationError("Missing or unsupported schema version.")
+"schema_version": 2,
+"applied_supply_network": (
+    None if project.applied_supply_network is None
+    else list(sorted(project.applied_supply_network))
+),
 ```
 
-For v2, accept only `None` or list[str]. Reject blanks/duplicates/nonstrings. Convert valid values to `tuple(sorted(raw_network))`. Save always writes schema 2 and `None` or `list(project.applied_supply_network)`.
-
-- [ ] **Step 5: Update `_validate()` for schema 2 and network validation**
-
-Do not change validation of tariffs/economics/snapshots.
+Update `_validate()` to accept current schema 2 only for in-memory Project.
 
 - [ ] **Step 6: Run exact tests**
 
@@ -165,11 +146,11 @@ git commit -m "feat: persist applied supply network"
 
 ---
 
-### Task 2: Expose seller stock using the exact current resolution semantics
+### Task 2: Expose seller stock using the exact current analysis semantics
 
 **Files:**
-- Modify: `backend/application.py`
 - Modify: `backend/decision/contracts.py`
+- Modify: `backend/application.py`
 - Create: `tests/test_application.py`
 
 **Contract:**
@@ -189,28 +170,26 @@ Append to `AnalysisResult`:
 resolved_seller_stock: tuple[ResolvedSellerStock, ...] = ()
 ```
 
-- [ ] **Step 1: Create direct characterization tests in `tests/test_application.py`**
+- [ ] **Step 1: Characterize current stock branches through `analyze()`**
 
-Build the smallest existing-domain fixtures that let `analyze()` reach seller-stock resolution. Add four tests:
+Create four minimal test scenarios in `tests/test_application.py`:
 
 ```text
-FBS evidence {7} -> ResolvedSellerStock(quantity=7, complete=True)
-FBS evidence {7,9} -> quantity=None, CONFLICTING_FBS_AVAILABLE_STOCK
-no FBS field + product.available_qty=11 + availability_fbs_authoritative=False -> quantity=11
-availability_fbs_authoritative=True + no proven FBS quantity -> quantity=None, MISSING_SELLER_AVAILABLE_STOCK
+one proven FBS value 7 -> quantity 7, complete
+conflicting positive FBS values 7 and 9 -> quantity None, CONFLICTING_FBS_AVAILABLE_STOCK
+no FBS evidence + product.available_qty 11 + availability_fbs_authoritative False -> quantity 11, complete
+availability_fbs_authoritative True + no proven FBS qty -> quantity None, MISSING_SELLER_AVAILABLE_STOCK
 ```
 
-Each test asserts both the new `resolved_seller_stock` result and the existing optimizer/diagnostic behavior for the same case.
+For each case assert both the new result and existing allocation/diagnostic outcome.
 
-- [ ] **Step 2: Run characterization tests before refactor**
+- [ ] **Step 2: Run tests and verify only new contract is RED**
 
 ```bash
 python -m pytest tests/test_application.py -q
 ```
 
-Expected: collection/attribute failure only for the new result field; existing behavior assertions establish the baseline.
-
-- [ ] **Step 3: Extract one pure helper from the existing inline stock expression**
+- [ ] **Step 3: Extract current inline resolution to one helper**
 
 ```python
 def _resolve_seller_stock(
@@ -238,17 +217,15 @@ def _resolve_seller_stock(
     )
 ```
 
-The existing `conflicting_fbs` set remains authoritative for detecting multiple positive values before helper invocation.
+- [ ] **Step 4: Feed the same resolution to the legacy optimizer**
 
-- [ ] **Step 4: Feed the same resolution to the existing legacy optimizer**
+Call legacy optimizer only when `complete` and quantity is not None. Preserve current diagnostics for incomplete evidence.
 
-Replace the current inline `stock = (...)` expression with the helper result. Only call legacy `optimize_allocations()` when `resolution.complete` and `resolution.quantity is not None`. Preserve existing diagnostics for incomplete resolution.
+- [ ] **Step 5: Return one sorted resolution per SKU considered by allocation**
 
-- [ ] **Step 5: Return all SKU resolutions from `AnalysisResult`**
+Do not read `Project.seller_available_stock` here.
 
-Store one resolution per SKU considered by the allocation loop, sorted by SKU.
-
-- [ ] **Step 6: Run exact regression set**
+- [ ] **Step 6: Run regressions**
 
 ```bash
 python -m pytest tests/test_application.py tests/supply/test_optimizer.py tests/api/test_analysis.py -q
@@ -259,38 +236,49 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add backend/application.py backend/decision/contracts.py tests/test_application.py
+git add backend/decision/contracts.py backend/application.py tests/test_application.py
 git commit -m "refactor: expose resolved seller stock evidence"
 ```
 
 ---
 
-### Task 3: Define immutable planning contracts including cluster-level physical roll-up
+### Task 3: Define compact planning contracts and rich plan views
 
 **Files:**
 - Modify: `backend/decision/contracts.py`
 - Create: `tests/decision/test_planning.py`
 
-**Core contracts:**
+**Contracts:**
 
 ```python
+@dataclass(frozen=True, slots=True)
+class PlanningSkuOrigin:
+    sku: str
+    origin_cluster_id: str
+    feasibility: SupplyFeasibility
+    local_economics: AllocationEconomics
+
+
 @dataclass(frozen=True, slots=True)
 class PlanningRouteCandidate:
     sku: str
     origin_cluster_id: str
     destination_cluster_id: str
-    direct_quote: DirectRouteQuote
-    direct_economics: UnitEconomicsResult
+    direct_tariff_complete: bool
+    direct_route_fee: Decimal | None
+    direct_tariff_reason_code: str | None
+    allocation_economics: AllocationEconomics
     route_confidence: RouteConfidence
     observed_flow_qty: int
     observed_flow_share: Decimal | None
 
 
 @dataclass(frozen=True, slots=True)
-class PlanningSkuOrigin:
+class PlanningDestinationSignal:
     sku: str
-    origin_cluster_id: str
-    feasibility: SupplyFeasibility
+    destination_cluster_id: str
+    demand_confidence: SignalConfidence
+    distortion_confidence: SignalConfidence | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,11 +292,31 @@ class PlanningBasis:
     route_cost_indices: tuple[RouteCostIndex, ...]
     route_candidates: tuple[PlanningRouteCandidate, ...]
     seller_stock: tuple[ResolvedSellerStock, ...]
-    demand_confidence: tuple[tuple[str, str, SignalConfidence], ...]
-    distortion_confidence: tuple[tuple[str, str, SignalConfidence | None], ...]
+    destination_signals: tuple[PlanningDestinationSignal, ...]
     optimizer_thresholds: OptimizerThresholds
     tariff_source_name: str
     tariff_report_generated_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningLegView:
+    sku: str
+    origin_cluster_id: str
+    destination_cluster_id: str
+    coverage_type: CoverageType
+    desired_qty: int
+    final_allocated_qty: int
+    direct_route_fee: Decimal | None
+    route_cost_index: Decimal | None
+    route_cost_index_coverage: Decimal | None
+    route_cost_index_spread: Decimal | None
+    route_confidence: RouteConfidence
+    observed_flow_qty: int
+    observed_flow_share: Decimal | None
+    expected_profit_per_unit: Decimal | None
+    expected_profit: Decimal
+    eligible: bool
+    reason_codes: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,7 +328,7 @@ class DestinationPlanView:
     network_uncovered_qty: int
     allocation_blocked_qty: int
     stock_uncovered_qty: int
-    legs: tuple[FinalCoverageLeg, ...]
+    legs: tuple[PlanningLegView, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,83 +378,81 @@ class PlanningSnapshot:
     calculated: PlanningFamilySnapshot
 ```
 
-Append defaults to `AnalysisSnapshot`:
+Append final default fields to `AnalysisSnapshot`:
 
 ```python
 planning_basis: PlanningBasis | None = None
 planning_snapshot: PlanningSnapshot | None = None
 ```
 
-- [ ] **Step 1: Add contract validation tests**
+- [ ] **Step 1: Add contract identity tests**
 
-In `tests/decision/test_planning.py` assert rejection of:
-
-```text
-duplicate PlanningRouteCandidate (sku,origin,destination)
-duplicate RouteCostIndex (origin,destination)
-duplicate PlanningSkuOrigin (sku,origin)
-negative destination/origin totals
-OriginPlanView total_qty != own_destination_qty + external_destination_qty
-OriginDestinationBreakdown quantity != sum(sku_breakdown.quantity)
-```
-
-- [ ] **Step 2: Add cluster-level origin aggregation expectation**
-
-Create two final legs for different SKUs through Moscow:
+Reject duplicate:
 
 ```text
-SKU-A Moscow->Moscow 10
-SKU-B Moscow->Kazan 20
+PlanningSkuOrigin (sku,origin)
+PlanningRouteCandidate (sku,origin,destination)
+RouteCostIndex (origin,destination) inside PlanningBasis
+PlanningDestinationSignal (sku,destination)
 ```
 
-Expected cluster roll-up:
+Validate local economics identity matches `PlanningSkuOrigin`, route allocation economics identity matches SKU+origin, and route direct-fee completeness consistency matches PR-B primitive rules.
+
+- [ ] **Step 2: Add rich leg and destination conservation validation**
+
+Reject `PlanningLegView.final_allocated_qty > desired_qty` and `DestinationPlanView` where:
 
 ```text
-Moscow total=30
-own=10
-external=20
-Moscow destination breakdown=10 [SKU-A 10]
-Kazan destination breakdown=20 [SKU-B 20]
+final_allocated_qty + network_uncovered_qty + allocation_blocked_qty + stock_uncovered_qty != target_qty
 ```
 
-- [ ] **Step 3: Run and verify RED**
+Also assert `final_allocated_qty == sum(leg.final_allocated_qty)`.
+
+- [ ] **Step 3: Add cluster-level origin roll-up contract test**
+
+Expected result from:
+
+```text
+SKU-A Moscow->Moscow = 10
+SKU-B Moscow->Kazan = 20
+```
+
+is one `OriginPlanView("Москва")` with total 30, own 10, external 20, Moscow destination `[SKU-A 10]` and Kazan destination `[SKU-B 20]`.
+
+- [ ] **Step 4: Run and verify RED**
 
 ```bash
 python -m pytest tests/decision/test_planning.py -q
 ```
 
-Expected: contracts absent.
+Expected: new contracts absent.
 
-- [ ] **Step 4: Implement contracts and validation**
+- [ ] **Step 5: Implement immutable contracts and validations**
 
-`OriginPlanView` intentionally has no SKU field. SKU-specific physical capacity stays in `PlanningBasis.sku_origins`; cluster totals are presentation-ready output, not a capacity source.
+`OriginPlanView` intentionally has no SKU identity; it is a physical cluster roll-up. `PlanningSkuOrigin` remains the SKU-specific physical evidence source.
 
-- [ ] **Step 5: Run and verify GREEN**
+- [ ] **Step 6: Run and verify GREEN**
 
 ```bash
 python -m pytest tests/decision/test_planning.py -q
 ```
 
-Expected: contract tests pass.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add backend/decision/contracts.py tests/decision/test_planning.py
-git commit -m "feat: define immutable planning snapshots"
+git commit -m "feat: define compact planning snapshot contracts"
 ```
 
 ---
 
-### Task 4: Build candidate network and planning evidence after upstream analysis
+### Task 4: Build PlanningBasis after existing AnalysisSnapshot identity exists
 
 **Files:**
 - Create: `backend/decision/planning.py`
-- Modify: `backend/application.py`
-- Test: `tests/decision/test_planning.py`
-- Test: `tests/test_application.py`
+- Modify: `tests/decision/test_planning.py`
 
-**Interface:**
+**Public interface:**
 
 ```python
 def build_planning_basis(
@@ -469,87 +475,61 @@ def build_planning_basis(
 
 - [ ] **Step 1: Add candidate-cluster test**
 
-Candidate cluster universe equals sorted clusters where at least one `PlacementAssessment.feasibility` is:
+Candidate clusters are sorted unique origins where at least one placement feasibility is:
 
 ```text
 allowed == True
-capacity_kind in {FINITE, UNLIMITED}
-finite max_supply_qty > 0 when FINITE
+capacity_kind FINITE with max_supply_qty > 0
+or capacity_kind UNLIMITED
 ```
 
-UNKNOWN-only clusters are not selector candidates.
+UNKNOWN and finite zero are not selector candidates.
 
-- [ ] **Step 2: Add RouteCostIndex reuse test**
+- [ ] **Step 2: Add target-family tests**
 
-Two SKUs sharing `Москва → Казань` must produce:
+For each Need:
 
 ```text
-1 pair-level RouteCostIndex in planning_basis.route_cost_indices
-2 SKU-specific PlanningRouteCandidate rows
+Calculated target exists when calculated_need_qty is known and equals it
+Safe target exists only when calculated_need_qty and ozon_recommended_qty are both known and equals min(the two)
+missing target evidence is absence, never zero
 ```
 
-- [ ] **Step 3: Add exact target-family tests**
+Store both families as `DestinationTarget` rows distinguished by `plan_family`.
 
-For complete Need:
+- [ ] **Step 3: Add local compact economics test**
 
-```text
-Calculated target = calculated_need_qty
-Safe target = min(calculated_need_qty, ozon_recommended_qty)
-```
-
-If `calculated_need_qty` is missing, emit neither family target for that identity. If Ozon recommendation alone is missing, Calculated target may exist but Safe target does not. Never coerce missing target evidence to zero.
-
-- [ ] **Step 4: Build observed pair evidence from fulfillment flows, not origin-route share**
-
-Call existing:
+For each usable `PlacementAssessment`, `PlanningSkuOrigin.local_economics` must equal:
 
 ```python
-observed_flows = aggregate_observed_flows(observed_routes)
+to_allocation_economics(placement.economics)
 ```
 
-Index by `(sku, origin_cluster_id, destination_cluster_id)`. For `PlanningRouteCandidate`:
+This is the only local economics source required by future replan.
+
+- [ ] **Step 4: Build historical exact-pair evidence from fulfillment flow**
+
+Call `aggregate_observed_flows(observed_routes)` and index by `(sku,origin,destination)`. Use its `quantity` and `destination_share`; do not use origin-distribution `RouteDistributionCell.share`.
+
+Route confidence:
 
 ```text
-observed_flow_qty = FulfillmentFlowCell.quantity, else 0
-observed_flow_share = FulfillmentFlowCell.destination_share, else None
+HIGH if exact identity exists in clean_routes.clean_routes
+MEDIUM if absent from clean but exists in clean_routes.observed_routes
+LOW otherwise
 ```
 
-Do not use `RouteDistributionCell.share` here because that is an origin distribution share, not destination share.
-
-- [ ] **Step 5: Derive route confidence without numeric thresholds**
-
-Build exact identity sets from:
-
-```python
-clean_exact = {
-    (x.sku, x.origin_cluster_id, x.destination_cluster_id)
-    for x in clean_routes.clean_routes
-}
-observed_exact = {
-    (x.sku, x.origin_cluster_id, x.destination_cluster_id)
-    for x in clean_routes.observed_routes
-}
-```
-
-Then:
-
-```text
-HIGH   if identity in clean_exact
-MEDIUM if identity in observed_exact only
-LOW    otherwise
-```
-
-- [ ] **Step 6: Build RouteCostIndex once per tariff dataset**
+- [ ] **Step 5: Build RouteCostIndex once**
 
 ```python
 route_cost_indices = build_route_cost_indices(tariffs)
 ```
 
-Store the returned tuple directly in `PlanningBasis`. Do not call the function in a SKU loop.
+Store the tuple directly. Two SKUs sharing one pair still produce one pair-level index.
 
-- [ ] **Step 7: Precompute direct quote/economics for all relevant non-local candidate routes**
+- [ ] **Step 6: Precompute each relevant non-local direct route once**
 
-For each product with known volume, each physically usable SKU-origin, and each destination with at least one emitted target:
+For every product with known volume, each usable SKU-origin and every destination appearing in either family target for that SKU:
 
 ```python
 quote = quote_direct_route(
@@ -559,22 +539,25 @@ quote = quote_direct_route(
     volume_liters=product.volume_liters,
     price=product.price,
 )
-economics = calculate_direct_route_economics(
+unit = calculate_direct_route_economics(
     product,
     origin,
     quote,
     economics_settings,
 )
+compact = to_allocation_economics(unit)
 ```
 
-Store incomplete quote/economics candidates too; downstream planner/allocator needs causal failure evidence.
+Create `PlanningRouteCandidate` with primitive quote fields and `compact`. Store incomplete candidates too.
 
-For LOCAL, planning uses the already-computed local `PlacementAssessment.economics` for the same `SKU × destination/origin`; LOCAL does not need a non-local RouteCostIndex.
+- [ ] **Step 7: Build destination confidence rows**
 
-- [ ] **Step 8: Run exact tests**
+For every target identity, demand confidence is the matching `DemandEstimate.confidence` or LOW if absent. Distortion confidence is matching `RecommendationDistortionSignal.confidence` for `(sku,recommended_cluster_id)` or None.
+
+- [ ] **Step 8: Run basis tests**
 
 ```bash
-python -m pytest tests/decision/test_planning.py tests/test_application.py -q
+python -m pytest tests/decision/test_planning.py -q
 ```
 
 Expected: PASS.
@@ -582,17 +565,17 @@ Expected: PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add backend/decision/planning.py backend/application.py tests/decision/test_planning.py tests/test_application.py
+git add backend/decision/planning.py tests/decision/test_planning.py
 git commit -m "feat: build backend-owned planning basis"
 ```
 
 ---
 
-### Task 5: Reconcile applied network and execute Safe/Calculated planning
+### Task 5: Reconcile selected network and execute both plan families
 
 **Files:**
 - Modify: `backend/decision/planning.py`
-- Test: `tests/decision/test_planning.py`
+- Modify: `tests/decision/test_planning.py`
 
 **Interfaces:**
 
@@ -608,72 +591,88 @@ def reconcile_supply_network(
 def build_planning_snapshot(
     basis: PlanningBasis,
     selected_supply_network: tuple[str, ...],
+    reconciliation_warnings: tuple[str, ...] = (),
 ) -> PlanningSnapshot:
 ```
 
-- [ ] **Step 1: Add network reconciliation tests**
-
-Assert exactly:
+- [ ] **Step 1: Add exact network reconciliation cases**
 
 ```text
 candidates M,P,K; persisted None; requested None -> M,P,K
-candidates M,P,K; persisted M,P; requested None -> M,P
+candidates M,P,K; persisted M,P; requested None -> M,P; K unselected
 candidates M,P,K; persisted empty; requested None -> empty
 candidates M,P; persisted M,Old; requested None -> M + warning SUPPLY_CLUSTER_NO_LONGER_AVAILABLE:Old
 candidates M,P; requested empty -> empty
-candidates M,P; requested M,K -> ValueError for K not candidate
+candidates M,P; requested M,K -> ValueError because K is not candidate
 ```
 
-Use real cluster strings in tests; sort expected tuples lexically.
+- [ ] **Step 2: Implement reconciliation exactly**
 
-- [ ] **Step 2: Implement network reconciliation**
+Requested network wins when supplied and must be subset of current candidates. Without request: persisted `None` defaults all candidates; otherwise intersect persisted with candidates and warn for disappeared entries. Never silently add new candidates to persisted network.
 
-Requested network, when provided, wins over persisted state and must be a subset of candidates. When requested is absent and persisted is `None`, default all candidates. When persisted exists, intersect with candidates and emit one stable warning per disappeared cluster. Never silently add new candidates to persisted state.
+- [ ] **Step 3: Build PR-B primitive route evidence per SKU/pair**
 
-- [ ] **Step 3: Implement one-family planner helper**
+Index pair-level RouteCostIndex and each SKU route candidate. Produce:
 
-For each SKU:
+```python
+RoutePlanningEvidence(
+    origin,
+    destination,
+    candidate.direct_tariff_complete,
+    candidate.direct_route_fee,
+    candidate.direct_tariff_reason_code,
+    None if index is None else index.index_value,
+    None if index is None else index.coverage_ratio,
+    None if index is None else index.spread_iqr,
+    candidate.route_confidence,
+    candidate.observed_flow_qty,
+    candidate.observed_flow_share,
+)
+```
 
-1. select that family’s `DestinationTarget`s;
-2. map `PlanningSkuOrigin` by origin;
-3. create `RoutePlanningEvidence` from precomputed direct candidate + pair-level RouteCostIndex;
-4. call `plan_coverage()`;
-5. for each desired leg choose economics: LOCAL from local placement evidence, ROUTE from `PlanningRouteCandidate.direct_economics`;
-6. create `CoverageAllocationCandidate` with target quantity, demand confidence and destination distortion confidence;
-7. if seller stock is incomplete, create zero final legs and `allocation_blocked_qty` using `MISSING_SELLER_AVAILABLE_STOCK`; do not call allocator with zero;
-8. otherwise call `allocate_coverage_legs()`.
+- [ ] **Step 4: Run PR-B Coverage Planner for each SKU/family**
 
-- [ ] **Step 4: Assemble destination views**
+Use matching `PlanningSkuOrigin.feasibility`, family targets and selected network.
 
-For every emitted target create one `DestinationPlanView`. Its conservation must be:
+- [ ] **Step 5: Create PR-C candidates with compact local/direct economics**
+
+For LOCAL desired leg, use matching `PlanningSkuOrigin.local_economics`. For ROUTE desired leg, use matching `PlanningRouteCandidate.allocation_economics`. Add target quantity and matching `PlanningDestinationSignal` confidence fields.
+
+If `ResolvedSellerStock.complete` is false, do not call `allocate_coverage_legs()` with zero. Produce zero final quantities for desired legs and classify their entire desired quantity as allocation blocked with the seller-stock reason code.
+
+Otherwise call `allocate_coverage_legs()` with the proven quantity.
+
+- [ ] **Step 6: Join desired + final evidence into `PlanningLegView`**
+
+For each desired leg and matching final leg copy topology fields from desired leg and allocation fields from final leg. This is the authoritative rich plan row used by PR-E; no frontend join to historical sources is required for planned link evidence.
+
+- [ ] **Step 7: Assemble `DestinationPlanView` with hard conservation**
+
+For each target:
 
 ```text
-final_allocated_qty
-+ network_uncovered_qty
-+ allocation_blocked_qty
-+ stock_uncovered_qty
-= target_qty
+sum PlanningLegView.final_allocated_qty
++ network gap
++ allocation blocked
++ stock uncovered
+= target qty
 ```
 
-- [ ] **Step 5: Assemble cluster-level origin roll-up**
+- [ ] **Step 8: Assemble cluster-level `OriginPlanView`**
 
-From final allocated legs only, group by `origin_cluster_id`, then by destination and SKU.
-
-For each origin:
+Group only final allocated planned legs by origin, then destination, then SKU. Validate:
 
 ```text
-total_qty = sum all final legs through origin
-own_destination_qty = sum legs where destination == origin
-external_destination_qty = sum legs where destination != origin
+origin total = own destination + external destinations
+origin destination quantity = sum SKU breakdown
+sum all origin totals = family total allocated
 ```
 
-Build `OriginDestinationBreakdown.quantity` from its SKU rows and validate all sums.
+- [ ] **Step 9: Assemble family totals and profit**
 
-- [ ] **Step 6: Assemble family totals**
+Target/gap totals come from destination views. Profit comes from `PlanningLegView.expected_profit`. Do not derive targets from origins because uncovered demand has no origin.
 
-Totals are sums of backend destination views and final-leg profits. Do not derive total target from origin views because uncovered target has no origin.
-
-- [ ] **Step 7: Run planning tests**
+- [ ] **Step 10: Run planning tests**
 
 ```bash
 python -m pytest tests/decision/test_planning.py tests/supply/test_coverage.py tests/supply/test_optimizer.py -q
@@ -681,7 +680,7 @@ python -m pytest tests/decision/test_planning.py tests/supply/test_coverage.py t
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add backend/decision/planning.py tests/decision/test_planning.py
@@ -690,31 +689,152 @@ git commit -m "feat: build selected-network planning snapshot"
 
 ---
 
-### Task 6: Attach planning objects to full analysis without breaking current frontend
+### Task 6: Add strict PlanningBasis wire roundtrip
 
 **Files:**
-- Modify: `backend/decision/snapshot.py`
+- Create: `backend/decision/planning_wire.py`
+- Create: `tests/decision/test_planning_wire.py`
 - Modify: `backend/decision/__init__.py`
+
+**Public interface:**
+
+```python
+def planning_basis_from_wire(value: object) -> PlanningBasis:
+```
+
+Serialization remains the existing generic API `wire()` function; this task owns strict inverse parsing only.
+
+- [ ] **Step 1: Add roundtrip test**
+
+Build a complete PlanningBasis fixture with:
+- one SAFE + one CALCULATED target;
+- one finite SKU origin with compact local economics;
+- one RouteCostIndex;
+- one direct route candidate;
+- one seller-stock row;
+- one destination signal;
+- thresholds and tariff metadata.
+
+Assert:
+
+```python
+assert planning_basis_from_wire(wire(basis)) == basis
+```
+
+Import `wire` from `backend.api` only in the test; production `planning_wire.py` must not import API.
+
+- [ ] **Step 2: Add strict rejection tests**
+
+For the same wire fixture assert `ValueError` for:
+
+```text
+unknown top-level field
+missing basis_id
+non-finite decimal string
+unknown PlanFamily value
+unknown RouteConfidence value
+route index coverage > 1
+finite feasibility without max_supply_qty
+route candidate complete=True with direct_route_fee null
+```
+
+- [ ] **Step 3: Add strict-object and scalar helpers**
+
+```python
+def _object(value, fields, context):
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} must be an object")
+    unknown = set(value) - set(fields)
+    missing = set(fields) - set(value)
+    if unknown or missing:
+        raise ValueError(f"invalid {context} fields")
+    return value
+
+
+def _decimal(value, context):
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError(f"{context} must be decimal") from None
+    if not result.is_finite():
+        raise ValueError(f"{context} must be finite")
+    return result
+
+
+def _decimal_or_none(value, context):
+    return None if value is None else _decimal(value, context)
+```
+
+Add analogous strict `_string`, `_int`, `_bool`, `_tuple` helpers; bool must not pass `_int`.
+
+- [ ] **Step 4: Implement nested parsers with exact dataclass field sets**
+
+Use each dataclass `__slots__` as the allowed/required field set and explicitly reconstruct:
+
+```text
+ScenarioSettings
+DestinationTarget
+SupplyFeasibility
+AllocationEconomics
+PlanningSkuOrigin
+RouteCostIndex
+PlanningRouteCandidate
+ResolvedSellerStock
+PlanningDestinationSignal
+OptimizerThresholds
+PlanningBasis
+```
+
+Enum reconstruction uses exact constructors such as `PlanFamily(raw)` and `RouteConfidence(raw)`; invalid values become `ValueError`. Decimal fields use helpers above. Tuple/list wire collections must be JSON lists and are converted to tuples.
+
+- [ ] **Step 5: Run wire tests**
+
+```bash
+python -m pytest tests/decision/test_planning_wire.py -q
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Export `planning_basis_from_wire`**
+
+Add it to `backend/decision/__init__.py` together with planning build/reconcile exports.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add backend/decision/planning_wire.py backend/decision/__init__.py tests/decision/test_planning_wire.py
+git commit -m "feat: parse planning basis wire strictly"
+```
+
+---
+
+### Task 7: Attach planning to full `/api/analysis` without breaking current response shape
+
+**Files:**
 - Modify: `backend/api.py`
+- Modify: `backend/decision/snapshot.py`
 - Modify: `tests/api/test_analysis.py`
 - Regression: `tests/api/test_product_completion_acceptance.py`
 
-- [ ] **Step 1: Add response-shape test**
+- [ ] **Step 1: Add nested response-shape test**
 
-For a successful `/api/analysis`, assert existing root fields remain present and:
+A successful response still has current root shape and planning appears inside `snapshot`:
 
 ```python
 body = response.json()
-assert body["snapshot_id"]
-assert body["decision_rows"] is not None
-assert body["planning_basis"]["basis_id"]
-assert body["planning_snapshot"]["applied_supply_network"] is not None
+assert body["api_version"] == 1
+assert body["snapshot"]["snapshot_id"]
+assert body["snapshot"]["decision_rows"] is not None
+assert body["snapshot"]["planning_basis"]["basis_id"]
+assert body["snapshot"]["planning_snapshot"]["applied_supply_network"] is not None
 ```
 
-- [ ] **Step 2: Parse optional selected-network multipart field strictly**
+- [ ] **Step 2: Parse optional multipart network request**
+
+Add:
 
 ```python
-def _parse_selected_supply_clusters(raw: object) -> tuple[str, ...] | None:
+def _parse_selected_supply_clusters(raw):
     if raw is None:
         return None
     try:
@@ -730,25 +850,77 @@ def _parse_selected_supply_clusters(raw: object) -> tuple[str, ...] | None:
     return tuple(sorted(value))
 ```
 
-Map parsing failure to HTTP 400 code `INVALID_SELECTED_SUPPLY_NETWORK`.
+`prepare_analysis()` returns this request separately from `ScenarioSettings`; it is not added to `ScenarioSettings`.
 
-- [ ] **Step 3: Build planning after upstream analysis and snapshot identity exist**
+- [ ] **Step 3: Keep `assemble_snapshot()` legacy calculation unchanged and append defaults**
 
-Keep current legacy `DecisionRow` assembly untouched. Attach `planning_basis` and `planning_snapshot` as additional fields only.
-
-- [ ] **Step 4: Persist applied network only after successful planning assembly**
+The function continues generating `snapshot_id`. After it returns in `run_analysis_pipeline()`:
 
 ```python
-updated_project = replace(
-    project,
-    applied_supply_network=planning_snapshot.applied_supply_network,
-)
-save_project_atomic(PROJECT_PATH, updated_project)
+legacy_snapshot = assemble_snapshot(...current arguments...)
 ```
 
-If any planning exception is returned as an API error, do not call `save_project_atomic()`.
+Use that exact `legacy_snapshot.snapshot_id` to construct PlanningBasis.
 
-- [ ] **Step 5: Run API regressions**
+- [ ] **Step 4: Build planning after the legacy snapshot**
+
+```python
+basis = build_planning_basis(
+    analysis_snapshot_id=legacy_snapshot.snapshot_id,
+    scenario=scenario,
+    needs=result.needs,
+    demand_estimates=result.demand_estimates,
+    distortions=result.distortions,
+    observed_routes=result.observed_routes,
+    clean_routes=result.clean_routes,
+    products=products.records,
+    tariffs=analysis_tariffs,
+    placements=result.placements,
+    resolved_seller_stock=result.resolved_seller_stock,
+    optimizer_thresholds=thresholds,
+    economics_settings=settings,
+)
+selected, reconciliation_warnings = reconcile_supply_network(
+    basis.candidate_supply_clusters,
+    project.applied_supply_network,
+    selected_network_request,
+)
+planning_snapshot = build_planning_snapshot(
+    basis, selected, reconciliation_warnings
+)
+snapshot = replace(
+    legacy_snapshot,
+    planning_basis=basis,
+    planning_snapshot=planning_snapshot,
+)
+```
+
+Use the actual existing assemble call arguments; do not change legacy calculations/rows.
+
+- [ ] **Step 5: Persist only after planning and wire serialization succeed**
+
+First compute:
+
+```python
+snapshot_wire = wire(snapshot)
+```
+
+Then persist:
+
+```python
+save_project_atomic(
+    PROJECT_PATH,
+    replace(project, applied_supply_network=planning_snapshot.applied_supply_network),
+)
+```
+
+Return existing API result structure using `"snapshot": snapshot_wire`. If any step before persistence raises, the prior Project remains unchanged.
+
+- [ ] **Step 6: Add full-analysis network tests**
+
+Assert explicit empty network is preserved, explicit subset is returned exactly, and an out-of-candidate cluster yields HTTP 400 `INVALID_SELECTED_SUPPLY_NETWORK` without updating Project.
+
+- [ ] **Step 7: Run API regressions**
 
 ```bash
 python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_acceptance.py -q
@@ -756,45 +928,50 @@ python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_ac
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add backend/decision/snapshot.py backend/decision/__init__.py backend/api.py tests/api/test_analysis.py
+git add backend/api.py backend/decision/snapshot.py tests/api/test_analysis.py
 git commit -m "feat: attach planning result to full analysis"
 ```
 
 ---
 
-### Task 7: Add stateless `/api/replan`
+### Task 8: Add stateless `/api/replan`
 
 **Files:**
 - Modify: `backend/api.py`
 - Create: `tests/api/test_replan.py`
 
-**Request contract:** JSON object with exactly two top-level fields:
+**Request JSON:** exactly:
 
-```text
-planning_basis
-selected_supply_clusters
+```json
+{
+  "planning_basis": {},
+  "selected_supply_clusters": ["Москва"]
+}
 ```
 
-`planning_basis` is the exact object previously returned at `/api/analysis` field `planning_basis`. `selected_supply_clusters` is a JSON array of unique nonblank candidate cluster strings; empty array is valid.
+`planning_basis` is the exact object returned by the preceding full analysis. Empty selected array is valid.
 
-**Response contract:**
+**Response JSON:**
 
-```text
-api_version = 1
-kind = planning
-planning_snapshot = wire(PlanningSnapshot)
+```json
+{
+  "api_version": 1,
+  "kind": "planning",
+  "planning_snapshot": {}
+}
 ```
 
-- [ ] **Step 1: Add successful replan test using real analysis basis**
+- [ ] **Step 1: Add successful replan test using a real full-analysis basis**
 
-In `tests/api/test_replan.py` first obtain `analysis_body` from the existing API fixture/helper used in `tests/api/test_analysis.py`, then:
+Obtain `analysis_body = client.post("/api/analysis", files=..., data=...).json()`, then:
 
 ```python
+basis = analysis_body["snapshot"]["planning_basis"]
 payload = {
-    "planning_basis": analysis_body["planning_basis"],
+    "planning_basis": basis,
     "selected_supply_clusters": ["Москва"],
 }
 response = client.post("/api/replan", json=payload)
@@ -802,16 +979,26 @@ assert response.status_code == 200
 body = response.json()
 assert body["api_version"] == 1
 assert body["kind"] == "planning"
-assert body["planning_snapshot"]["basis_id"] == analysis_body["planning_basis"]["basis_id"]
-assert body["planning_snapshot"]["analysis_snapshot_id"] == analysis_body["snapshot_id"]
+assert body["planning_snapshot"]["basis_id"] == basis["basis_id"]
+assert body["planning_snapshot"]["analysis_snapshot_id"] == basis["analysis_snapshot_id"]
 assert body["planning_snapshot"]["applied_supply_network"] == ["Москва"]
 ```
 
-Also compare destination target quantities before/after and assert they are identical while at least one origin roll-up changes in a fixture with alternate routes.
+Fixture must have at least two candidate origins so origin roll-up changes while destination target quantities remain identical.
 
-- [ ] **Step 2: Add no-upstream-recompute test**
+- [ ] **Step 2: Add strict malformed request tests**
 
-Monkeypatch these imported functions to raise `AssertionError("unexpected upstream recompute")` during `/api/replan`:
+Assert HTTP 400 codes:
+
+```text
+missing/invalid planning_basis -> INVALID_PLANNING_BASIS
+duplicate selected cluster -> INVALID_SELECTED_SUPPLY_NETWORK
+selected cluster outside basis.candidate_supply_clusters -> INVALID_SELECTED_SUPPLY_NETWORK
+```
+
+- [ ] **Step 3: Add no-upstream-recompute test**
+
+Monkeypatch the API/planning module references to these functions to raise `AssertionError("unexpected upstream recompute")` during replan:
 
 ```text
 import_availability
@@ -825,42 +1012,36 @@ quote_direct_route
 calculate_direct_route_economics
 ```
 
-The replan request from Step 1 must still return 200.
+A valid replan must still return 200.
 
-- [ ] **Step 3: Add invalid request tests**
+- [ ] **Step 4: Implement endpoint input validation**
 
-Assert HTTP 400 with stable codes:
+Read JSON object, require exactly `planning_basis` and `selected_supply_clusters`. Parse basis with `planning_basis_from_wire()`. Validate selected list with the same nonblank/unique rules and ensure set is subset of `basis.candidate_supply_clusters`.
 
-```text
-planning_basis missing -> INVALID_PLANNING_BASIS
-planning_basis unknown field -> INVALID_PLANNING_BASIS
-duplicate selected cluster -> INVALID_SELECTED_SUPPLY_NETWORK
-selected cluster not in basis candidate_supply_clusters -> INVALID_SELECTED_SUPPLY_NETWORK
-```
-
-- [ ] **Step 4: Implement strict PlanningBasis wire parser**
-
-Create private constructors in `backend/api.py` for every nested PlanningBasis contract. Reuse existing `_decimal_string` inverse semantics: parse decimal wire values using `Decimal(str(value))`, reject non-finite values, reconstruct enums from their exact `.value`, reject unknown/missing fields. Do not pass unvalidated dictionaries to business functions.
-
-- [ ] **Step 5: Execute planning only**
+- [ ] **Step 5: Execute downstream planning only**
 
 ```python
 planning_snapshot = build_planning_snapshot(
     basis,
-    selected_supply_network,
+    tuple(sorted(selected_supply_clusters)),
 )
+response_payload = {
+    "api_version": 1,
+    "kind": "planning",
+    "planning_snapshot": wire(planning_snapshot),
+}
 ```
 
-No upstream analysis call belongs in `/api/replan`.
+No full-analysis function is called.
 
-- [ ] **Step 6: Persist only after successful build**
+- [ ] **Step 6: Persist applied network after successful wire serialization**
 
-Load current Project, replace only `applied_supply_network`, save atomically, then return `{"api_version": 1, "kind": "planning", "planning_snapshot": wire(planning_snapshot)}`.
+Load current Project, replace only `applied_supply_network`, save atomically, return response. Planning failure leaves Project unchanged.
 
-- [ ] **Step 7: Run replan tests**
+- [ ] **Step 7: Run exact replan tests**
 
 ```bash
-python -m pytest tests/api/test_replan.py -q
+python -m pytest tests/api/test_replan.py tests/decision/test_planning_wire.py -q
 ```
 
 Expected: PASS.
@@ -869,30 +1050,30 @@ Expected: PASS.
 
 ```bash
 git add backend/api.py tests/api/test_replan.py
-git commit -m "feat: replan selected supply network without reanalysis"
+git commit -m "feat: replan selected network without reanalysis"
 ```
 
 ---
 
-### Task 8: Final backend verification
+### Task 9: Final backend verification
 
 **Files:** no new production files
 
-- [ ] **Step 1: Run focused planning/backend suites**
+- [ ] **Step 1: Run focused suite**
 
 ```bash
-python -m pytest tests/economics/test_tariffs.py tests/economics/test_unit.py tests/supply/test_placement.py tests/supply/test_coverage.py tests/supply/test_optimizer.py tests/test_application.py tests/decision/test_planning.py tests/api/test_analysis.py tests/api/test_replan.py -q
+python -m pytest tests/economics/test_tariffs.py tests/economics/test_unit.py tests/supply/test_placement.py tests/supply/test_coverage.py tests/supply/test_optimizer.py tests/test_application.py tests/decision/test_planning.py tests/decision/test_planning_wire.py tests/api/test_analysis.py tests/api/test_replan.py -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 2: Run legacy Product Completion acceptance**
+- [ ] **Step 2: Run Product Completion compatibility**
 
 ```bash
 python -m pytest tests/api/test_product_completion_acceptance.py -q
 ```
 
-Expected: PASS; old frontend contract remains usable before PR-E.
+Expected: PASS.
 
 - [ ] **Step 3: Run full suite**
 
@@ -902,14 +1083,14 @@ python -m pytest -q
 
 Expected: PASS.
 
-- [ ] **Step 4: Static boundary scan**
+- [ ] **Step 4: Static replan boundary scan**
 
 ```bash
 python - <<'PY'
 from pathlib import Path
-api = Path('backend/api.py').read_text('utf-8')
-start = api.index("@router.post('/api/replan')")
-replan = api[start:]
+text = Path('backend/api.py').read_text('utf-8')
+start = text.index("@router.post('/api/replan')")
+replan = text[start:]
 for forbidden in (
     'estimate_destination_demand(',
     'detect_stockouts(',
@@ -925,7 +1106,7 @@ PY
 
 Expected: `replan boundary scan: ok`.
 
-- [ ] **Step 5: Commit verification-only corrections if the completed tests required them**
+- [ ] **Step 5: Commit verification-driven corrections only if tests required code changes**
 
 ```bash
 git add backend tests
@@ -938,20 +1119,20 @@ if ! git diff --cached --quiet; then git commit -m "fix: harden planning boundar
 
 PR-D is complete only when all are true:
 
-1. Project v1 loads safely and saves as v2.
-2. `None` and empty applied network remain semantically distinct.
-3. First-use default and later reconciliation exactly follow approved rules.
-4. Seller stock comes from current analysis resolution; unknown stock never becomes zero.
-5. `RouteCostIndex` is built once from the full normalized customer-delivery tariff matrix, not per SKU.
-6. Direct quotes/economics remain SKU-specific and exact.
-7. Observed flow share stored for route evidence is destination share from aggregated fulfillment flow, not origin distribution share.
-8. Cross-docking tariffs never enter planning basis.
-9. `PlanningBasis` contains every backend-resolved downstream input required by replan.
-10. `PlanningSnapshot` owns destination coverage, cluster-level physical origin roll-up and three causal gap types.
-11. SKU-specific capacity remains separate from cluster-level roll-up totals.
-12. Full analysis can accept a selected network but preserves all upstream analysis identities.
-13. `/api/replan` does not rerun ingestion, demand, stockout, clean routes, index derivation, tariff lookup or economics.
-14. Failed full analysis/replan never persists the draft network.
-15. Empty selected network is valid and remains empty.
-16. Current root AnalysisSnapshot wire remains compatible until PR-E.
-17. Full backend suite and existing Product Completion acceptance are green.
+1. Project v1 loads and saves safely as v2.
+2. `None` and empty applied network remain distinct.
+3. First-use default and later reconciliation follow approved behavior exactly.
+4. Seller stock is exported from current analysis semantics; unknown never becomes zero.
+5. RouteCostIndex is built once per full customer-delivery tariff matrix, not per SKU.
+6. Direct fees/economics are exact per concrete SKU route and projected once to compact allocation economics.
+7. PlanningBasis contains explicit local allocation economics and needs no original placement/economics object during replan.
+8. Observed route share in planning evidence is destination share from aggregated fulfillment Flow.
+9. Cross-docking tariffs never enter planning data.
+10. PlanningSnapshot rich legs preserve Flow/index/direct-fee evidence separately.
+11. Origin physical roll-up is cluster-level across SKUs, while capacity stays SKU-specific.
+12. Full analysis builds planning only after the existing AnalysisSnapshot ID exists.
+13. Current `/api/analysis` root response shape remains compatible.
+14. `/api/replan` reconstructs PlanningBasis strictly and performs downstream planning only.
+15. Failed full analysis/replan never persists draft network.
+16. Empty selected network is valid.
+17. Focused, compatibility and full backend suites are green.
