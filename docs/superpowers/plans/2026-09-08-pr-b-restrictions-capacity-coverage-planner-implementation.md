@@ -2,54 +2,57 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make restrictions capacity unambiguous and add a deterministic pure Coverage Planner that converts destination targets into desired `origin → destination` legs inside a user-selected supply network, using exact direct tariffs as the primary non-local ranking signal and `RouteCostIndex` as secondary structural evidence.
+**Goal:** Make restrictions capacity unambiguous and add a deterministic pure Coverage Planner that converts destination targets into desired `origin → destination` legs inside a user-selected supply network.
 
-**Architecture:** Extend normalized restriction evidence with explicit `FINITE / UNLIMITED / UNKNOWN` capacity semantics. Add a pure planner that owns LOCAL-first assignment, iterative constrained-destination ordering, exact direct-fee ranking, SKU-independent route-index tie-breaks and shared `SKU × origin` capacity consumption. Historical flow remains explanatory evidence only. Keep this PR disconnected from `backend/application.py`, seller-stock allocation, snapshots, API and frontend.
+**Architecture:** Put the shared capacity-state enum at the normalized domain boundary so ingestion and supply can use it without layering cycles. Coverage Planner receives only primitive route evidence: exact direct fee/completeness, pair-level `RouteCostIndex` values, historical evidence and confidence. It does **not** import `backend.economics`; rich `DirectRouteQuote`, `RouteCostIndex` and direct economics objects remain owned by PR-A/PR-D. The planner owns LOCAL-first assignment, iterative constrained-destination ordering, exact-fee ranking, route-index tie-breaks and shared `SKU × origin` capacity consumption.
 
-**Tech Stack:** Python 3, frozen dataclasses/enums, `Decimal`, pytest; PR-A `DirectRouteQuote`, `RouteCostIndex`, `TariffClass`; no new dependencies.
+**Tech Stack:** Python 3, frozen dataclasses/enums, `Decimal`, pytest; no new dependencies.
 
 **Spec:** `docs/superpowers/specs/2026-09-08-selected-supply-network-coverage-planner-design.md`
 
-**Approved implementation clarification (2026-09-08):** `RouteCostIndex` is topology evidence derived from the whole Ozon tariff matrix. It does not replace the direct fee for a concrete SKU. Coverage ranking is therefore `LOCAL first`, then for non-local candidates exact current direct fee ASC, then known lower `RouteCostIndex`, then route-evidence confidence, then stable origin ID.
+**Approved implementation clarification (2026-09-08):** For non-local coverage the concrete SKU's complete direct tariff is primary. `RouteCostIndex` is secondary topology evidence and breaks only an exact direct-fee tie. Historical Flow remains informational. A missing direct tariff is never rescued by a favorable index.
 
 ## Global Constraints
 
 - `destination_cluster` remains the owner of demand; Coverage Planner never rewrites demand/need geography.
 - Restrictions report is the only physical eligibility/capacity source for this feature.
-- Capacity evidence distinguishes explicit `FINITE`, explicit `UNLIMITED` and `UNKNOWN`; unknown is never treated as unlimited.
+- Capacity evidence is exactly `FINITE / UNLIMITED / UNKNOWN`; unknown never means unlimited.
 - Malformed nonblank numeric capacity remains an ingestion error.
 - Multiple allowed warehouse limits inside one cluster are not summed.
 - Cluster capacity is the best independently proven single receiving option: any known UNLIMITED wins; otherwise max known FINITE; if no known capacity exists, UNKNOWN.
-- Capacity is shared by all destinations served through one `SKU × origin`; it is never reset per destination.
-- LOCAL assignment is attempted before non-local routes and does not require historical route evidence or a `RouteCostIndex`.
-- Non-local assignment requires a selected physically feasible origin, known usable capacity and a MATCHED `DirectRouteQuote` for the concrete SKU.
-- Primary non-local ordering is exact `DirectRouteQuote.matched_fee ASC`.
-- `RouteCostIndex` is only a secondary tie-break when direct fees are exactly equal; missing index evidence sorts after known index evidence.
-- Historical route share/quantity never enters coverage quantities or primary ranking.
-- Route-evidence confidence may break a remaining exact tie; stable origin ID is final.
-- No proportional split, geographic-distance fallback or LP/min-cost-flow solver.
-- No backend thresholds such as `<0.8 good` / `>1.3 bad`.
-- This PR does not apply seller-stock scarcity or allocation economics; those belong to PR-C.
-- Use TDD; no `backend/application.py`, snapshot/API/frontend changes in PR-B.
+- One `SKU × origin` capacity is shared by all destination legs through that origin.
+- LOCAL is attempted before any non-local route and needs no external route tariff/index.
+- Non-local candidates require selected origin, physical feasibility, known usable capacity and complete direct tariff evidence.
+- Primary non-local ranking is `direct_route_fee ASC`.
+- Exact-fee tie-breaks are: known lower `route_cost_index`, then higher `route_confidence`, then stable origin ID.
+- Historical route share/quantity never changes coverage quantities or ranking.
+- No proportional split, geographic fallback, LP or min-cost-flow solver.
+- No numeric index thresholds such as `0.8` / `1.3` belong in planning logic.
+- PR-B does not apply seller-stock scarcity or margin eligibility; PR-C owns that.
+- PR-B does not modify `backend/application.py`, decision snapshots, API or frontend.
+- `backend/supply` MUST NOT import `backend.economics` in this PR.
+- Use TDD and keep every task independently green.
 
 ---
 
 ## File Structure
 
-- Modify `backend/ingestion/restrictions.py` — preserve explicit warehouse capacity state at ingestion.
-- Modify `backend/supply/contracts.py` — capacity state, destination-target, desired coverage and route-evidence contracts.
-- Modify `backend/supply/feasibility.py` — canonical non-additive cluster capacity aggregation.
+- Modify `backend/domain/contracts.py` — add shared `RestrictionCapacityKind` enum.
+- Modify `backend/ingestion/restrictions.py` — preserve explicit capacity kind on every normalized restriction record.
+- Modify `backend/supply/contracts.py` — extend feasibility contracts and add primitive coverage contracts.
+- Modify `backend/supply/feasibility.py` — canonical non-additive cluster-capacity aggregation.
 - Create `backend/supply/coverage.py` — pure deterministic Coverage Planner.
 - Modify `backend/supply/__init__.py` — export coverage contracts/functions.
 - Modify `tests/ingestion/test_restrictions.py` — finite/unlimited/unknown/malformed parsing.
-- Modify `tests/supply/test_placement.py` — feasibility aggregation and legacy placement regression.
-- Create `tests/supply/test_coverage.py` — LOCAL-first, exact-fee ranking, route-index tie-break, capacity spillover, constrained-first, network-gap and conservation tests.
+- Modify `tests/supply/test_placement.py` — cluster-capacity aggregation and legacy placement regression.
+- Create `tests/supply/test_coverage.py` — planner contracts, ordering, LOCAL-first, shared capacity, constrained-first, gap and conservation tests.
 
 ---
 
-### Task 1: Preserve explicit capacity evidence in restriction ingestion
+### Task 1: Preserve explicit capacity state at the normalized domain boundary
 
 **Files:**
+- Modify: `backend/domain/contracts.py`
 - Modify: `backend/ingestion/restrictions.py`
 - Test: `tests/ingestion/test_restrictions.py`
 
@@ -68,42 +71,50 @@ Append to `RestrictionRecord`:
 capacity_kind: RestrictionCapacityKind = RestrictionCapacityKind.UNKNOWN
 ```
 
-- [ ] **Step 1: Add exact CSV fixtures for all states**
+`max_supply_qty` remains `int | None`. Only FINITE may carry an integer.
+
+- [ ] **Step 1: Add exact CSV helper and failing parsing tests**
+
+In `tests/ingestion/test_restrictions.py` add:
 
 ```python
-def _restriction_csv(maximum: str) -> bytes:
+def _capacity_csv(maximum: str) -> bytes:
     return (
         "SKU;Кластер;Склад;Возможно ли поставить товар;Максимальный размер поставки\n"
         f"SKU-1;Москва;W1;Да;{maximum}\n"
     ).encode("utf-8")
 ```
 
-Add tests:
+Add:
 
 ```python
-def test_finite_capacity_is_explicit(report_meta):
-    row = import_restrictions(_restriction_csv("120"), report_meta).records[0]
+def test_allowed_finite_capacity_is_explicit(report_meta):
+    row = import_restrictions(_capacity_csv("120"), report_meta).records[0]
     assert row.max_supply_qty == 120
     assert row.capacity_kind is RestrictionCapacityKind.FINITE
 
 
-def test_unlimited_capacity_is_explicit(report_meta):
-    row = import_restrictions(_restriction_csv("Без ограничений"), report_meta).records[0]
+def test_allowed_unlimited_capacity_is_explicit(report_meta):
+    row = import_restrictions(
+        _capacity_csv("Без ограничений"), report_meta
+    ).records[0]
     assert row.max_supply_qty is None
     assert row.capacity_kind is RestrictionCapacityKind.UNLIMITED
 
 
-def test_blank_allowed_capacity_is_unknown(report_meta):
-    row = import_restrictions(_restriction_csv(""), report_meta).records[0]
+def test_allowed_blank_capacity_is_unknown(report_meta):
+    row = import_restrictions(_capacity_csv(""), report_meta).records[0]
     assert row.max_supply_qty is None
     assert row.capacity_kind is RestrictionCapacityKind.UNKNOWN
 
 
-def test_malformed_nonblank_capacity_is_rejected(report_meta):
-    result = import_restrictions(_restriction_csv("сто двадцать"), report_meta)
+def test_malformed_nonblank_capacity_remains_error(report_meta):
+    result = import_restrictions(_capacity_csv("сто двадцать"), report_meta)
     assert result.records == ()
-    assert any(d.code == "INVALID_MAX_SUPPLY_QTY" for d in result.diagnostics)
+    assert any(x.code == "INVALID_MAX_SUPPLY_QTY" for x in result.diagnostics)
 ```
+
+Import `RestrictionCapacityKind` from `backend.domain.contracts` in the test.
 
 - [ ] **Step 2: Run and verify RED**
 
@@ -111,11 +122,15 @@ def test_malformed_nonblank_capacity_is_rejected(report_meta):
 python -m pytest tests/ingestion/test_restrictions.py -q
 ```
 
-Expected: new state assertions fail because `capacity_kind` is absent.
+Expected: import/attribute failure because capacity kind is not modeled.
 
-- [ ] **Step 3: Implement explicit parsing**
+- [ ] **Step 3: Add enum to `backend/domain/contracts.py` and extend `RestrictionRecord`**
 
-Keep `max_supply_qty: int | None`; only FINITE carries an integer. Parse:
+`backend/ingestion/restrictions.py` imports the enum from `backend.domain.contracts`; it does not define a duplicate enum.
+
+- [ ] **Step 4: Replace ambiguous capacity parsing**
+
+Use exactly:
 
 ```python
 capacity_kind = RestrictionCapacityKind.UNKNOWN
@@ -141,9 +156,9 @@ else:
         continue
 ```
 
-PROHIBITED rows remain prohibited regardless of capacity text.
+Pass `capacity_kind` as the final `RestrictionRecord` field. PROHIBITED/UNKNOWN restriction state remains physically unusable regardless of capacity text.
 
-- [ ] **Step 4: Run and verify GREEN**
+- [ ] **Step 5: Run and verify GREEN**
 
 ```bash
 python -m pytest tests/ingestion/test_restrictions.py -q
@@ -151,56 +166,115 @@ python -m pytest tests/ingestion/test_restrictions.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add backend/ingestion/restrictions.py tests/ingestion/test_restrictions.py
+git add backend/domain/contracts.py backend/ingestion/restrictions.py tests/ingestion/test_restrictions.py
 git commit -m "feat: preserve restriction capacity state"
 ```
 
 ---
 
-### Task 2: Carry explicit capacity through cluster feasibility
+### Task 2: Carry capacity state through cluster feasibility
 
 **Files:**
 - Modify: `backend/supply/contracts.py`
 - Modify: `backend/supply/feasibility.py`
-- Test: `tests/supply/test_placement.py`
+- Modify: `tests/supply/test_placement.py`
 
 **Interfaces:**
 
-Append to `WarehouseCapability` and `SupplyFeasibility`:
+Append to both existing dataclasses:
 
 ```python
-capacity_kind: RestrictionCapacityKind = RestrictionCapacityKind.UNKNOWN
+WarehouseCapability.capacity_kind: RestrictionCapacityKind = RestrictionCapacityKind.UNKNOWN
+SupplyFeasibility.capacity_kind: RestrictionCapacityKind = RestrictionCapacityKind.UNKNOWN
 ```
 
-- [ ] **Step 1: Add failing aggregation tests**
+- [ ] **Step 1: Add exact helper constructors in `tests/supply/test_placement.py`**
 
-Use explicit capabilities to prove:
+```python
+def capability(name, qty, kind):
+    return WarehouseCapability(name, "Москва", qty, kind)
 
-```text
-FINITE 100 + FINITE 300 -> cluster FINITE 300
-FINITE 120 + UNKNOWN -> cluster FINITE 120
-FINITE 120 + UNLIMITED -> cluster UNLIMITED
-UNKNOWN + UNKNOWN -> cluster UNKNOWN
+
+def allowed_record(name, qty, kind):
+    return RestrictionRecord(
+        "SKU-1", name, RestrictionState.ALLOWED, "", "Да",
+        "Москва", qty, kind,
+    )
 ```
 
-Also preserve existing fail-closed behavior for no explicitly allowed warehouse, conflicting restriction state and finite zero capacity.
+- [ ] **Step 2: Add failing aggregation tests**
 
-- [ ] **Step 2: Run and verify RED**
+```python
+def test_cluster_uses_max_finite_alternative_not_sum_or_min():
+    rows = (
+        allowed_record("W1", 100, RestrictionCapacityKind.FINITE),
+        allowed_record("W2", 300, RestrictionCapacityKind.FINITE),
+    )
+    warehouses = (
+        capability("W1", 100, RestrictionCapacityKind.FINITE),
+        capability("W2", 300, RestrictionCapacityKind.FINITE),
+    )
+    result = assess_feasibility("SKU-1", "Москва", rows, warehouses)
+    assert result.allowed is True
+    assert result.capacity_kind is RestrictionCapacityKind.FINITE
+    assert result.max_supply_qty == 300
+
+
+def test_known_finite_survives_unknown_alternative():
+    rows = (
+        allowed_record("W1", 120, RestrictionCapacityKind.FINITE),
+        allowed_record("W2", None, RestrictionCapacityKind.UNKNOWN),
+    )
+    warehouses = (
+        capability("W1", 120, RestrictionCapacityKind.FINITE),
+        capability("W2", None, RestrictionCapacityKind.UNKNOWN),
+    )
+    result = assess_feasibility("SKU-1", "Москва", rows, warehouses)
+    assert result.capacity_kind is RestrictionCapacityKind.FINITE
+    assert result.max_supply_qty == 120
+
+
+def test_unlimited_alternative_wins_over_finite():
+    rows = (
+        allowed_record("W1", 120, RestrictionCapacityKind.FINITE),
+        allowed_record("W2", None, RestrictionCapacityKind.UNLIMITED),
+    )
+    warehouses = (
+        capability("W1", 120, RestrictionCapacityKind.FINITE),
+        capability("W2", None, RestrictionCapacityKind.UNLIMITED),
+    )
+    result = assess_feasibility("SKU-1", "Москва", rows, warehouses)
+    assert result.capacity_kind is RestrictionCapacityKind.UNLIMITED
+    assert result.max_supply_qty is None
+
+
+def test_all_allowed_capacity_unknown_stays_unknown():
+    rows = (allowed_record("W1", None, RestrictionCapacityKind.UNKNOWN),)
+    warehouses = (capability("W1", None, RestrictionCapacityKind.UNKNOWN),)
+    result = assess_feasibility("SKU-1", "Москва", rows, warehouses)
+    assert result.allowed is True
+    assert result.capacity_kind is RestrictionCapacityKind.UNKNOWN
+    assert result.max_supply_qty is None
+```
+
+- [ ] **Step 3: Run and verify RED**
 
 ```bash
 python -m pytest tests/supply/test_placement.py -q
 ```
 
-Expected: new aggregation tests fail under current `min(explicit_maxima)` semantics.
+Expected: new state/aggregation tests fail against current `min(explicit_maxima)` behavior.
 
-- [ ] **Step 3: Add consistency validation**
+- [ ] **Step 4: Add contract consistency validation**
 
-For `WarehouseCapability`:
+In `WarehouseCapability.__post_init__`:
 
 ```python
+if not isinstance(self.capacity_kind, RestrictionCapacityKind):
+    raise TypeError("capacity_kind must be RestrictionCapacityKind")
 if self.capacity_kind is RestrictionCapacityKind.FINITE:
     if self.max_supply_qty is None:
         raise ValueError("finite capacity requires max_supply_qty")
@@ -208,9 +282,11 @@ elif self.max_supply_qty is not None:
     raise ValueError("non-finite capacity must not contain max_supply_qty")
 ```
 
-- [ ] **Step 4: Implement non-additive cluster rule**
+Validate `SupplyFeasibility.capacity_kind` similarly when adding its `__post_init__` or extending existing validation.
 
-After current restriction-state screening, derive capacity only from explicitly allowed eligible warehouse alternatives:
+- [ ] **Step 5: Replace only capacity aggregation inside `assess_feasibility()`**
+
+Keep current restriction-state screening. For eligible warehouses:
 
 ```python
 known = [
@@ -222,24 +298,28 @@ known = [
 ]
 
 if not eligible:
-    cluster_kind = RestrictionCapacityKind.FINITE
-    cluster_max = 0
+    maximum = 0
+    capacity_kind = RestrictionCapacityKind.FINITE
 elif not known:
-    cluster_kind = RestrictionCapacityKind.UNKNOWN
-    cluster_max = None
-elif any(item.capacity_kind is RestrictionCapacityKind.UNLIMITED for item in known):
-    cluster_kind = RestrictionCapacityKind.UNLIMITED
-    cluster_max = None
+    maximum = None
+    capacity_kind = RestrictionCapacityKind.UNKNOWN
+elif any(
+    item.capacity_kind is RestrictionCapacityKind.UNLIMITED
+    for item in known
+):
+    maximum = None
+    capacity_kind = RestrictionCapacityKind.UNLIMITED
 else:
-    cluster_kind = RestrictionCapacityKind.FINITE
-    cluster_max = max(
-        item.max_supply_qty for item in known if item.max_supply_qty is not None
+    maximum = max(
+        item.max_supply_qty for item in known
+        if item.max_supply_qty is not None
     )
+    capacity_kind = RestrictionCapacityKind.FINITE
 ```
 
-Do not sum warehouses.
+Replace old reason `CONSERVATIVE_WAREHOUSE_MAXIMUM` with `MULTIPLE_WAREHOUSE_ALTERNATIVES` when more than one eligible warehouse exists. Preserve `ZERO_PHYSICAL_CEILING` and `ELIGIBLE_WAREHOUSE_FOUND` semantics.
 
-- [ ] **Step 5: Run feasibility + legacy optimizer regressions**
+- [ ] **Step 6: Run feasibility + legacy optimizer regressions**
 
 ```bash
 python -m pytest tests/supply/test_placement.py tests/supply/test_optimizer.py -q
@@ -247,16 +327,16 @@ python -m pytest tests/supply/test_placement.py tests/supply/test_optimizer.py -
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add backend/supply/contracts.py backend/supply/feasibility.py tests/supply/test_placement.py
-git commit -m "feat: model cluster supply capacity explicitly"
+git commit -m "feat: model cluster capacity explicitly"
 ```
 
 ---
 
-### Task 3: Define destination-target and desired-coverage contracts
+### Task 3: Define primitive coverage contracts with no economics dependency
 
 **Files:**
 - Modify: `backend/supply/contracts.py`
@@ -282,8 +362,12 @@ class DestinationTarget:
 class RoutePlanningEvidence:
     origin_cluster_id: str
     destination_cluster_id: str
-    direct_quote: DirectRouteQuote
-    route_cost_index: RouteCostIndex | None
+    direct_tariff_complete: bool
+    direct_route_fee: Decimal | None
+    direct_tariff_reason_code: str | None
+    route_cost_index: Decimal | None
+    route_cost_index_coverage: Decimal | None
+    route_cost_index_spread: Decimal | None
     route_confidence: RouteConfidence
     observed_flow_qty: int
     observed_flow_share: Decimal | None
@@ -297,9 +381,9 @@ class DesiredCoverageLeg:
     desired_qty: int
     coverage_type: CoverageType
     direct_route_fee: Decimal | None
-    tariff_class: TariffClass | None
     route_cost_index: Decimal | None
     route_cost_index_coverage: Decimal | None
+    route_cost_index_spread: Decimal | None
     route_confidence: RouteConfidence
     observed_flow_qty: int
     observed_flow_share: Decimal | None
@@ -323,27 +407,101 @@ class CoveragePlanResult:
     network_gaps: tuple[NetworkCoverageGap, ...]
 ```
 
-Use `TYPE_CHECKING` for economics imports if needed to avoid a runtime cycle. Do not embed an entire route-index matrix in every leg; only copy the numeric evidence for that chosen route.
+- [ ] **Step 1: Add exact test helpers**
 
-- [ ] **Step 1: Add contract validation tests**
+At the top of `tests/supply/test_coverage.py` add:
 
-Test nonblank identities, nonnegative target/gap quantities, positive `desired_qty`, route fee/index nonnegative, observed share in `[0,1]`, and identity alignment between `RoutePlanningEvidence` and `DirectRouteQuote`/`RouteCostIndex`.
+```python
+def route_evidence(
+    origin="Москва",
+    destination="Казань",
+    *,
+    fee="50",
+    index="1",
+    confidence=RouteConfidence.MEDIUM,
+    observed_qty=0,
+    observed_share=None,
+):
+    return RoutePlanningEvidence(
+        origin,
+        destination,
+        True,
+        Decimal(fee),
+        None,
+        None if index is None else Decimal(index),
+        Decimal("1") if index is not None else None,
+        Decimal("0") if index is not None else None,
+        confidence,
+        observed_qty,
+        None if observed_share is None else Decimal(observed_share),
+    )
 
-- [ ] **Step 2: Run and verify RED**
+
+def missing_tariff(origin="Москва", destination="Казань"):
+    return RoutePlanningEvidence(
+        origin, destination, False, None, "MISSING_TARIFF",
+        Decimal("0.8"), Decimal("1"), Decimal("0.1"),
+        RouteConfidence.LOW, 0, None,
+    )
+```
+
+- [ ] **Step 2: Add failing validation tests**
+
+```python
+def test_incomplete_tariff_cannot_carry_direct_fee():
+    with pytest.raises(ValueError, match="direct_route_fee"):
+        RoutePlanningEvidence(
+            "Москва", "Казань", False, Decimal("50"), "MISSING_TARIFF",
+            None, None, None, RouteConfidence.LOW, 0, None,
+        )
+
+
+def test_observed_share_must_be_fraction():
+    with pytest.raises(ValueError, match="observed_flow_share"):
+        route_evidence(observed_share="1.1")
+
+
+def test_destination_target_rejects_negative_quantity():
+    with pytest.raises(ValueError, match="quantity"):
+        DestinationTarget("SKU-1", "Казань", -1, PlanFamily.CALCULATED)
+
+
+def test_routed_leg_requires_nonlocal_identity_and_fee():
+    with pytest.raises(ValueError):
+        DesiredCoverageLeg(
+            "SKU-1", "Москва", "Москва", 1, CoverageType.ROUTE,
+            Decimal("50"), Decimal("1"), Decimal("1"), Decimal("0"),
+            RouteConfidence.MEDIUM, 0, None, (),
+        )
+```
+
+- [ ] **Step 3: Run and verify RED**
 
 ```bash
 python -m pytest tests/supply/test_coverage.py -q
 ```
 
-Expected: contract imports fail.
+Expected: coverage contracts do not exist.
 
-- [ ] **Step 3: Implement contracts exactly as declared**
+- [ ] **Step 4: Implement contracts and validation**
 
-For LOCAL legs require `origin == destination`, `direct_route_fee is None`, `tariff_class is None`; LOCAL does not need external route-index evidence.
+Rules:
 
-For ROUTE legs require `origin != destination` and a nonnegative direct fee from a MATCHED quote.
+```text
+all identities nonblank
+all integer quantities nonnegative; DesiredCoverageLeg.desired_qty strictly positive
+complete tariff -> direct_route_fee is nonnegative Decimal and reason is None
+incomplete tariff -> direct_route_fee is None and reason code nonblank
+index absent -> coverage/spread both absent
+index present -> index/spread nonnegative; coverage in [0,1]
+observed_flow_share absent or Decimal in [0,1]
+LOCAL leg -> origin == destination and direct_route_fee/index fields are None
+ROUTE leg -> origin != destination and direct_route_fee nonnegative
+```
 
-- [ ] **Step 4: Run and verify GREEN**
+`backend/supply/contracts.py` imports only `Decimal`, domain signals/contracts and supply-owned enums. It does not import `backend.economics`.
+
+- [ ] **Step 5: Run and verify GREEN**
 
 ```bash
 python -m pytest tests/supply/test_coverage.py -q
@@ -351,91 +509,126 @@ python -m pytest tests/supply/test_coverage.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add backend/supply/contracts.py tests/supply/test_coverage.py
-git commit -m "feat: define coverage planning contracts"
+git commit -m "feat: define primitive coverage contracts"
 ```
 
 ---
 
-### Task 4: Add pure route candidate ordering
+### Task 4: Add deterministic non-local route ordering
 
 **Files:**
 - Create: `backend/supply/coverage.py`
-- Test: `tests/supply/test_coverage.py`
+- Modify: `tests/supply/test_coverage.py`
 
-**Interfaces:**
+**Private interface:**
 
 ```python
-def _route_order_key(evidence: RoutePlanningEvidence) -> tuple:
-    index = evidence.route_cost_index
+_ROUTE_RANK = {
+    RouteConfidence.LOW: 1,
+    RouteConfidence.MEDIUM: 2,
+    RouteConfidence.HIGH: 3,
+}
+
+
+def _route_order_key(item: RoutePlanningEvidence) -> tuple:
     return (
-        evidence.direct_quote.matched_fee,
-        index is None,
-        Decimal("0") if index is None else index.index_value,
-        -_ROUTE_RANK[evidence.route_confidence],
-        evidence.origin_cluster_id,
+        item.direct_route_fee,
+        item.route_cost_index is None,
+        Decimal("0") if item.route_cost_index is None else item.route_cost_index,
+        -_ROUTE_RANK[item.route_confidence],
+        item.origin_cluster_id,
     )
 ```
 
-- [ ] **Step 1: Add exact fee-priority test**
+The helper is called only for evidence where `direct_tariff_complete=True` and fee is non-None.
+
+- [ ] **Step 1: Add exact fee-priority test using the defined helper**
 
 ```python
-def test_lower_direct_fee_wins_even_when_route_index_is_worse():
-    winner = choose_nonlocal_origin(
-        destination="Казань",
-        evidences=(
-            evidence("Москва", "Казань", fee="47", index="1.10"),
-            evidence("Питер", "Казань", fee="52", index="0.70"),
-        ),
+def test_lower_direct_fee_wins_even_when_index_is_worse():
+    rows = (
+        route_evidence("Москва", "Казань", fee="47", index="1.10"),
+        route_evidence("Питер", "Казань", fee="52", index="0.70"),
     )
-    assert winner == "Москва"
+    assert sorted(rows, key=_route_order_key)[0].origin_cluster_id == "Москва"
 ```
 
-- [ ] **Step 2: Add route-index exact-fee tie test**
+Import `_route_order_key` directly in this focused unit test even though it is private; the export gate later confirms it is not part of `backend.supply` public facade.
+
+- [ ] **Step 2: Add exact-fee index tie test**
 
 ```python
-def test_lower_route_index_breaks_equal_direct_fee_tie():
-    winner = choose_nonlocal_origin(
-        destination="Казань",
-        evidences=(
-            evidence("Москва", "Казань", fee="50", index="0.95"),
-            evidence("Питер", "Казань", fee="50", index="0.72"),
-        ),
+def test_lower_index_breaks_exact_fee_tie():
+    rows = (
+        route_evidence("Москва", "Казань", fee="50", index="0.95"),
+        route_evidence("Питер", "Казань", fee="50", index="0.72"),
     )
-    assert winner == "Питер"
+    assert sorted(rows, key=_route_order_key)[0].origin_cluster_id == "Питер"
 ```
 
-Add cases proving known index sorts before missing index only when fees tie, and observed flow share/quantity never changes the winner.
+- [ ] **Step 3: Add known-index and history non-influence tests**
 
-- [ ] **Step 3: Implement `_route_order_key` and one small public-test helper only through planner-visible behavior**
+```python
+def test_known_index_beats_missing_index_only_when_fee_equal():
+    rows = (
+        route_evidence("Москва", "Казань", fee="50", index=None),
+        route_evidence("Питер", "Казань", fee="50", index="1.20"),
+    )
+    assert sorted(rows, key=_route_order_key)[0].origin_cluster_id == "Питер"
 
-Do not expose a permanent `choose_nonlocal_origin()` production API if the planner can test ordering through `plan_coverage()` in Task 5. The test helper may remain test-local; production owns only `_route_order_key`.
 
-- [ ] **Step 4: Run and verify GREEN**
+def test_observed_flow_does_not_affect_route_order():
+    rows = (
+        route_evidence(
+            "Москва", "Казань", fee="47", index="1.0",
+            observed_qty=1, observed_share="0.01",
+        ),
+        route_evidence(
+            "Питер", "Казань", fee="52", index="0.7",
+            observed_qty=999, observed_share="0.99",
+        ),
+    )
+    assert sorted(rows, key=_route_order_key)[0].origin_cluster_id == "Москва"
+```
+
+- [ ] **Step 4: Run and verify RED**
 
 ```bash
 python -m pytest tests/supply/test_coverage.py -q
 ```
 
-Expected: ordering tests pass.
+Expected: `backend/supply/coverage.py` / `_route_order_key` absent.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Implement `_route_order_key` exactly as declared**
+
+No route-index thresholds and no historical fields enter the tuple.
+
+- [ ] **Step 6: Run and verify GREEN**
+
+```bash
+python -m pytest tests/supply/test_coverage.py -q
+```
+
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add backend/supply/coverage.py tests/supply/test_coverage.py
-git commit -m "feat: rank planned routes deterministically"
+git commit -m "feat: rank coverage routes deterministically"
 ```
 
 ---
 
-### Task 5: Implement LOCAL-first and shared capacity ledger
+### Task 5: Implement LOCAL-first assignment and a shared `SKU × origin` capacity ledger
 
 **Files:**
 - Modify: `backend/supply/coverage.py`
-- Test: `tests/supply/test_coverage.py`
+- Modify: `tests/supply/test_coverage.py`
 
 **Public interface:**
 
@@ -450,67 +643,110 @@ def plan_coverage(
 ) -> CoveragePlanResult:
 ```
 
-All targets must share the same SKU and plan family.
-
-- [ ] **Step 1: Add LOCAL-first test**
-
-```text
-Kazan target 50
-Kazan selected + FINITE 100
-Moscow->Kazan cheaper than any hypothetical local external comparison
-Expected: Kazan->Kazan LOCAL 50
-```
-
-Assert LOCAL does not require a direct route quote or route index.
-
-- [ ] **Step 2: Add shared capacity test**
-
-```text
-Moscow FINITE capacity 70
-Kazan residual 50
-Tver residual 50
-Expected total desired legs through Moscow <= 70, not 70 per destination
-```
-
-- [ ] **Step 3: Implement capacity ledger**
-
-Normalize each selected origin to:
+- [ ] **Step 1: Add feasibility test helper**
 
 ```python
-remaining_capacity[origin] = (
-    feasibility.max_supply_qty
-    if feasibility.capacity_kind is RestrictionCapacityKind.FINITE
-    else None
-)
+def feasibility(origin, *, qty=None, kind=RestrictionCapacityKind.UNLIMITED):
+    return SupplyFeasibility(
+        "SKU-1",
+        origin,
+        True,
+        qty,
+        (f"{origin}-W",),
+        ("ELIGIBLE_WAREHOUSE_FOUND",),
+        kind,
+    )
 ```
 
-`None` means explicit UNLIMITED only. UNKNOWN origins are not candidates. FINITE zero origins are not candidates.
+For FINITE tests pass an integer `qty`; for UNLIMITED pass `None`.
 
-Use a helper:
+- [ ] **Step 2: Add LOCAL-first test**
 
 ```python
-def _consume_capacity(origin: str, requested: int, remaining: dict[str, int | None]) -> int:
-    value = remaining[origin]
-    if value is None:
+def test_selected_destination_is_covered_locally_first():
+    result = plan_coverage(
+        sku="SKU-1",
+        targets=(DestinationTarget(
+            "SKU-1", "Казань", 50, PlanFamily.CALCULATED
+        ),),
+        selected_origin_cluster_ids=("Казань", "Москва"),
+        feasibility_by_origin={
+            "Казань": feasibility("Казань"),
+            "Москва": feasibility("Москва"),
+        },
+        route_evidence_by_pair={
+            ("Москва", "Казань"): route_evidence(
+                "Москва", "Казань", fee="1", index="0.1"
+            )
+        },
+    )
+    assert [(x.origin_cluster_id, x.destination_cluster_id, x.desired_qty, x.coverage_type)
+            for x in result.desired_legs] == [
+        ("Казань", "Казань", 50, CoverageType.LOCAL)
+    ]
+```
+
+- [ ] **Step 3: Add shared capacity test**
+
+Use Moscow FINITE 70 with two residual destinations of 50 each and no other origins; assert:
+
+```python
+assert sum(x.desired_qty for x in result.desired_legs
+           if x.origin_cluster_id == "Москва") == 70
+assert sum(x.quantity for x in result.network_gaps) == 30
+```
+
+- [ ] **Step 4: Implement capacity normalization**
+
+Reject selected UNKNOWN origins from candidate use. Create:
+
+```python
+remaining_capacity: dict[str, int | None] = {}
+for origin in selected:
+    item = feasibility_by_origin.get(origin)
+    if item is None or not item.allowed:
+        continue
+    if item.capacity_kind is RestrictionCapacityKind.UNKNOWN:
+        continue
+    if item.capacity_kind is RestrictionCapacityKind.FINITE:
+        if item.max_supply_qty is None:
+            raise ValueError("finite feasibility requires max_supply_qty")
+        remaining_capacity[origin] = item.max_supply_qty
+    else:
+        remaining_capacity[origin] = None
+```
+
+`None` in this ledger means **explicit UNLIMITED only**.
+
+- [ ] **Step 5: Add and use capacity consumer**
+
+```python
+def _consume_capacity(
+    origin: str,
+    requested: int,
+    remaining: dict[str, int | None],
+) -> int:
+    available = remaining[origin]
+    if available is None:
         return requested
-    allocated = min(requested, value)
-    remaining[origin] = value - allocated
+    allocated = min(requested, available)
+    remaining[origin] = available - allocated
     return allocated
 ```
 
-- [ ] **Step 4: Implement LOCAL pass**
+- [ ] **Step 6: Implement LOCAL pass**
 
-Iterate targets in stable `(destination_cluster_id)` order. For a selected, allowed, known-capacity destination origin, allocate locally up to remaining capacity and store residual target separately.
+Iterate targets sorted by destination ID. If destination is selected and present in `remaining_capacity`, consume local capacity and emit a LOCAL `DesiredCoverageLeg` with all non-local tariff/index fields `None`, preserving route confidence LOW and historical fields zero/None because no external evidence is required for the local product rule. Record only the residual quantity for Task 6.
 
-- [ ] **Step 5: Run LOCAL/capacity tests**
+- [ ] **Step 7: Run focused tests**
 
 ```bash
 python -m pytest tests/supply/test_coverage.py -q
 ```
 
-Expected: PASS for LOCAL and capacity ledger cases.
+Expected: LOCAL and shared-capacity tests pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add backend/supply/coverage.py tests/supply/test_coverage.py
@@ -523,78 +759,125 @@ git commit -m "feat: allocate local coverage before routed demand"
 
 **Files:**
 - Modify: `backend/supply/coverage.py`
-- Test: `tests/supply/test_coverage.py`
+- Modify: `tests/supply/test_coverage.py`
 
-- [ ] **Step 1: Add constrained-first regression**
-
-Scenario:
-
-```text
-Destination A residual 50; only Moscow is feasible
-Destination B residual 50; Moscow or Peter are feasible
-Moscow remaining capacity 50
-Peter remaining capacity 50
-```
-
-Expected:
-
-```text
-Moscow -> A 50
-Peter -> B 50
-network_uncovered = 0
-```
-
-- [ ] **Step 2: Add exact route ranking spillover test**
-
-```text
-Kazan residual 100
-Moscow fee 47, index .90, remaining 70
-Peter fee 52, index .70, remaining 100
-Expected Moscow->Kazan 70; Peter->Kazan 30
-```
-
-- [ ] **Step 3: Add historical-flow non-weight test**
-
-Give Moscow observed share `0.01` and Peter observed share `0.99`, but Moscow fee lower. Assert Moscow fills first. Historical evidence remains copied to the chosen leg only.
-
-- [ ] **Step 4: Implement dynamic feasible-candidate recomputation**
-
-For every residual destination on every loop iteration, candidate origins must satisfy all:
-
-```text
-selected
-feasibility.allowed
-capacity_kind != UNKNOWN
-remaining capacity > 0 or UNLIMITED
-origin != destination
-RoutePlanningEvidence exists
-DirectRouteQuote.lookup_status == MATCHED
-```
-
-Compute `candidate_count` after current capacity state. Choose the next destination by:
+- [ ] **Step 1: Add constrained-first test**
 
 ```python
-(min candidate_count, -residual_qty, destination_cluster_id)
+def test_constrained_destination_reserves_scarce_origin():
+    targets = (
+        DestinationTarget("SKU-1", "A", 50, PlanFamily.CALCULATED),
+        DestinationTarget("SKU-1", "B", 50, PlanFamily.CALCULATED),
+    )
+    result = plan_coverage(
+        sku="SKU-1",
+        targets=targets,
+        selected_origin_cluster_ids=("Москва", "Питер"),
+        feasibility_by_origin={
+            "Москва": feasibility(
+                "Москва", qty=50, kind=RestrictionCapacityKind.FINITE
+            ),
+            "Питер": feasibility(
+                "Питер", qty=50, kind=RestrictionCapacityKind.FINITE
+            ),
+        },
+        route_evidence_by_pair={
+            ("Москва", "A"): route_evidence("Москва", "A", fee="50"),
+            ("Москва", "B"): route_evidence("Москва", "B", fee="40"),
+            ("Питер", "B"): route_evidence("Питер", "B", fee="60"),
+        },
+    )
+    assert {(x.origin_cluster_id, x.destination_cluster_id, x.desired_qty)
+            for x in result.desired_legs} == {
+        ("Москва", "A", 50),
+        ("Питер", "B", 50),
+    }
+    assert result.network_gaps == ()
 ```
 
-If candidate count is zero, emit a network gap immediately and remove that destination from residual work.
+- [ ] **Step 2: Add sequential fee/capacity spillover test**
 
-For a chosen destination, sort candidates by `_route_order_key`, consume each sequentially until residual becomes zero or candidates are exhausted.
+```python
+def test_cheapest_route_fills_then_spills_to_next_origin():
+    result = plan_coverage(
+        sku="SKU-1",
+        targets=(DestinationTarget(
+            "SKU-1", "Казань", 100, PlanFamily.CALCULATED
+        ),),
+        selected_origin_cluster_ids=("Москва", "Питер"),
+        feasibility_by_origin={
+            "Москва": feasibility(
+                "Москва", qty=70, kind=RestrictionCapacityKind.FINITE
+            ),
+            "Питер": feasibility(
+                "Питер", qty=100, kind=RestrictionCapacityKind.FINITE
+            ),
+        },
+        route_evidence_by_pair={
+            ("Москва", "Казань"): route_evidence(
+                "Москва", "Казань", fee="47", index="0.90"
+            ),
+            ("Питер", "Казань"): route_evidence(
+                "Питер", "Казань", fee="52", index="0.70"
+            ),
+        },
+    )
+    assert [(x.origin_cluster_id, x.desired_qty) for x in result.desired_legs] == [
+        ("Москва", 70), ("Питер", 30)
+    ]
+```
 
-- [ ] **Step 5: Emit deterministic gap reasons**
+- [ ] **Step 3: Add missing-direct-tariff test**
 
-Use only these planner-level codes:
+Use only `missing_tariff("Москва", "Казань")` for a selected feasible origin and target 50. Assert no desired leg and one gap quantity 50 containing `NO_COMPLETE_DIRECT_TARIFF`. This proves favorable route index inside missing evidence cannot make the route usable.
+
+- [ ] **Step 4: Implement candidate recomputation per residual destination**
+
+For every residual destination on every loop iteration, a non-local candidate must satisfy:
 
 ```text
-NO_SELECTED_FEASIBLE_ORIGIN
-UNKNOWN_OR_EXHAUSTED_ORIGIN_CAPACITY
-NO_COMPLETE_DIRECT_TARIFF
-SELECTED_NETWORK_CAPACITY_EXHAUSTED
+origin selected and present in remaining_capacity
+origin != destination
+remaining finite capacity > 0 or explicit unlimited
+route evidence exists
+route evidence.direct_tariff_complete is True
+route evidence.direct_route_fee is not None
 ```
 
-When several facts apply, preserve a stable explicit tuple order defined in `coverage.py`.
+Compute current candidate count for every residual destination. Choose the next destination by:
 
-- [ ] **Step 6: Run focused tests**
+```python
+(candidate_count, -residual_qty, destination_cluster_id)
+```
+
+If candidate count is zero, classify and emit its gap, remove it from residual work, and continue.
+
+- [ ] **Step 5: Implement sequential candidate fill**
+
+Sort current candidate evidence by `_route_order_key`. For each candidate, consume capacity and emit a ROUTE `DesiredCoverageLeg` copying its primitive fee/index/history/confidence evidence. Stop when destination residual is zero or candidates are exhausted.
+
+- [ ] **Step 6: Implement deterministic gap classification**
+
+Define reason order:
+
+```python
+_NETWORK_GAP_REASON_ORDER = (
+    "NO_SELECTED_FEASIBLE_ORIGIN",
+    "UNKNOWN_OR_EXHAUSTED_ORIGIN_CAPACITY",
+    "NO_COMPLETE_DIRECT_TARIFF",
+    "SELECTED_NETWORK_CAPACITY_EXHAUSTED",
+)
+```
+
+Classification rules:
+- no selected `allowed` feasibility row at all -> `NO_SELECTED_FEASIBLE_ORIGIN`;
+- selected allowed rows exist but all capacity UNKNOWN/zero before any use -> `UNKNOWN_OR_EXHAUSTED_ORIGIN_CAPACITY`;
+- usable-capacity selected origins exist but none has complete direct tariff -> `NO_COMPLETE_DIRECT_TARIFF`;
+- route candidates existed earlier/currently but finite capacity is exhausted before residual reaches zero -> `SELECTED_NETWORK_CAPACITY_EXHAUSTED`.
+
+A gap may contain multiple applicable codes, emitted in the fixed order.
+
+- [ ] **Step 7: Run focused tests**
 
 ```bash
 python -m pytest tests/supply/test_coverage.py -q
@@ -602,7 +885,7 @@ python -m pytest tests/supply/test_coverage.py -q
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add backend/supply/coverage.py tests/supply/test_coverage.py
@@ -611,44 +894,41 @@ git commit -m "feat: plan routed coverage across selected network"
 
 ---
 
-### Task 7: Prove conservation, determinism and public exports
+### Task 7: Prove conservation, determinism and public API
 
 **Files:**
 - Modify: `backend/supply/__init__.py`
 - Modify: `tests/supply/test_coverage.py`
 
-- [ ] **Step 1: Add per-destination conservation test**
-
-For every target returned by fixture scenarios assert:
+- [ ] **Step 1: Add per-destination conservation helper and test**
 
 ```python
-covered = sum(
-    leg.desired_qty for leg in result.desired_legs
-    if leg.destination_cluster_id == target.destination_cluster_id
-)
-gap = sum(
-    item.quantity for item in result.network_gaps
-    if item.destination_cluster_id == target.destination_cluster_id
-)
-assert covered + gap == target.quantity
+def assert_destination_conservation(result):
+    for target in result.targets:
+        covered = sum(
+            x.desired_qty for x in result.desired_legs
+            if x.destination_cluster_id == target.destination_cluster_id
+        )
+        gap = sum(
+            x.quantity for x in result.network_gaps
+            if x.destination_cluster_id == target.destination_cluster_id
+        )
+        assert covered + gap == target.quantity
 ```
 
-- [ ] **Step 2: Add per-origin finite-capacity invariant**
+Call it for LOCAL, constrained-first, spillover and missing-tariff scenarios.
 
-```python
-assert sum(
-    leg.desired_qty for leg in result.desired_legs
-    if leg.origin_cluster_id == "Москва"
-) <= 70
-```
+- [ ] **Step 2: Add finite origin-capacity invariant test**
 
-- [ ] **Step 3: Add input permutation determinism test**
+For every FINITE fixture origin assert sum of desired legs through it does not exceed the fixture maximum.
 
-Permute targets, selected origins and mapping insertion order; assert identical `CoveragePlanResult`.
+- [ ] **Step 3: Add permutation determinism test**
 
-- [ ] **Step 4: Export public coverage surface**
+Using the constrained-first scenario, permute target order, selected-origin order and dictionary insertion order. Collect returned `CoveragePlanResult` values in a set and assert its length is 1.
 
-Export from `backend/supply/__init__.py`:
+- [ ] **Step 4: Export only the public coverage surface**
+
+From `backend/supply/__init__.py` export:
 
 ```text
 CoverageType
@@ -660,18 +940,28 @@ CoveragePlanResult
 plan_coverage
 ```
 
-Do not export `_route_order_key` or capacity-ledger helpers.
+Do not export `_route_order_key`, `_consume_capacity` or gap-order internals.
 
-- [ ] **Step 5: Run focused + regression suites**
+- [ ] **Step 5: Add import-cycle regression**
+
+```python
+def test_supply_public_facade_does_not_require_economics_import():
+    import backend.supply
+    assert backend.supply.plan_coverage is not None
+```
+
+Also statically assert `"backend.economics"` is absent from `backend/supply/contracts.py` and `backend/supply/coverage.py`.
+
+- [ ] **Step 6: Run focused + regression suites**
 
 ```bash
 python -m pytest tests/ingestion/test_restrictions.py tests/supply/test_placement.py tests/supply/test_coverage.py tests/supply/test_optimizer.py -q
 python -m pytest tests/api/test_product_completion_acceptance.py -q
 ```
 
-Expected: PASS; PR-B remains disconnected from current application orchestration.
+Expected: PASS.
 
-- [ ] **Step 6: Run full suite**
+- [ ] **Step 7: Run full suite**
 
 ```bash
 python -m pytest -q
@@ -679,7 +969,7 @@ python -m pytest -q
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add backend/supply/__init__.py tests/supply/test_coverage.py
@@ -695,13 +985,14 @@ PR-B is complete only when all are true:
 1. Blank/unknown capacity can never become unlimited.
 2. Explicit `Без ограничений` remains distinguishable from unknown.
 3. Multiple warehouse limits are not summed; max independently known finite alternative is used unless one is explicitly unlimited.
-4. LOCAL is always attempted first when selected and physically feasible.
-5. Exact direct tariff for the concrete SKU remains primary non-local ranking evidence.
-6. `RouteCostIndex` only breaks exact direct-fee ties and never substitutes for missing direct tariff evidence.
-7. Historical flow share/quantity never changes planned quantities or primary route ranking.
-8. One `SKU × origin` capacity is shared across all destination legs.
-9. Constrained destinations are recomputed iteratively against remaining capacity.
-10. Sequential fill is used; no proportional route split exists.
-11. Every destination target conserves into desired legs + network gap.
-12. Inputs are permutation-deterministic.
-13. No seller-stock scarcity, snapshots, API or UI behavior changed yet.
+4. `backend/supply` does not import `backend.economics` for route evidence.
+5. LOCAL is always attempted first when selected and physically feasible.
+6. Complete exact direct fee remains primary non-local ranking evidence.
+7. `RouteCostIndex` only breaks exact direct-fee ties and never substitutes for missing direct tariff evidence.
+8. Historical Flow share/quantity never changes route quantities or ranking.
+9. One `SKU × origin` capacity is shared across all destination legs.
+10. Constrained destinations are recomputed iteratively against remaining capacity.
+11. Sequential fill is used; no proportional route split exists.
+12. Every destination target conserves into desired legs + network gap.
+13. Input permutations produce identical output.
+14. No seller-stock scarcity, application orchestration, snapshot, API or UI behavior changed yet.
