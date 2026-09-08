@@ -123,6 +123,34 @@ def test_missing_cell_is_zero_filled_within_existing_destination_series():
     assert result.current_weekly_rate == Decimal("11")
 
 
+def test_new_sku_history_starts_at_its_first_observed_week():
+    old = demand([5] * 8)
+    new_cell = DemandCell("SKU-NEW", 2026, 8, "Москва", 10, 1)
+    result = estimate_destination_demand(DemandResult(old.cells + (new_cell,), old.window))
+    estimate = next(item for item in result if item.sku == "SKU-NEW")
+
+    assert estimate.eligible_week_count == 1
+    assert estimate.m1 is None
+    assert estimate.m2 == Decimal("10")
+    assert estimate.latest_week_qty == Decimal("10")
+    assert estimate.current_weekly_rate == Decimal("10")
+    assert estimate.confidence is SignalConfidence.LOW
+    assert estimate.regime is DemandRegime.INCOMPLETE
+
+
+def test_new_sku_two_week_history_is_not_diluted_by_other_sku_weeks():
+    old = demand([5] * 8)
+    new_cells = (
+        DemandCell("SKU-NEW", 2026, 7, "Москва", 10, 1),
+        DemandCell("SKU-NEW", 2026, 8, "Москва", 10, 1),
+    )
+    result = estimate_destination_demand(DemandResult(old.cells + new_cells, old.window))
+    estimate = next(item for item in result if item.sku == "SKU-NEW")
+
+    assert estimate.eligible_week_count == 2
+    assert estimate.current_weekly_rate == Decimal("10")
+
+
 def test_only_latest_eight_weeks_affect_model_but_count_reports_eligible_weeks():
     result = estimate_destination_demand(demand([999, 999] + [10] * 4 + [20] * 4))[0]
     assert result.eligible_week_count == 10

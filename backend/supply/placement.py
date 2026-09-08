@@ -43,7 +43,7 @@ def compare_placements(
         assessments.append(PlacementAssessment(
             candidate.sku, candidate.cluster_id, candidate.ozon_recommended_qty,
             feasibility, candidate.economics, candidate.distortion_signal,
-            candidate.route_confidence, statuses,
+            candidate.route_confidence, candidate.demand_confidence, statuses,
             candidate.calculated_need_qty,
         ))
 

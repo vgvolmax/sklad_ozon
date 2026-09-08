@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 from backend.analytics.distortion import detect_recommendation_distortion
+from backend.analytics import DemandCell, DemandResult
 from backend.analytics.routes import build_route_profile
 from backend.analytics.stockout import StockoutThresholds, detect_stockouts
 from backend.domain.contracts import OrderLifecycle, OrderRecord
@@ -26,6 +27,21 @@ def _profile(*rows):
     return build_route_profile((_order(*row) for row in rows), as_of=date(2026, 8, 31))
 
 
+def _demand(profile):
+    quantities = {}
+    for route in profile.routes:
+        key = (route.sku, route.iso_year, route.iso_week, route.destination_cluster_id)
+        quantities[key] = quantities.get(key, 0) + route.quantity
+    return DemandResult(tuple(
+        DemandCell(sku, year, week, destination, quantity, 1)
+        for (sku, year, week, destination), quantity in sorted(quantities.items())
+    ), profile.window)
+
+
+def _detect(profile, availability=None):
+    return detect_stockouts(profile, _demand(profile), availability)
+
+
 def _canonical(extra=()):
     return _profile(
         ("SKU-1", "2026-08-10", "Москва", "Москва", 90),
@@ -41,7 +57,7 @@ def _canonical(extra=()):
 def test_canonical_moscow_stockout_and_kazan_distortion_are_directional_and_exact():
     routes = _canonical()
     before = routes
-    signals = detect_stockouts(routes)
+    signals = _detect(routes)
     assert routes == before
     assert len(signals) == 1
     signal = signals[0]
@@ -70,12 +86,44 @@ def test_threshold_boundaries_are_inclusive_including_retention():
         ("S", "2026-08-10", "B", "D", 20), ("S", "2026-08-17", "D", "D", 30),
         ("S", "2026-08-17", "A", "D", 40), ("S", "2026-08-17", "B", "D", 30),
     )
-    assert len(detect_stockouts(shares)) == 1
+    assert len(_detect(shares)) == 1
     retention = _profile(
         ("S", "2026-08-10", "D", "D", 60), ("S", "2026-08-10", "A", "D", 40),
         ("S", "2026-08-17", "D", "D", 18), ("S", "2026-08-17", "A", "D", 42),
     )
-    assert detect_stockouts(retention)[0].demand_retention == Decimal("0.6")
+    assert _detect(retention)[0].demand_retention == Decimal("0.6")
+
+
+def test_retention_uses_destination_demand_including_in_progress_quantity():
+    routes = _profile(
+        ("S", "2026-08-10", "Москва", "Москва", 100),
+        ("S", "2026-08-17", "Москва", "Москва", 10),
+        ("S", "2026-08-17", "Казань", "Москва", 40),
+    )
+    demand_evidence = DemandResult((
+        DemandCell("S", 2026, 33, "Москва", 100, 1),
+        DemandCell("S", 2026, 34, "Москва", 100, 3),
+    ), routes.window)
+
+    signals = detect_stockouts(routes, demand_evidence)
+
+    assert len(signals) == 1
+    assert signals[0].destination_cluster_id == "Москва"
+    assert signals[0].demand_retention == Decimal("1")
+    assert [item.origin_cluster_id for item in signals[0].replacement_origins] == ["Казань"]
+
+
+def test_missing_destination_demand_evidence_does_not_fall_back_to_fulfillment():
+    routes = _profile(
+        ("S", "2026-08-10", "Москва", "Москва", 100),
+        ("S", "2026-08-17", "Москва", "Москва", 10),
+        ("S", "2026-08-17", "Казань", "Москва", 90),
+    )
+    missing_observed = DemandResult((
+        DemandCell("S", 2026, 33, "Москва", 100, 1),
+    ), routes.window)
+
+    assert detect_stockouts(routes, missing_observed) == ()
 
 
 @pytest.mark.parametrize("rows", [
@@ -91,7 +139,7 @@ def test_threshold_boundaries_are_inclusive_including_retention():
     (("S","2026-08-10","D","D",90),("S","2026-08-10","A","D",10)),
 ])
 def test_false_positive_controls(rows):
-    assert detect_stockouts(_profile(*rows)) == ()
+    assert _detect(_profile(*rows)) == ()
 
 
 def test_route_pattern_requires_drop_donor_rise_and_same_destination():
@@ -110,41 +158,41 @@ def test_route_pattern_requires_drop_donor_rise_and_same_destination():
         ("S","2026-08-17","B","D",19),("S","2026-08-17","C","D",2),
         ("S","2026-08-17","A","X",100),
     )
-    assert detect_stockouts(too_small_drop) == ()
-    assert detect_stockouts(no_donor_rise) == ()
-    assert detect_stockouts(donor_elsewhere) == ()
+    assert _detect(too_small_drop) == ()
+    assert _detect(no_donor_rise) == ()
+    assert _detect(donor_elsewhere) == ()
 
 
 def test_missing_observed_local_route_is_zero_not_missing():
     routes = _profile(("S","2026-08-10","D","D",90),("S","2026-08-10","A","D",10),
                       ("S","2026-08-17","A","D",100))
-    assert detect_stockouts(routes)[0].observed_local_share == 0
+    assert _detect(routes)[0].observed_local_share == 0
 
 
 def test_availability_only_corroborates_and_never_creates_or_erases():
     routes = _canonical()
-    neutral = detect_stockouts(routes)
+    neutral = _detect(routes)
     assert neutral[0].historical_evidence_strength is SignalConfidence.HIGH
     assert neutral[0].route_cleaning_eligible is True
     assert neutral[0].confidence is SignalConfidence.HIGH
     assert neutral[0].availability_corroboration is AvailabilityCorroboration.NEUTRAL
-    zero = detect_stockouts(routes, [AvailabilityRecord("SKU-1", "W", "Москва", 0)])
+    zero = _detect(routes, [AvailabilityRecord("SKU-1", "W", "Москва", 0)])
     assert zero[0].historical_evidence_strength is SignalConfidence.HIGH
     assert zero[0].route_cleaning_eligible is True
     assert zero[0].confidence is SignalConfidence.HIGH
     assert zero[0].availability_corroboration is AvailabilityCorroboration.NEUTRAL
-    positive = detect_stockouts(routes, [AvailabilityRecord("SKU-1", "W", "Москва", 12)])
+    positive = _detect(routes, [AvailabilityRecord("SKU-1", "W", "Москва", 12)])
     assert positive[0].historical_evidence_strength is SignalConfidence.HIGH
     assert positive[0].route_cleaning_eligible is True
     assert positive[0].availability_corroboration is AvailabilityCorroboration.NEUTRAL
 
-    recent_oos = detect_stockouts(routes, [
+    recent_oos = _detect(routes, [
         AvailabilityRecord("SKU-1", "W", "Москва", 4, days_without_stock=2)
     ])
     assert recent_oos[0].availability_corroboration is AvailabilityCorroboration.SUPPORTS
     assert positive[0].confidence is SignalConfidence.HIGH
     no_pattern = _profile(("S","2026-08-10","D","D",100),("S","2026-08-17","D","D",100))
-    assert detect_stockouts(no_pattern, [AvailabilityRecord("S", "W", "D", 0)]) == ()
+    assert _detect(no_pattern, [AvailabilityRecord("S", "W", "D", 0)]) == ()
 
 
 def test_multiple_destinations_aggregate_and_inconsistent_donor_is_rejected():
@@ -155,7 +203,7 @@ def test_multiple_destinations_aggregate_and_inconsistent_donor_is_rejected():
         ("SKU-1", "2026-08-17", "Казань", "Тверь", 80),
     )
     routes = _canonical(extra)
-    signals = detect_stockouts(routes)
+    signals = _detect(routes)
     distortion = detect_recommendation_distortion(signals, routes)[0]
     assert [e.destination_cluster_id for e in distortion.affected_destinations] == ["Москва", "Тверь"]
     assert "MULTIPLE_AFFECTED_DESTINATIONS" in distortion.explanation_codes
@@ -167,7 +215,7 @@ def test_multiple_destinations_aggregate_and_inconsistent_donor_is_rejected():
 
 
 def test_contracts_and_thresholds_are_immutable_and_validated():
-    signal = detect_stockouts(_canonical())[0]
+    signal = _detect(_canonical())[0]
     with pytest.raises(FrozenInstanceError):
         signal.sku = "changed"
     with pytest.raises(ValueError):

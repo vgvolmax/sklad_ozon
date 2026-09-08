@@ -7,7 +7,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from backend.domain.signals import RecommendationDistortionSignal
+from backend.domain.signals import RecommendationDistortionSignal, SignalConfidence
 
 if TYPE_CHECKING:
     from backend.economics import UnitEconomicsResult
@@ -79,6 +79,7 @@ class PlacementInput:
     economics: UnitEconomicsResult
     distortion_signal: RecommendationDistortionSignal | None
     route_confidence: RouteConfidence
+    demand_confidence: SignalConfidence
     calculated_need_qty: int | None = None
 
     def __post_init__(self) -> None:
@@ -107,6 +108,8 @@ class PlacementInput:
                 raise ValueError("distortion signal identity must match candidate SKU and cluster")
         if not isinstance(self.route_confidence, RouteConfidence):
             raise TypeError("route_confidence must be RouteConfidence")
+        if not isinstance(self.demand_confidence, SignalConfidence):
+            raise TypeError("demand_confidence must be SignalConfidence")
         if self.calculated_need_qty is not None:
             _require_nonnegative_int(self.calculated_need_qty, "calculated_need_qty")
 
@@ -120,6 +123,7 @@ class PlacementAssessment:
     economics: UnitEconomicsResult
     distortion_signal: RecommendationDistortionSignal | None
     route_confidence: RouteConfidence
+    demand_confidence: SignalConfidence
     status_codes: tuple[str, ...]
     calculated_need_qty: int | None = None
 

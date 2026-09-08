@@ -18,6 +18,7 @@ from backend.economics import (expected_logistics, LogisticsContext, RouteProfil
                                build_stockout_episode_impacts)
 from backend.project import EconomicsSettings, OptimizerThresholds
 from backend.decision import ScenarioSettings, calculate_need
+from backend.domain.signals import SignalConfidence
 from backend.supply import (AllocationObjective, PlanFamily, WarehouseCapability, PlacementInput, PlacementSource, RouteConfidence,
                             compare_placements, optimize_allocations)
 
@@ -92,7 +93,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
     progress("routes")
     observed = build_weekly_route_profile(daily_facts.fulfillment, as_of)
     progress("distortions")
-    stockouts = detect_stockouts(observed, availability)
+    stockouts = detect_stockouts(observed, demand, availability)
     daily_locality = build_daily_locality_series(daily_facts, as_of)
     stockout_episodes = detect_stockout_episodes(daily_locality, availability, as_of)
     distortions = detect_recommendation_distortion(stockouts, observed)
@@ -193,6 +194,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             diagnostics.append(AnalysisDiagnostic("error","MISSING_PRODUCT_VOLUME","Missing product volume.",sku))
             progress("logistics_economics", sku_index, len(skus)); continue
         for cluster in sorted(clusters):
+            estimate = demand_estimates_by_identity.get((sku, cluster))
             observed_profile=observed_by_origin.get((sku, cluster), ())
             selection=select_route_profile(sku, cluster, clean, observed)
             confidence=RouteConfidence(selection.confidence.value)
@@ -217,6 +219,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             distortion=distortion_by_cluster.get((sku, cluster))
             candidates.append(PlacementInput(
                 sku, cluster, qty, tuple(sources), econ, distortion, confidence,
+                estimate.confidence if estimate is not None else SignalConfidence.LOW,
                 need.calculated_need_qty,
             ))
         progress("logistics_economics", sku_index, len(skus))
