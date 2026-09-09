@@ -1,226 +1,35 @@
-# PR-B Whole-Pack Shippable Plan Implementation Plan
+# PR-B Whole-Pack ShippablePlan Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Implement task-by-task with TDD. Read `AGENTS.md` and the canonical API-first shipment design first.
 
-**Goal:** Convert the existing all-cluster Calculated Plan into an immutable whole-pack `ShippablePlan` using the already-resolved seller stock, supplier multiplicity and canonical unit volume, without changing analytical demand or allocation semantics.
+**Goal:** convert current Calculated Plan into one immutable all-cluster whole-pack operational plan using the already-resolved seller stock, supplier pack multiplicity and canonical unit volume.
 
-**Architecture:** Preserve existing `optimize_allocations()` and current `AnalysisSnapshot`. Extract/reuse its deterministic per-SKU eligibility/priority as needed, but do not create a new seller-stock resolver. The operationalizer works in integer pack counts over the full analytical cluster set; later shipment cluster selection is filter-only and never reallocates quantities.
+## Global invariants
 
-**Tech Stack:** Python 3.13.14, frozen dataclasses, Decimal, pytest; no new dependency.
-
-**Spec:** `docs/superpowers/specs/2026-09-09-ozon-api-first-shipment-planner-design.md`
-
-## Global Constraints
-
-- Do not change DemandEstimate, Need, stockout, Flow, economics, Safe or Calculated analytical values.
-- Consume the exact seller quantity already resolved by current analytical runtime.
-- Positive operational quantity must be a complete pack multiple.
-- Seller stock and desired quantity are handled in whole packs, never allocate pieces then repair modulo.
-- Product volume remains `ProductEconomicsInput.volume_liters`.
-- Build once across all clusters; selected shipment scope later only filters.
-- In API mode, do not pre-cut future quantities using stale restrictions capacity; Ozon live draft is later final acceptance authority.
-- FILES fallback may expose dated conservative physical blockers separately, but must not silently redefine analytical quantity.
+- Calculated Plan remains the analytical owner of target quantities.
+- Existing seller-stock resolution is consumed, never reimplemented.
+- Whole-pack plan is built **once for the full analysis across all clusters**.
+- Later selected shipment clusters are filter-only and never trigger reallocation.
+- Pack rounding is operational adjustment, not additional demand.
+- Missing stock/multiplicity/volume remains causal incomplete evidence; never assume zero or one.
+- Preserve immutable source/analysis identity and `analysis_as_of` downstream.
 
 ---
 
-### Task 1: Expose exact existing resolved seller-stock evidence
+## Task 1 — define immutable contracts
 
-**Files:**
-- Modify: `backend/application.py`
-- Modify: `backend/decision/contracts.py`
-- Modify: `backend/decision/snapshot.py`
-- Modify: `tests/api/test_product_completion_acceptance.py`
-
-**Interfaces:**
-
-Append a backwards-safe immutable presentation field owned by analysis, for example:
-
-```python
-@dataclass(frozen=True, slots=True)
-class ResolvedSellerStock:
-    sku: str
-    quantity: int | None
-    complete: bool
-    reason_codes: tuple[str, ...]
-```
-
-`AnalysisSnapshot` carries a bounded tuple/map of these resolved values.
-
-- [ ] **Step 1: Characterize current seller-stock resolver with FBS positive, explicit zero, conflicting positives, no FBS + ProductEconomics fallback, and authoritative missing cases.**
-- [ ] **Step 2: Assert current allocation outputs before adding the field.**
-- [ ] **Step 3: Add the immutable resolved-stock field at the point where current runtime has already made the decision; do not duplicate its resolver.**
-- [ ] **Step 4: Re-run characterization and prove all existing Calculated allocations are byte/business-equivalent except the additive presentation field.**
-
-```bash
-python -m pytest tests/api/test_product_completion_acceptance.py tests/supply/test_optimizer.py -q
-```
-
-- [ ] **Step 5: Commit.**
-
-```bash
-git add backend/application.py backend/decision/contracts.py backend/decision/snapshot.py tests/api/test_product_completion_acceptance.py
-git commit -m "refactor: expose resolved seller stock"
-```
-
----
-
-### Task 2: Define whole-pack operational contracts
-
-**Files:**
-- Modify: `backend/supply/contracts.py`
-- Create: `tests/supply/test_shippable.py`
-
-**Interfaces:**
-
-```python
-@dataclass(frozen=True, slots=True)
-class PackPlanCandidate:
-    assessment: PlacementAssessment
-    analytical_plan_qty: int
-
-@dataclass(frozen=True, slots=True)
-class PackAllocationDecision:
-    sku: str
-    cluster_id: str
-    pack_multiple: int
-    analytical_plan_qty: int
-    desired_pack_count: int
-    allocation_pack_count: int
-    shippable_qty: int
-    rounding_delta_qty: int
-    reason_codes: tuple[str, ...]
-
-@dataclass(frozen=True, slots=True)
-class PackOptimizationResult:
-    sku: str
-    pack_multiple: int
-    seller_available_qty: int
-    seller_available_pack_count: int
-    allocated_pack_count: int
-    allocated_qty: int
-    seller_remainder_qty: int
-    decisions: tuple[PackAllocationDecision, ...]
-    reason_codes: tuple[str, ...]
-```
-
-- [ ] **Step 1: Add contract validation tests: positive integer multiplicity, nonnegative quantities, one SKU, unique cluster IDs, bool rejected where int required.**
-- [ ] **Step 2: Run RED, implement immutable contracts, run GREEN.**
-
-```bash
-python -m pytest tests/supply/test_shippable.py -q
-```
-
-- [ ] **Step 3: Commit.**
-
-```bash
-git add backend/supply/contracts.py tests/supply/test_shippable.py
-git commit -m "feat: define whole-pack plan contracts"
-```
-
----
-
-### Task 3: Reuse current allocation eligibility/priority without changing legacy output
-
-**Files:**
-- Modify: `backend/supply/optimizer.py`
-- Modify: `tests/supply/test_optimizer.py`
-
-**Interfaces:**
-
-Extract internal helpers with the exact current lexicographic policy, for example:
-
-```python
-def allocation_eligibility(candidate, ceiling, thresholds, plan_family) -> tuple[bool, set[str]]: ...
-def sort_allocation_candidates(candidates, *, objective) -> list: ...
-```
-
-- [ ] **Step 1: Add a four-plus candidate characterization fixture exercising margin, route confidence, demand confidence, distortion, need and stable cluster tie-breaks.**
-- [ ] **Step 2: Run GREEN before refactor and record exact legacy decision quantities/order.**
-- [ ] **Step 3: Extract helpers and make existing `optimize_allocations()` use them without altering reason vocabulary/ordering.**
-- [ ] **Step 4: Re-run all optimizer tests and commit only if outputs are unchanged.**
-
-```bash
-python -m pytest tests/supply/test_optimizer.py -q
-git add backend/supply/optimizer.py tests/supply/test_optimizer.py
-git commit -m "refactor: share allocation priority"
-```
-
----
-
-### Task 4: Implement integer-pack allocation across the full cluster set
-
-**Files:**
-- Create: `backend/supply/shippable.py`
-- Modify: `backend/supply/__init__.py`
-- Modify: `tests/supply/test_shippable.py`
-
-**Public interface:**
-
-```python
-def build_pack_plan(
-    candidates: Iterable[PackPlanCandidate],
-    *,
-    seller_available_qty: int,
-    pack_multiple: int,
-    thresholds: OptimizerThresholds,
-    objective: AllocationObjective = AllocationObjective.MAX_MARGIN,
-) -> PackOptimizationResult: ...
-```
-
-Rules:
-
-```text
-desired_packs = ceil(analytical_plan_qty / pack_multiple)
-seller_available_packs = seller_available_qty // pack_multiple
-seller_remainder = seller_available_qty % pack_multiple
-```
-
-Allocate integer packs in current per-SKU priority order until seller pack pool is exhausted.
-
-- [ ] **Step 1: Add canonical rounding test `17, multiple 6 → 18` with ample seller stock.**
-- [ ] **Step 2: Add shared-stock test: seller stock 20, multiple 6, two clusters → total allocation ≤18 and remainder=2; higher-priority cluster receives packs first.**
-- [ ] **Step 3: Add zero analytical plan, zero stock and missing-pack precondition tests.**
-- [ ] **Step 4: Add all-cluster immutability test: running on three clusters produces fixed decisions; filtering one cluster afterward must not increase another line.**
-- [ ] **Step 5: Run RED, implement minimal integer allocator, run GREEN.**
-
-```bash
-python -m pytest tests/supply/test_shippable.py tests/supply/test_optimizer.py -q
-```
-
-- [ ] **Step 6: Commit.**
-
-```bash
-git add backend/supply/shippable.py backend/supply/__init__.py tests/supply/test_shippable.py
-git commit -m "feat: allocate supply in whole packs"
-```
-
----
-
-### Task 5: Assemble presentation-ready ShippablePlan
-
-**Files:**
-- Modify: `backend/decision/contracts.py`
-- Create: `backend/decision/shippable.py`
-- Modify: `backend/decision/__init__.py`
-- Create: `tests/decision/test_shippable.py`
-
-**Interfaces:**
+Create frozen domain contracts such as:
 
 ```python
 @dataclass(frozen=True, slots=True)
 class ShippableLine:
     sku: str
     article: str
-    product_name: str
     destination_cluster_id: str
-    analytical_plan_qty: int
+    analytical_qty: int
     pack_multiple: int
+    resolved_seller_stock: int
     shippable_qty: int
-    rounding_delta_qty: int
-    current_weekly_rate: Decimal | None
-    current_fbo_stock: int | None
-    inbound_qty: int | None
-    seller_available_stock: int
     unit_volume_l: Decimal
     total_volume_l: Decimal
     placement_zone_kind: str
@@ -228,83 +37,128 @@ class ShippableLine:
     reason_codes: tuple[str, ...]
 
 @dataclass(frozen=True, slots=True)
-class ShippableSkuSummary: ...
-
-@dataclass(frozen=True, slots=True)
 class ShippablePlan:
+    shippable_plan_id: str
     analysis_snapshot_id: str
+    source_snapshot_id: str | None
     analysis_as_of: date
     lines: tuple[ShippableLine, ...]
-    sku_summaries: tuple[ShippableSkuSummary, ...]
-    total_qty: int
-    total_volume_l: Decimal
-    incomplete_sku_count: int
+    diagnostics: tuple
 ```
 
-- [ ] **Step 1: Add join tests linking DecisionRow by SKU/article to `ProductPackFacts`, resolved stock, ProductEconomics volume and normalized SupplyFacts.**
-- [ ] **Step 2: Prove FBO/inbound/current weekly rate are copied unchanged; they are not subtracted again.**
-- [ ] **Step 3: Prove `total_volume_l = unit_volume_l × shippable_qty` with Decimal and plan totals exactly sum lines.**
-- [ ] **Step 4: Prove one SKU with many clusters yields one summary and one product identity, while missing pack/volume/stock marks only that SKU incomplete.**
-- [ ] **Step 5: Implement adapter and run focused tests.**
+SKU is canonical identity; article is seller-facing label.
 
-```bash
-python -m pytest tests/decision/test_shippable.py -q
-```
-
-- [ ] **Step 6: Commit.**
-
-```bash
-git add backend/decision/contracts.py backend/decision/shippable.py backend/decision/__init__.py tests/decision/test_shippable.py
-git commit -m "feat: assemble whole-pack shippable plan"
-```
+Tests reject bool-as-int, negative quantities, non-positive multiplicity and invalid volume.
 
 ---
 
-### Task 6: Attach ShippablePlan to analysis without changing upstream fields
+## Task 2 — whole-pack rounding per cluster ceiling
 
-**Files:**
-- Modify: `backend/api.py`
-- Modify: `backend/decision/contracts.py`
-- Modify: `tests/api/test_analysis.py`
+For every positive Calculated Plan line, compute a pack-compatible operational target while preserving the analytical quantity as evidence.
 
-- [ ] **Step 1: Add fixture where analytical `17` + multiple `6` returns analytical 17 and operational 18 simultaneously.**
-- [ ] **Step 2: Add missing packaging/stock fixture proving analytical snapshot still succeeds while operational readiness is incomplete.**
-- [ ] **Step 3: Wire pack/supply inputs after existing analytical allocation; do not move operational formulas into serialization/frontend.**
-- [ ] **Step 4: Run API acceptance and commit.**
+Canonical behavior:
 
-```bash
-python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_acceptance.py -q
-git add backend/api.py backend/decision/contracts.py tests/api/test_analysis.py
-git commit -m "feat: attach shippable plan to analysis"
+```text
+analytical 17, pack 6 → operational target 18
+analytical 18, pack 6 → 18
 ```
+
+Do not round a zero analytical target into a positive shipment.
+
+Record rounding delta/reason explicitly for explanation.
 
 ---
 
-### Task 7: PR-B invariant gate
+## Task 3 — enforce per-SKU seller-stock ceiling across all clusters
 
-- [ ] **Step 1: Run focused suites.**
+Allocation uses the seller stock already resolved by current analysis.
 
-```bash
-python -m pytest tests/supply/test_optimizer.py tests/supply/test_shippable.py tests/decision/test_shippable.py -q
+For each SKU:
+
+```text
+sum(shippable_qty across all destination clusters)
+<= resolved seller stock
 ```
 
-- [ ] **Step 2: Run Product Completion/API regressions.**
+If seller stock is insufficient for all rounded targets, use the existing Calculated allocation order/priority semantics already produced upstream. Do not create a new shipment-time priority or rerun economics.
 
-```bash
-python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_acceptance.py -q
-```
-
-- [ ] **Step 3: Run full suite.**
-
-```bash
-python -m pytest -q
-```
-
-Acceptance for every positive line:
+Every positive `shippable_qty` must satisfy:
 
 ```text
 shippable_qty % pack_multiple == 0
-total_volume_l == unit_volume_l * shippable_qty
-sum(SKU lines) <= existing resolved seller stock
-selected shipment scope has not participated in allocation
 ```
+
+If stock cannot fund the next whole pack, leave residual stock unallocated rather than emitting a partial pack.
+
+---
+
+## Task 4 — propagate unit volume and placement-zone evidence
+
+For each line:
+
+```text
+total_volume_l = unit_volume_l * shippable_qty
+```
+
+Preserve exact normalized `placement_zones` and summary `placement_zone_kind`; do not reduce multi-zone evidence to a lossy flag.
+
+Missing unit volume or zone evidence produces an operational compatibility diagnostic but does not mutate demand/Need.
+
+---
+
+## Task 5 — immutable identity and deterministic IDs
+
+`ShippablePlan` must be deterministically tied to:
+
+```text
+analysis_snapshot_id
+source_snapshot_id when API mode
+analysis_as_of
+scenario settings that own Calculated Plan
+pack evidence version/content basis
+```
+
+Shipment requests later cannot provide another `as_of` or silently attach a plan to a different analysis/source snapshot.
+
+Use stable deterministic ordering and ID/fingerprint rules; no Python object identity.
+
+---
+
+## Task 6 — prove shipment selection is filter-only
+
+Add a pure helper/test showing:
+
+```text
+full ShippablePlan
+→ select Moscow + Perm
+→ exact original Moscow/Perm line quantities
+```
+
+No selected line can increase and unselected quantity is never redistributed.
+
+This helper may live in PR-C if ownership is clearer there, but PR-B acceptance must already make the invariant impossible to reinterpret.
+
+---
+
+## Task 7 — regression gate
+
+Tests must cover:
+- rounding up to whole pack;
+- zero remains zero;
+- seller stock exact fit / remainder below one pack / scarcity across multiple clusters;
+- conflicting/missing seller stock remains blocked by existing resolver semantics;
+- missing/conflicting multiplicity never becomes `1`;
+- unit-volume propagation;
+- `placement_zones` preserved;
+- all-cluster plan invariant to later shipment selection;
+- `analysis_as_of` copied from parent analysis only.
+
+Run:
+
+```bash
+python -m pytest tests/supply tests/decision -q
+python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_acceptance.py -q
+python -m pytest -q
+```
+
+Acceptance: one immutable all-cluster plan exists, every positive quantity is a complete pack, total allocation never exceeds existing resolved seller stock, and shipment scope cannot reallocate it.

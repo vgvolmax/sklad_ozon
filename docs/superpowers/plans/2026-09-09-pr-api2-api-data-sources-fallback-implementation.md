@@ -1,36 +1,36 @@
-# PR-API2 Ozon API Data Sources & Explicit Excel Fallback Implementation Plan
+# PR-API2 Ozon API Data Sources & Explicit FILES Fallback Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Required process:** implement task-by-task with TDD. Read `AGENTS.md` and the canonical 2026-09-09 API-first shipment design first.
 
-**Goal:** Replace routine Ozon report uploads with an immutable API source snapshot while preserving existing file importers as an explicit non-mixing fallback.
+**Goal:** replace routine Ozon orders/availability/restrictions uploads with one immutable API source snapshot while preserving existing file importers as an explicit, non-mixing fallback.
 
-**Architecture:** Backend adapters fetch current Ozon API domains and normalize them into the existing `OrderRecord` / `AvailabilityRecord` / seller-stock evidence contracts before analysis. `OzonSourceSnapshotStore` keeps PII-safe snapshots in process memory. Full analysis accepts either one API snapshot or the legacy file bundle; source domains are never merged.
+**Architecture:** backend adapters fetch Ozon domains and normalize them into existing analytics contracts. `OzonSourceSnapshotStore` is process-memory-only. API mode and FILES mode feed the same existing analysis orchestration; analytics formulas are not forked.
 
-**Tech Stack:** Python 3.13.14, existing OzonClient, frozen dataclasses, FastAPI, pytest; no database and no new dependency.
+**No new dependency.** Uses PR-API1 `OzonClient`/vault.
 
-**Spec:** `docs/superpowers/specs/2026-09-09-ozon-api-first-shipment-planner-design.md`
+## Global invariants
 
-## Global Constraints
-
-- `source_mode` is exactly `API` or `FILES` for one analysis run.
-- Never silently fill missing API data from files or vice versa.
-- API adapters target existing analysis contracts; do not rewrite analytics.
-- Discard buyer/address/phone/email payload fields before source snapshot assembly.
-- Exact 56-day Ozon recommendation is not fabricated in API mode.
-- Current FBO stock and inbound remain distinct; prove no double counting.
-- Source refresh is explicit; changing horizon/inbound settings does not refetch Ozon.
-- API snapshots are memory-only in this milestone.
+- `source_mode` is exactly `api` or `files` for one analysis run.
+- Never fill missing API rows/domains from files.
+- Raw buyer/address/phone/email data never enters source snapshots/logs/frontend.
+- API `source_as_of` is backend-owned; browser cannot relabel current evidence.
+- API history depth is backend-owned; default 12 completed ISO weeks, bounded backfill only for source-wide gaps, max 52 weeks.
+- Exact Ozon recommendation is not fabricated in API mode.
+- FBO and inbound remain distinct and parity-tested against existing Need semantics.
+- Handoff points are remote search results, **not** source-sync catalog data.
+- Seller warehouses are a small source-sync catalog.
+- Canonical seller/FBS stock endpoint is `/v2/product/info/stocks-by-warehouse/fbs`; do not implement v1.
 
 ---
 
-### Task 1: Define API source snapshot and in-memory store
+## Task 1 — immutable API source contracts and store
 
-**Files:**
-- Create: `backend/ozon/source_contracts.py`
-- Create: `backend/ozon/source_store.py`
-- Create: `tests/ozon/test_source_store.py`
+**Create:**
+- `backend/ozon/source_contracts.py`
+- `backend/ozon/source_store.py`
+- `tests/ozon/test_source_store.py`
 
-**Interfaces:**
+Minimum contracts:
 
 ```python
 class SourceMode(str, Enum):
@@ -43,137 +43,172 @@ class EndpointEvidence:
     fetched_at_utc: str
     record_count: int
     complete: bool
-    diagnostics: tuple[ImportDiagnostic, ...]
+    diagnostics: tuple
+
+@dataclass(frozen=True, slots=True)
+class SellerWarehouse:
+    seller_warehouse_id: int
+    name: str | None
+    address: str | None
+    is_active: bool
+    is_pickup: bool | None
 
 @dataclass(frozen=True, slots=True)
 class OzonSourceSnapshot:
     source_snapshot_id: str
     synced_at_utc: str
-    as_of: date
+    source_as_of: date
+    source_timezone: str
     history_from: date
     history_to: date
-    orders: tuple[OrderRecord, ...]
-    availability: tuple[AvailabilityRecord, ...]
-    operational_seller_stock: tuple[AvailabilityRecord, ...]
+    orders: tuple
+    availability: tuple
+    operational_seller_stock: tuple
     clusters: tuple
-    handoff_points: tuple
+    seller_warehouses: tuple[SellerWarehouse, ...]
     placement_zones: tuple
     endpoint_evidence: tuple[EndpointEvidence, ...]
-    diagnostics: tuple[ImportDiagnostic, ...]
+    diagnostics: tuple
 ```
+
+There is no `handoff_points` field.
+
+Canonical business-date implementation is dependency-free:
 
 ```python
-class OzonSourceSnapshotStore:
-    def put(self, snapshot: OzonSourceSnapshot) -> None: ...
-    def get(self, snapshot_id: str) -> OzonSourceSnapshot: ...
-    def latest(self) -> OzonSourceSnapshot | None: ...
+MOSCOW_BUSINESS_TZ = timezone(timedelta(hours=3))
+source_timezone = "UTC+03:00"
+source_as_of = synced_at_utc.astimezone(MOSCOW_BUSINESS_TZ).date()
 ```
 
-- [ ] **Step 1: Write immutability/identity/not-found tests and prove the store is memory-only.**
-- [ ] **Step 2: Run RED, implement bounded store retaining only a small fixed number of recent snapshots (for example 3) for stale-response safety, run GREEN.**
+Do not require `zoneinfo`/IANA tzdata merely to compute the current Moscow business date in the portable Windows runtime.
+
+Tests:
+- frozen/immutable contracts;
+- bounded store (for example latest 3 snapshots);
+- not-found identity;
+- source_as_of around UTC+03:00 midnight boundary;
+- seller contacts/courier comments cannot appear in normalized snapshot.
+
+Run:
 
 ```bash
 python -m pytest tests/ozon/test_source_store.py -q
 ```
 
-- [ ] **Step 3: Commit.**
-
-```bash
-git add backend/ozon/source_contracts.py backend/ozon/source_store.py tests/ozon/test_source_store.py
-git commit -m "feat: define Ozon API source snapshots"
-```
-
 ---
 
-### Task 2: Normalize FBO/FBS postings into existing OrderRecord
+## Task 2 — backend-owned history window + FBO/FBS postings
 
-**Files:**
-- Create: `backend/ozon/adapters/__init__.py`
-- Create: `backend/ozon/adapters/orders.py`
-- Create: `tests/ozon/adapters/test_orders.py`
+**Create:**
+- `backend/ozon/history.py`
+- `backend/ozon/adapters/orders.py`
+- `tests/ozon/test_history.py`
+- `tests/ozon/adapters/test_orders.py`
 
-**Interfaces:**
-
-```python
-def fetch_fbo_orders(client: OzonClient, *, since: datetime, to: datetime) -> tuple[OrderRecord, ...]: ...
-def fetch_fbs_orders(client: OzonClient, *, since: datetime, to: datetime) -> tuple[OrderRecord, ...]: ...
-def fetch_orders(...) -> tuple[OrderRecord, ...]: ...
-```
-
-Endpoint registry:
+Endpoints:
 
 ```text
 POST /v3/posting/fbo/list
 POST /v4/posting/fbs/list
 ```
 
-- [ ] **Step 1: Add pagination fixtures with at least two pages and assert destination/origin cluster, SKU/article/name, quantity, lifecycle timestamps/status and seller price normalize to the existing whitelist.**
-- [ ] **Step 2: Add a PII fixture containing buyer/address/phone/email-like fields and assert none survive `OrderRecord` or logs.**
-- [ ] **Step 3: Add parity fixture: normalize a representative API response and equivalent current orders file, then assert equality for every field consumed by current analytics.**
-- [ ] **Step 4: Run RED, implement adapters/pagination, run GREEN.**
+History policy:
 
-```bash
-python -m pytest tests/ozon/adapters/test_orders.py -q
+```text
+initial = 12 completed ISO weeks before source_as_of business week
+fetch current partial week as needed for current lifecycle/Flow evidence
+backfill increment = 4 weeks
+max lookback = 52 weeks
 ```
 
-- [ ] **Step 5: Commit.**
+Only source-wide unusable/missing completed-week coverage may trigger bounded backfill. Do not backfill indefinitely because a particular new/slow SKU has <8 weeks; existing 4–7/1–3 demand fallback owns that case.
+
+Adapters may split requests into endpoint-compatible date chunks/pages internally.
+
+Normalize into existing `OrderRecord` fields consumed by analysis. Add fixtures proving:
+- two-page pagination;
+- destination/origin/SKU/article/name/qty/lifecycle/time normalization;
+- PII fields are discarded;
+- equivalent API/file fixture produces equal analytical order evidence;
+- shallow UI-supplied history cannot override backend policy.
+
+Run:
 
 ```bash
-git add backend/ozon/adapters tests/ozon/adapters/test_orders.py
-git commit -m "feat: ingest Ozon postings from API"
+python -m pytest tests/ozon/test_history.py tests/ozon/adapters/test_orders.py -q
 ```
 
 ---
 
-### Task 3: Normalize current FBO stock and seller stock
+## Task 3 — canonical clusters and active seller warehouses
 
-**Files:**
-- Create: `backend/ozon/adapters/stocks.py`
-- Create: `tests/ozon/adapters/test_stocks.py`
+**Create:**
+- `backend/ozon/adapters/catalog.py`
+- `tests/ozon/adapters/test_catalog.py`
 
-**Interfaces:**
+Endpoints:
 
-```python
-def fetch_fbo_stock(client: OzonClient, cluster_catalog) -> tuple[AvailabilityRecord, ...]: ...
-def fetch_seller_stock(client: OzonClient) -> tuple[AvailabilityRecord, ...]: ...
+```text
+POST /v2/cluster/list
+POST /v1/cluster/list
+POST /v1/warehouse/fbo/seller/list
 ```
 
-Current endpoint registry:
+Requirements:
+- canonical identity uses Ozon IDs, not fuzzy display-name matching;
+- normalize active seller warehouses into `SellerWarehouse`;
+- discard seller-warehouse contacts/courier comments;
+- preserve enough name/address/is_active/is_pickup evidence for UI selection;
+- duplicate/conflicting IDs are diagnostics, not silent merge.
+
+Tests include one active warehouse, multiple active warehouses, inactive warehouse and PII/contact stripping.
+
+Run:
+
+```bash
+python -m pytest tests/ozon/adapters/test_catalog.py -q
+```
+
+---
+
+## Task 4 — current FBO stock and seller/FBS stock
+
+**Create:**
+- `backend/ozon/adapters/stocks.py`
+- `tests/ozon/adapters/test_stocks.py`
+
+Endpoints:
 
 ```text
 POST /v1/analytics/stocks
-POST /v1/product/info/stocks-by-warehouse/fbs
+POST /v2/product/info/stocks-by-warehouse/fbs
 ```
 
-- [ ] **Step 1: Add FBO stock fixture and prove `available_stock_count` is mapped by canonical cluster/warehouse to `fbo_quantity`, not to seller stock.**
-- [ ] **Step 2: Add seller-stock fixture and prove values reach the same evidence shape used by current seller-stock resolver, including explicit zero.**
-- [ ] **Step 3: Add conflict fixture proving duplicate positive seller-stock evidence remains visible to the existing resolver rather than being silently summed/maxed.**
-- [ ] **Step 4: Add API-vs-file parity fixture for FBO/FBS fields actually consumed by analysis.**
-- [ ] **Step 5: Run RED, implement, run GREEN and commit.**
+Explicit guard: repository source for the new adapter must not contain the deprecated `/v1/product/info/stocks-by-warehouse/fbs` path.
+
+Requirements:
+- FBO maps by canonical warehouse/cluster to existing `AvailabilityRecord.fbo_quantity` semantics;
+- seller stock reaches the same evidence shape consumed by the existing seller-stock resolver;
+- explicit zero stays zero;
+- conflicting positive seller-stock evidence remains visible to existing resolver; do not sum/max it away;
+- API-vs-file parity tests cover all fields consumed by analysis.
+
+Run:
 
 ```bash
 python -m pytest tests/ozon/adapters/test_stocks.py -q
-git add backend/ozon/adapters/stocks.py tests/ozon/adapters/test_stocks.py
-git commit -m "feat: ingest Ozon stocks from API"
 ```
 
 ---
 
-### Task 4: Build inbound from active supply orders without double counting
+## Task 5 — inbound from active FBO supply orders
 
-**Files:**
-- Create: `backend/ozon/adapters/inbound.py`
-- Create: `tests/ozon/adapters/test_inbound.py`
+**Create:**
+- `backend/ozon/adapters/inbound.py`
+- `tests/ozon/adapters/test_inbound.py`
 
-**Interfaces:**
-
-```python
-class SupplyOrderState(str, Enum): ...
-
-def fetch_inbound(client: OzonClient, cluster_catalog) -> tuple[AvailabilityRecord, ...]: ...
-```
-
-Endpoint registry:
+Endpoints:
 
 ```text
 POST /v3/supply-order/list
@@ -181,169 +216,202 @@ POST /v3/supply-order/get
 POST /v1/supply-order/bundle
 ```
 
-- [ ] **Step 1: Characterize all currently reviewed supply-order states in one explicit classifier. Count only states where quantity is still inbound and not yet available FBO stock. Exclude `COMPLETED`, `CANCELLED`, rejected/final states. Unknown states remain diagnostic/incomplete rather than silently counted.**
-- [ ] **Step 2: Add fixture with one active, one completed, one cancelled and one unknown-state order; assert only active quantity becomes `inbound_quantity`.**
-- [ ] **Step 3: Add warehouse→cluster resolution test and duplicate bundle-line aggregation test keyed by `SKU × destination cluster`.**
-- [ ] **Step 4: Add no-double-subtraction acceptance fixture: existing FBO quantity plus active inbound produces exactly the same Need result as an equivalent current availability file.**
-- [ ] **Step 5: Run RED, implement, run GREEN and commit.**
+Implement one explicit supply-state classifier. Count only quantity that is still inbound and not yet available FBO stock. Completed/cancelled/rejected/final states do not count. Unknown new Ozon state → diagnostic/incomplete, never silently counted or zeroed.
+
+Tests:
+- active/completed/cancelled/unknown states;
+- warehouse→cluster identity;
+- bundle pagination/aggregation by `SKU × destination`;
+- no-double-subtraction acceptance against equivalent availability file;
+- inbound failure blocks Need only when `include_inbound=true`.
+
+Run:
 
 ```bash
 python -m pytest tests/ozon/adapters/test_inbound.py tests/decision/test_need.py -q
-git add backend/ozon/adapters/inbound.py tests/ozon/adapters/test_inbound.py
-git commit -m "feat: derive inbound stock from Ozon supplies"
 ```
 
 ---
 
-### Task 5: Fetch canonical clusters, warehouses, hand-off points and placement zones
+## Task 6 — placement-zone evidence
 
-**Files:**
-- Create: `backend/ozon/adapters/catalog.py`
-- Create: `backend/ozon/adapters/placement_zones.py`
-- Create: `tests/ozon/adapters/test_catalog.py`
-- Create: `tests/ozon/adapters/test_placement_zones.py`
+**Create:**
+- `backend/ozon/adapters/placement_zones.py`
+- `tests/ozon/adapters/test_placement_zones.py`
 
-**Interfaces:**
+Endpoint:
 
-```python
-@dataclass(frozen=True, slots=True)
-class OzonCluster: ...
-@dataclass(frozen=True, slots=True)
-class HandoffPoint:
-    warehouse_id: int
-    name: str
-    address: str
-    point_type: str
-    cluster_id: str | None
-
-def fetch_cluster_catalog(client: OzonClient) -> tuple[OzonCluster, ...]: ...
-def fetch_handoff_points(client: OzonClient) -> tuple[HandoffPoint, ...]: ...
-def fetch_placement_zones(client: OzonClient, sku_ids: Iterable[str]) -> tuple: ...
+```text
+POST /v1/product/placement-zone/info
 ```
+
+Preserve exact normalized zone/unknown/multiple evidence. Do not infer replacement zones from dimensions.
+
+Placement-zone failure affects shipment-method compatibility only; it does not block demand/Need.
+
+Run:
+
+```bash
+python -m pytest tests/ozon/adapters/test_placement_zones.py -q
+```
+
+---
+
+## Task 7 — remote handoff search and process-memory store
+
+**Create:**
+- `backend/ozon/handoff.py`
+- `tests/ozon/test_handoff_search.py`
+- `tests/api/test_ozon_handoff.py`
+- modify `backend/api.py`
 
 Endpoint registry:
 
 ```text
-POST /v2/cluster/list
-POST /v1/cluster/list
 POST /v1/warehouse/fbo/list
-POST /v1/product/placement-zone/info
 ```
 
-- [ ] **Step 1: Add catalog fixtures and prove stable cluster identity is separated from display name/address.**
-- [ ] **Step 2: Add hand-off fixture and retain concrete Ozon warehouse ID required later for cross-dock draft creation.**
-- [ ] **Step 3: Add placement-zone fixture preserving Ozon zone/unknown evidence without dimension-based inference.**
-- [ ] **Step 4: Run RED, implement adapters, run GREEN and commit.**
+Local endpoint:
+
+```text
+POST /api/ozon/handoff/search
+```
+
+Request:
+
+```text
+query: string          # trimmed, min 4 chars
+supply_types: tuple
+```
+
+Normalized `HandoffPoint` contains:
+
+```text
+warehouse_id: int
+name
+address
+warehouse_type / point_type exactly from Ozon evidence
+```
+
+Results populate process-memory `HandoffPointStore` keyed by warehouse ID.
+
+Rules:
+- requires unlocked vault;
+- `<4` trimmed chars rejected/short-circuited locally;
+- no bulk handoff fetch during source sync;
+- persisted IDs are preferences only; after restart they must be resolved again;
+- unknown/stale IDs fail before candidate/draft use;
+- secrets never exposed.
+
+Run:
 
 ```bash
-python -m pytest tests/ozon/adapters/test_catalog.py tests/ozon/adapters/test_placement_zones.py -q
-git add backend/ozon/adapters/catalog.py backend/ozon/adapters/placement_zones.py tests/ozon/adapters
-git commit -m "feat: ingest Ozon supply catalogs"
+python -m pytest tests/ozon/test_handoff_search.py tests/api/test_ozon_handoff.py -q
 ```
 
 ---
 
-### Task 6: Assemble one explicit API sync operation
+## Task 8 — assemble API sync with capability matrix
 
-**Files:**
-- Create: `backend/ozon/sync.py`
-- Modify: `backend/api.py`
-- Create: `tests/api/test_ozon_sync.py`
+**Create/modify:**
+- `backend/ozon/sync.py`
+- `backend/api.py`
+- `tests/api/test_ozon_sync.py`
 
-**Interfaces:**
+Canonical interface:
 
 ```python
-def sync_ozon_source(client: OzonClient, *, as_of: date, history_from: date, progress_callback=None) -> OzonSourceSnapshot: ...
+def sync_ozon_source(
+    client: OzonClient,
+    *,
+    progress_callback=None,
+) -> OzonSourceSnapshot: ...
 ```
+
+Do **not** accept arbitrary `as_of`/`history_from` from browser as source truth.
+
+Local endpoints:
 
 ```text
 POST /api/ozon/sync
 GET  /api/ozon/source/{source_snapshot_id}/status
 ```
 
-- [ ] **Step 1: Add sync test with fake client responses for all endpoint families and assert one immutable PII-safe snapshot is stored.**
-- [ ] **Step 2: Add partial-domain failure test: endpoint diagnostics identify the failed source; do not silently borrow file data. Define which missing domains block full analysis and which only disable a comparison.**
-- [ ] **Step 3: Add progress-stage test (`orders`, `stocks`, `inbound`, `catalog`, `zones`, `complete`) with stable sequence and previous snapshot preserved on failed refresh.**
-- [ ] **Step 4: Run RED, implement sync endpoint/store wiring, run GREEN.**
+Progress stages may be:
+
+```text
+orders → clusters/seller_warehouses → stocks → inbound → zones → complete
+```
+
+Capability consequences are fixed:
+- postings missing blocks demand/Flow for missing history;
+- unresolved cluster blocks affected evidence;
+- FBO missing makes affected Need incomplete;
+- inbound missing matters only when inbound enabled;
+- seller stock missing blocks operational allocation only;
+- exact Ozon recommendation missing only disables comparison/Safe;
+- zone missing limits shipment compatibility only;
+- handoff search is not source-sync completeness.
+
+Failed refresh preserves previous valid snapshot.
+
+Run:
 
 ```bash
 python -m pytest tests/api/test_ozon_sync.py -q
 ```
 
-- [ ] **Step 5: Commit.**
-
-```bash
-git add backend/ozon/sync.py backend/api.py tests/api/test_ozon_sync.py
-git commit -m "feat: synchronize Ozon source data"
-```
-
 ---
 
-### Task 7: Let existing analysis consume API snapshot OR files, never both
+## Task 9 — existing analysis consumes API snapshot OR FILES
 
-**Files:**
-- Modify: `backend/api.py`
-- Modify: `backend/application.py` only if a thin prepared-input adapter is necessary; do not rewrite `analyze()` formulas.
-- Modify: `tests/api/test_analysis.py`
-- Modify: `tests/api/test_product_completion_acceptance.py`
+**Modify:**
+- `backend/api.py`
+- `backend/application.py` only for thin prepared-source adaptation if needed
+- `tests/api/test_analysis.py`
+- `tests/api/test_product_completion_acceptance.py`
 
-**Wire contract:**
+API mode sends source snapshot identity plus local seller inputs/settings. `analysis_as_of` is taken from `source_snapshot.source_as_of`.
 
-FILES keeps existing multipart behavior.
+If a legacy request contains `as_of`, exact mismatch is a stable 400; prefer no mutable API-mode `as_of` in target contract.
 
-API mode sends a source snapshot identity plus Unitka/economics settings needed locally, for example:
+Reject mixed-source requests:
+- API snapshot + orders file;
+- API snapshot + availability/restrictions file;
+- missing/stale source snapshot ID.
 
-```text
-source_mode=api
-source_snapshot_id=<id>
-as_of=<must match snapshot basis>
-unitka_file=<local seller economics>
-...
-```
+Acceptance fixture must prove semantically equivalent API/FILES inputs produce equal DemandEstimate, FBO/inbound Need, Flow and seller-stock resolution.
 
-- [ ] **Step 1: Add API-mode acceptance fixture and assert existing `DemandEstimate`, FBO/inbound Need, Flow and resolved seller stock equal a semantically equivalent FILES-mode fixture.**
-- [ ] **Step 2: Add mixed-source rejection tests: API snapshot + `orders_file`, API snapshot + availability/restrictions files, and missing API snapshot ID return stable 400 errors.**
-- [ ] **Step 3: Add exact-Ozon-recommendation-missing test proving Calculated Plan still works while Ozon/Safe comparison is explicit incomplete rather than replaced by another analytics metric.**
-- [ ] **Step 4: Implement a prepared-source adapter that feeds existing domain tuples into current analysis orchestration. Do not fork analytics by source mode.**
-- [ ] **Step 5: Run focused acceptance.**
+Exact Ozon recommendation absent → Calculated Plan remains available, Safe/Ozon comparison explicit incomplete.
+
+Run:
 
 ```bash
 python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_acceptance.py -q
 ```
 
-- [ ] **Step 6: Commit.**
-
-```bash
-git add backend/api.py backend/application.py tests/api/test_analysis.py tests/api/test_product_completion_acceptance.py
-git commit -m "feat: analyze from Ozon API snapshots"
-```
-
 ---
 
-### Task 8: PR-API2 regression/parity gate
+## Task 10 — PR-API2 full gate
 
-- [ ] **Step 1: Run all Ozon source tests.**
-
-```bash
-python -m pytest tests/ozon tests/api/test_ozon_sync.py -q
-```
-
-- [ ] **Step 2: Run analytics/decision/supply regressions.**
+Run:
 
 ```bash
+python -m pytest tests/ozon tests/api/test_ozon_sync.py tests/api/test_ozon_handoff.py -q
 python -m pytest tests/analytics tests/decision tests/supply -q
-```
-
-- [ ] **Step 3: Run existing analysis transports including `/api/analysis/stream` tests in `tests/api/test_analysis.py`.**
-
-```bash
 python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_acceptance.py -q
-```
-
-- [ ] **Step 4: Run full suite.**
-
-```bash
 python -m pytest -q
 ```
 
-Acceptance: normal API mode no longer needs routine Ozon orders/availability/restrictions report uploads; FILES remains explicit fallback; no API/file merge exists; existing analytics are parity-proven.
+Acceptance:
+
+```text
+routine orders/availability/restrictions uploads not required in API mode
+FILES fallback explicit and non-mixing
+source_as_of deterministic/server-owned without tzdata dependency
+order history sufficient by backend policy without per-SKU infinite backfill
+FBS stock uses v2 endpoint
+seller warehouses available in source snapshot
+handoff points remote-search only
+existing analytics parity preserved
+```

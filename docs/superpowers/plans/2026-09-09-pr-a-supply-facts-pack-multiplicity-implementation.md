@@ -1,240 +1,133 @@
 # PR-A Supply Facts & Pack Multiplicity Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Implement task-by-task with TDD. Read `AGENTS.md` and the canonical API-first shipment design first.
 
-**Goal:** Add supplier pack multiplicity and one normalized supply-facts boundary that works with API-first evidence and existing file fallback without making static restrictions the future-capacity authority.
+**Goal:** add seller-local pack multiplicity and normalized operational supply facts needed by the whole-pack layer, without changing existing demand/Need/Safe/Calculated Plan semantics.
 
-**Architecture:** Supplier workbook parsing is independent local evidence keyed by seller article. API mode uses Ozon cluster/warehouse/placement-zone catalogs from `OzonSourceSnapshot`; FILES mode may enrich from the existing restrictions workbook as dated conservative evidence. Both paths produce bounded immutable `SupplyFacts` consumed later by whole-pack planning.
+## Global invariants
 
-**Tech Stack:** Python 3.13.14, openpyxl, frozen dataclasses, pytest; no new dependency.
-
-**Spec:** `docs/superpowers/specs/2026-09-09-ozon-api-first-shipment-planner-design.md`
-
-## Global Constraints
-
-- Do not alter DemandEstimate, Need, Safe/Calculated Plan or seller-stock resolution.
-- `Прайс списком!Упак` right-hand positive integer after `/` is pack multiplicity.
-- Never use `Оглавление!КРАТНОСТЬ` as product multiplicity.
-- Missing/conflicting pack data is incomplete; no silent `1` default.
-- API placement zone is current operational evidence; FILES restrictions are dated fallback evidence only.
-- Static `max_supply_qty` must never be described as guaranteed future capacity in API mode.
-- Restrictions 56-day recommendation never replaces the analytical Ozon recommendation.
+- Existing analytics and seller-stock resolver stay unchanged.
+- Pack multiplicity is seller-local evidence from supplier workbook.
+- Missing/conflicting multiplicity never defaults to `1`.
+- API mode uses API placement-zone/supply facts from PR-API2.
+- FILES mode may retain restrictions workbook as dated conservative evidence only.
+- Restrictions `Рекомендуемая поставка на 56 дней` is reference/diagnostic only; it never replaces current analytical Ozon recommendation or feeds `calculate_need()`.
 
 ---
 
-### Task 1: Add supplier pack importer
+## Task 1 — supplier article normalization
 
-**Files:**
-- Create: `backend/ingestion/supplier_packaging.py`
-- Modify: `backend/ingestion/__init__.py` if public exports are centralized there.
-- Create: `tests/ingestion/test_supplier_packaging.py`
+**Create/modify:** supplier packaging importer + focused tests.
 
-**Interfaces:**
-
-```python
-@dataclass(frozen=True, slots=True)
-class SupplierPackRecord:
-    article: str
-    pack_multiple: int
-
-
-def import_supplier_packaging(data: bytes, report_context: ReportMeta) -> ImportResult[SupplierPackRecord]: ...
-```
-
-Parsing contract:
+Canonical article normalization:
 
 ```text
-sheet = Прайс списком
-article column = КОД
-pack text column = Упак
-right side after final '/' = positive integer
+"40750" → "40750"
+40750 → "40750"
+40750.0 → "40750"
+40750.5 → invalid/diagnostic
+blank → invalid
 ```
 
-- [ ] **Step 1: Add fixtures proving `36/6→6`, `54/9→9`, `100+/1→1`, whitespace normalization and repeated identical rows dedupe cleanly.**
-- [ ] **Step 2: Add malformed/conflict tests for missing sheet/headers, no slash, zero/negative/non-integer right side and same article with different multiples. Conflicts remain diagnostics and do not choose a value.**
-- [ ] **Step 3: Add a workbook containing `Оглавление!КРАТНОСТЬ` and prove it is ignored.**
-- [ ] **Step 4: Run RED, implement single-open openpyxl parser, run GREEN.**
+Trim string identifiers but do not numeric-coerce arbitrary alphanumeric articles.
 
-```bash
-python -m pytest tests/ingestion/test_supplier_packaging.py -q
-```
-
-- [ ] **Step 5: Commit.**
-
-```bash
-git add backend/ingestion/supplier_packaging.py backend/ingestion/__init__.py tests/ingestion/test_supplier_packaging.py
-git commit -m "feat: import supplier pack multiplicity"
-```
+Tests must include integer-like Excel numeric cells explicitly.
 
 ---
 
-### Task 2: Define normalized supply-facts contracts
+## Task 2 — parse pack multiplicity
 
-**Files:**
-- Create: `backend/supply/facts.py`
-- Create: `tests/supply/test_facts.py`
+Source contract:
 
-**Interfaces:**
-
-```python
-class EvidenceSource(str, Enum):
-    OZON_API = "ozon_api"
-    RESTRICTIONS_FILE = "restrictions_file"
-
-class PlacementZoneKind(str, Enum):
-    KNOWN = "known"
-    MULTIPLE = "multiple"
-    UNKNOWN = "unknown"
-
-@dataclass(frozen=True, slots=True)
-class ClusterSupplyFacts:
-    sku: str
-    cluster_id: str
-    placement_zone_kind: PlacementZoneKind
-    placement_zones: tuple[str, ...]
-    source: EvidenceSource
-    observed_at: str | None
-    fallback_allowed: bool | None = None
-    fallback_capacity_qty: int | None = None
-    fallback_capacity_unlimited: bool = False
-    reason_codes: tuple[str, ...] = ()
+```text
+sheet: Прайс списком
+КОД → seller article
+Упак → positive integer to the right of '/'
 ```
 
-- [ ] **Step 1: Write validation tests for unique `SKU × cluster`, explicit source, sorted unique zone evidence and nonnegative fallback capacity.**
-- [ ] **Step 2: Run RED, implement immutable contracts/validators, run GREEN.**
+Examples:
 
-```bash
-python -m pytest tests/supply/test_facts.py -q
+```text
+72/6 → 6
+36/6 → 6
+54/9 → 9
+100+/1 → 1
 ```
 
-- [ ] **Step 3: Commit.**
+`Оглавление!КРАТНОСТЬ` is not product multiplicity.
 
-```bash
-git add backend/supply/facts.py tests/supply/test_facts.py
-git commit -m "feat: define normalized supply facts"
+Add immutable result/evidence contract carrying:
+
+```text
+article
+pack_multiple: int | None
+source row/value
+diagnostic reasons
 ```
+
+Duplicate identical evidence may collapse; conflicting positive values are blocking for that article.
 
 ---
 
-### Task 3: Build API-mode supply facts from source snapshot
+## Task 3 — normalized supply facts
 
-**Files:**
-- Modify: `backend/supply/facts.py`
-- Modify: `tests/supply/test_facts.py`
+Define/extend immutable operational evidence for each `SKU × destination cluster` with fields needed downstream, including:
 
-**Interfaces:**
-
-```python
-def build_api_supply_facts(snapshot: OzonSourceSnapshot) -> tuple[ClusterSupplyFacts, ...]: ...
+```text
+sku
+article
+cluster_id
+placement_zone_kind
+placement_zones
+fallback restriction eligibility/capacity evidence where FILES mode provides it
+restriction report date when known
 ```
 
-- [ ] **Step 1: Add tests with one known zone, conflicting/multiple zones and no zone evidence; preserve `KNOWN/MULTIPLE/UNKNOWN` without guessing.**
-- [ ] **Step 2: Prove API facts do not synthesize `max_supply_qty` and do not depend on old restrictions rows.**
-- [ ] **Step 3: Implement from normalized API catalog/placement evidence and run GREEN.**
+API placement-zone evidence is authoritative for API-mode current pre-checks. Do not infer zones from dimensions.
 
-```bash
-python -m pytest tests/supply/test_facts.py -q
+FILES restriction capacity semantics remain conservative dated snapshot evidence:
+
+```text
+any allowed unlimited warehouse → cluster unlimited
+else max positive finite allowed value
+all allowed zero → zero
+no usable allowed evidence → unknown/ineligible
 ```
 
-- [ ] **Step 4: Commit.**
-
-```bash
-git add backend/supply/facts.py tests/supply/test_facts.py
-git commit -m "feat: build API supply facts"
-```
+Do not sum warehouse maxima.
 
 ---
 
-### Task 4: Preserve file restrictions as explicit dated fallback facts
+## Task 4 — join pack evidence to product/SKU identity
 
-**Files:**
-- Modify: `backend/ingestion/restrictions.py`
-- Modify: `backend/supply/facts.py`
-- Modify: `tests/ingestion/test_restrictions.py`
-- Modify: `tests/supply/test_facts.py`
+Join supplier multiplicity by normalized seller article while preserving canonical SKU identity.
 
-**Required importer preservation/enrichment:**
+If one seller article maps to multiple Ozon SKUs:
+- do not collapse the SKUs;
+- the same pack multiple may be attached when article evidence is unambiguous;
+- retain identity diagnostic for downstream UI/export safeguards.
 
-Keep existing `RestrictionRecord` compatibility while adding the fields needed to retain source meaning, including placement-zone evidence and explicit capacity kind rather than ambiguous `None`.
-
-- [ ] **Step 1: Add tests distinguishing `FINITE(0)`, positive FINITE, `UNLIMITED`, prohibited/unknown and missing.**
-- [ ] **Step 2: Add placement-zone/report-date tests. Preserve `ReportMeta.report_generated_at` when source metadata proves it; otherwise keep unknown.**
-- [ ] **Step 3: Add cluster aggregation tests: any explicit usable unlimited wins; else max independently proven positive finite; do not sum warehouses.**
-- [ ] **Step 4: Add restrictions 56-day-reference test proving it is secondary evidence and never passed into `calculate_need()`.**
-- [ ] **Step 5: Run RED, minimally enrich importer and fallback fact builder, run GREEN.**
-
-```bash
-python -m pytest tests/ingestion/test_restrictions.py tests/supply/test_facts.py -q
-```
-
-- [ ] **Step 6: Commit.**
-
-```bash
-git add backend/ingestion/restrictions.py backend/supply/facts.py tests/ingestion/test_restrictions.py tests/supply/test_facts.py
-git commit -m "feat: preserve restrictions as fallback evidence"
-```
+Missing article mapping or conflicting multiplicity makes operational quantity incomplete for affected SKU but does not invalidate historical demand/Need.
 
 ---
 
-### Task 5: Join packs to current article/SKU identities
+## Task 5 — regression gate
 
-**Files:**
-- Create: `backend/supply/packaging.py`
-- Create: `tests/supply/test_packaging.py`
+Add tests for:
+- `40750.0 → "40750"`;
+- non-integer numeric article rejected;
+- missing/conflicting multiplicity;
+- placement-zone unknown/multiple preservation;
+- FILES restriction zero/unlimited/finite aggregation;
+- restrictions 56-day recommendation cannot alter Safe/Calculated/Need;
+- no second seller-stock resolver introduced.
 
-**Interfaces:**
-
-```python
-@dataclass(frozen=True, slots=True)
-class ProductPackFacts:
-    sku: str
-    article: str
-    pack_multiple: int | None
-    complete: bool
-    reason_codes: tuple[str, ...]
-
-
-def resolve_product_packs(
-    decision_rows,
-    supplier_records: Iterable[SupplierPackRecord],
-) -> tuple[ProductPackFacts, ...]: ...
-```
-
-- [ ] **Step 1: Add join tests where article is the supplier key and SKU is current Ozon identity.**
-- [ ] **Step 2: Add missing/conflicting article mapping tests; affected SKU is incomplete and never borrows another article's multiple.**
-- [ ] **Step 3: Run RED, implement deterministic join, run GREEN.**
+Run focused supply/import tests, then:
 
 ```bash
-python -m pytest tests/supply/test_packaging.py -q
-```
-
-- [ ] **Step 4: Commit.**
-
-```bash
-git add backend/supply/packaging.py tests/supply/test_packaging.py
-git commit -m "feat: resolve product pack facts"
-```
-
----
-
-### Task 6: PR-A regression gate
-
-- [ ] **Step 1: Run ingestion/supply focused tests.**
-
-```bash
-python -m pytest tests/ingestion tests/supply/test_facts.py tests/supply/test_packaging.py -q
-```
-
-- [ ] **Step 2: Run Product Completion acceptance and prove analytical plan values are unchanged.**
-
-```bash
-python -m pytest tests/api/test_product_completion_acceptance.py -q
-```
-
-- [ ] **Step 3: Run full suite.**
-
-```bash
+python -m pytest tests/analytics tests/decision tests/supply -q
+python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_acceptance.py -q
 python -m pytest -q
 ```
 
-Acceptance: pack multiplicity is explicit local evidence; API supply facts are current/non-capacity-guessing; file restrictions remain a conservative fallback only; upstream analytics remain unchanged.
+Acceptance: every operational SKU has explicit pack evidence or a causal blocker; no silent `×1`, identity drift or analytical formula change exists.

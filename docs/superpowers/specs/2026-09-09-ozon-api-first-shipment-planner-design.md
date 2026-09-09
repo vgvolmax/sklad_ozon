@@ -2,99 +2,97 @@
 
 **Date:** 2026-09-09  
 **Status:** APPROVED / ACTIVE SOURCE OF TRUTH  
-**Scope:** API-first data acquisition and operational FBO shipment planning downstream of the already-built Product Completion analytics.  
-**Supersedes:** every 2026-09-08 selected-network/shipment-planner design and amendment for active implementation. Those files are archived and are historical only.
+**Scope:** API-first data acquisition and operational FBO shipment planning downstream of the already-built Product Completion analytics.
+
+This document is self-contained for the active roadmap. Archived shipment/network designs and prior correction overlays are historical only.
 
 ## 1. Product outcome
 
-The application must answer, with minimal manual report work:
+The application must answer with minimal manual Ozon-report work:
 
-> what quantity to ship, to which Ozon clusters, through which hand-off point/method, and which currently available Ozon timeslot is the best operational choice.
+> what quantity to ship, to which destination clusters, through which Ozon hand-off point/method, from which seller warehouse where required, and which currently observed Ozon timeslot is the best operational option.
 
-The application **does not create the final Ozon supply request in this milestone**. It may create temporary Ozon drafts only to validate candidate supplies and discover timeslots. The user remains the final actor who creates/confirms the real supply in Ozon. XLSX/ZIP export remains available as hand-off/fallback.
+The application does **not** create the final Ozon supply request in this milestone. Temporary Ozon drafts are allowed only for validation and timeslot discovery. The user remains the final actor who creates/confirms the real supply in Ozon. XLSX/ZIP export remains the manual hand-off.
 
 Canonical flow:
 
 ```text
 Ozon API sync
-→ normalized PII-safe source snapshot
+→ immutable normalized source snapshot
 → existing Product Completion analysis
 → Calculated Plan
-→ resolved seller stock + pack multiplicity + unit volume
+→ existing resolved seller stock + pack multiplicity + unit volume
 → all-cluster whole-pack ShippablePlan
-→ selected shipment scope + date range + methods + hand-off points
+→ shipment intent (scope/date/method/seller warehouse/handoff)
 → bounded CandidateShipment set
 → temporary Ozon draft validation
-→ live Ozon draft info + travel/warehouse evidence
-→ live Ozon timeslots
+→ /v2 draft info + warehouse/travel evidence
+→ /v2 live timeslots
 → ranked ValidatedShipmentOptions
-→ XLSX/ZIP for manual execution
-→ user creates/confirms the real supply in Ozon
+→ exact XLSX/ZIP
+→ user performs final real Ozon action manually
 ```
 
 ## 2. Non-goals — do not implement
 
-The active roadmap MUST NOT:
+Active PRs MUST NOT:
 
-- rewrite destination demand, DemandEstimate, stockout, clean-route history or historical Flow;
-- change current FBO/inbound need semantics;
+- rewrite destination demand, DemandEstimate, stockout, clean-route history, historical Flow or route economics;
+- change current FBO/inbound Need semantics;
 - change Safe/Calculated Plan meaning;
 - create a second seller-stock resolver;
-- merge API and Excel rows into one analysis source;
-- use RouteCostIndex/DirectRouteQuote as seller→Ozon inbound cost evidence;
-- brute-force combinations of Ozon drafts;
+- merge API and FILES evidence inside one analysis run;
+- use `RouteCostIndex` / `DirectRouteQuote` as seller→Ozon inbound-cost evidence;
+- brute-force all cluster subsets with Ozon drafts;
 - call Ozon Seller API from frontend JavaScript;
-- expose Client-Id/API-Key to frontend state, URLs, snapshots, logs or Project JSON;
-- create a real Ozon supply request;
+- expose Client-Id/API-Key/password to URLs, logs, snapshots, Project JSON or persistent frontend state;
+- create the real supply request (`POST /v2/draft/supply/create`);
 - create cargo places, pallets, labels, passes or other post-creation logistics artifacts;
-- claim a temporary draft/timeslot is a booked/confirmed real supply;
-- add a database, background worker service or cloud dependency.
+- claim a temporary draft/timeslot is booked or confirmed;
+- add a database, cloud service, frontend framework or background worker architecture.
 
-Future `PR-F — Ozon Supply Execution` may add the final `/v2/draft/supply/create` step only after a separate approved design. It has no active implementation plan now.
+Future `PR-F — Ozon Supply Execution` requires a separate approved design.
 
-## 3. What remains canonical upstream
+## 3. Upstream analytical ownership stays unchanged
 
-### 3.1 Demand ownership
+### 3.1 Destination owns demand
 
-`destination_cluster` remains customer-demand geography. Historical origin never becomes demand ownership.
+`destination_cluster` is customer-demand geography. Fulfillment origin never creates destination demand.
 
 ### 3.2 Need
 
-Existing need semantics remain authoritative:
+Existing formula remains authoritative:
 
 ```text
 raw_need = raw_demand_forecast
          - current_fbo_stock
-         - inbound_qty  # only when include_inbound=true
+         - inbound_qty          # only when include_inbound=true
 
 calculated_need_qty = max(0, ceil(raw_need))
 ```
 
-Missing evidence remains unknown; frontend/backend never coerce it to zero.
+Missing evidence remains unknown; it is never coerced to zero for convenience.
 
-### 3.3 Analytical plan families
+### 3.3 Plan families
 
 - Calculated Plan remains primary `Наш план`.
-- Safe Plan remains a conservative analytical comparison when its external Ozon recommendation evidence exists.
-- The active operational/export path is based on Calculated Plan.
-- API-first mode must not substitute `/v1/analytics/turnover/stocks` or another metric for the existing Ozon recommendation merely because the exact 56-day recommendation is not exposed by a verified API contract.
-- If exact Ozon recommendation evidence is unavailable in API mode, Safe/Ozon comparison is explicitly incomplete; Calculated Plan and shipment planning remain usable.
+- Safe Plan remains a conservative comparison only when exact comparable Ozon recommendation evidence exists.
+- API mode must not substitute turnover or another metric for the exact Ozon recommendation merely to make Safe Plan complete.
+- If that signal is absent, the comparison is explicitly incomplete; Calculated Plan remains usable.
 
 ### 3.4 Seller stock
 
-The existing runtime resolution is authoritative. FBS/operational seller-stock evidence wins when present; conflicts remain blocking; explicit zero remains known zero; `ProductEconomicsInput.available_qty` is only the existing permitted fallback.
+The existing runtime resolution is authoritative. Operational/FBS evidence wins when present; conflicting positive evidence remains blocking; explicit zero remains known zero; `ProductEconomicsInput.available_qty` is only the already-permitted fallback.
 
-Shipment code consumes the already-resolved value. It does not re-resolve seller stock.
+Shipment code consumes the resolved result. It does not resolve seller stock again.
 
-### 3.5 Product volume and economics
+### 3.5 Product volume
 
-`ProductEconomicsInput.volume_liters` remains the canonical unit-volume source. Unitka remains a local input because cost/economics are seller-owned facts, not an Ozon operational-data substitute.
+`ProductEconomicsInput.volume_liters` remains canonical unit volume.
 
-## 4. Source architecture: API first, files explicit fallback
+## 4. Source architecture: API first, FILES explicit fallback
 
-### 4.1 Source modes
-
-Exactly one operational data source mode owns a full analysis run:
+Exactly one source mode owns a full analysis run:
 
 ```text
 API
@@ -102,93 +100,122 @@ or
 FILES
 ```
 
-No row-level or domain-level merge is allowed between API and file modes.
+No row/domain/SKU/cluster merge is allowed between modes. API failure never silently switches to FILES.
 
-Valid:
+### 4.1 Immutable API source snapshot
 
-```text
-API orders + API FBO stock + API inbound + API seller stock
-```
-
-or:
-
-```text
-file orders + file availability + file restrictions
-```
-
-Invalid:
-
-```text
-API orders + file FBO stock
-API Moscow + file Perm
-API missing SKU silently filled from Excel
-```
-
-A fallback transition is explicit and visible to the user. It never happens silently after an API failure.
-
-### 4.2 API source snapshot
-
-`POST /api/ozon/sync` creates an immutable in-memory `OzonSourceSnapshot` with a generated ID. The snapshot contains only normalized domain evidence needed by analysis and diagnostics; raw buyer/address/phone/email payloads are discarded before snapshot assembly.
-
-Minimum contract:
+`POST /api/ozon/sync` creates a PII-safe in-memory snapshot:
 
 ```text
 OzonSourceSnapshot
   source_snapshot_id
   synced_at_utc
-  as_of
+  source_as_of
+  source_timezone = "UTC+03:00"
   history_from
   history_to
-  orders: tuple[OrderRecord, ...]
-  availability: tuple[AvailabilityRecord, ...]
-  operational_seller_stock evidence
+  orders
+  availability
+  operational_seller_stock
   cluster_catalog
-  handoff_point_catalog
-  placement_zone evidence
+  seller_warehouses
+  placement_zone_evidence
   endpoint_evidence
   diagnostics
 ```
 
-The active process may keep the latest few snapshots in memory for stale-response safety, but persistence is not required. Restarting the application discards API source snapshots and requires unlock + sync again.
+There is intentionally **no bulk handoff-point catalog** in the source snapshot.
 
-A later analytical recalculation with a different horizon/inbound flag references the same source snapshot and does not refetch Ozon unless the user chooses `Обновить данные`.
+Raw buyer/address/phone/email payload fields are discarded before snapshot assembly. Seller-warehouse contacts/courier comments are also discarded; only fields needed for identity/presentation are retained.
 
-### 4.3 File fallback
+Snapshots are process-memory only. Restart requires unlock + sync again.
 
-Existing importers remain supported. File mode is intentionally secondary and is labelled `Ручной импорт`.
+### 4.2 `source_as_of` ownership and timezone
 
-File mode keeps current behavior and can use the current restrictions workbook as conservative dated evidence. It has no live draft/timeslot capability unless the vault is unlocked and the user explicitly performs a live validation step; the source data itself still remains file-owned.
+Current Ozon stock/inbound evidence must never be relabelled with an arbitrary browser date.
 
-## 5. Ozon Seller API endpoint registry
+Canonical dependency-free policy:
 
-All paths live in one backend registry/module. Frontend never knows endpoint paths.
+```text
+synced_at_utc = backend UTC timestamp when sync evidence is assembled
+business offset = UTC+03:00
+source_timezone = "UTC+03:00"
+source_as_of = calendar date of synced_at_utc converted using datetime.timezone(timedelta(hours=3))
+```
 
-Current reviewed API contracts for this milestone:
+Do not add `zoneinfo`/IANA `tzdata` merely to compute this fixed-offset Moscow business date in the portable Windows runtime.
 
-### Historical demand/fulfillment
+For API mode:
+
+```text
+analysis_as_of = source_snapshot.source_as_of
+```
+
+The browser does not choose a historical `as_of`. If a compatibility request still contains `as_of`, backend requires exact equality or rejects it.
+
+Arbitrary historical `as_of` belongs only to a historically consistent source workflow (currently FILES), never to current API stock.
+
+### 4.3 Order-history depth
+
+The demand engine needs up to eight eligible completed weeks and already has 4–7 / 1–3 week fallbacks.
+
+API sync owns the historical window; the browser does not pick an arbitrary shallow range.
+
+Default policy:
+
+```text
+initial completed-week lookback = 12 ISO weeks
+current partial week may also be fetched for lifecycle/Flow evidence
+backfill increment = 4 weeks
+maximum lookback = 52 weeks
+```
+
+The adapter starts far enough back to cover 12 completed ISO weeks before the current UTC+03:00 business week. If **source-wide** data-quality gaps mean fewer than eight usable completed calendar weeks are available at all, it may backfill in 4-week chunks up to 52 weeks.
+
+Do not backfill indefinitely per new/slow SKU. If an individual `SKU × destination` still has fewer than eight eligible weeks, existing short-history demand fallback applies and its confidence remains lower.
+
+Endpoint-specific page/date-window limits are handled inside adapters; they do not change the analytical history policy.
+
+### 4.4 Capability matrix for partial API evidence
+
+Do not collapse source completeness into one global boolean:
+
+- orders/postings missing → demand/Flow dependent on that history is blocked;
+- unresolved cluster identity → affected evidence blocked/diagnostic, never guessed from display names;
+- current FBO missing → affected Need is unknown/incomplete, not zero;
+- inbound missing matters only when `include_inbound=true`; if enabled it remains unknown/incomplete;
+- seller stock missing → historical demand/Need may remain valid but operational allocation is incomplete for affected SKU;
+- exact Ozon recommendation missing → only Ozon/Safe comparison is incomplete;
+- placement zone missing → only method compatibility is incomplete;
+- handoff search is not part of sync completeness;
+- unit volume/multiplicity are operational prerequisites, not demand prerequisites.
+
+A failed refresh preserves the previous valid snapshot and exposes causal endpoint diagnostics.
+
+## 5. Reviewed Ozon endpoint registry
+
+All external paths live in one backend registry. Frontend never knows Ozon endpoint strings.
+
+### 5.1 Historical orders
 
 ```text
 POST /v3/posting/fbo/list
 POST /v4/posting/fbs/list
 ```
 
-Both adapters normalize into the existing `OrderRecord` whitelist. The adapters retain only fields needed for lifecycle, SKU/article/name, quantity, origin/destination cluster and seller price/economic evidence. Raw PII is discarded immediately.
+Normalize only the fields needed by existing `OrderRecord` semantics.
 
-### FBO stock by warehouse/cluster
-
-Preferred current source:
+### 5.2 Current FBO stock
 
 ```text
 POST /v1/analytics/stocks
 ```
 
-It is the current stock-analytics endpoint and is treated as real-time current evidence. The adapter maps warehouse/cluster identity to `AvailabilityRecord.fbo_quantity` without changing need formulas.
+Maps current warehouse/cluster stock to existing FBO availability evidence. `/v2/analytics/stock_on_warehouses` is not the new architecture owner.
 
-`/v2/analytics/stock_on_warehouses` is legacy compatibility evidence, not the new canonical dependency. Do not build new architecture around it.
+### 5.3 Inbound FBO supply
 
-### Inbound FBO supply
-
-Do not guess inbound from an unrelated stock metric. Build inbound from current supply-order evidence:
+Build inbound only from current supply-order evidence:
 
 ```text
 POST /v3/supply-order/list
@@ -196,37 +223,79 @@ POST /v3/supply-order/get
 POST /v1/supply-order/bundle
 ```
 
-Only states that have not yet become available FBO stock contribute to `inbound_quantity`. Completed/cancelled/rejected orders do not. Warehouse/cluster mapping comes from the cluster catalog. The adapter must have parity tests proving no double counting against current FBO stock.
+Only states not yet available as FBO stock contribute. Completed/cancelled/rejected/final states do not. Unknown states are diagnostic/incomplete. Tests must prove no double subtraction with current FBO stock.
 
-### Seller/FBS stock
+### 5.4 Seller/FBS stock
 
-Current endpoint registry uses the current Ozon stock-by-warehouse method available for the account, with the reviewed path:
-
-```text
-POST /v1/product/info/stocks-by-warehouse/fbs
-```
-
-If Ozon exposes a newer equivalent version, only the centralized registry/adapter changes; seller-stock business resolution does not.
-
-### Cluster/warehouse catalogs
+Canonical current endpoint:
 
 ```text
-POST /v2/cluster/list        # macro-local catalog
-POST /v1/cluster/list        # cluster + fulfillment warehouses
-POST /v1/warehouse/fbo/list  # concrete cross-dock/direct hand-off points
+POST /v2/product/info/stocks-by-warehouse/fbs
 ```
 
-### Placement zone
+Do not implement the deprecated `/v1/product/info/stocks-by-warehouse/fbs` path.
+
+### 5.5 Clusters
+
+```text
+POST /v2/cluster/list
+POST /v1/cluster/list
+```
+
+Cluster IDs are canonical; display names never become identity by fuzzy matching.
+
+### 5.6 Seller warehouses
+
+```text
+POST /v1/warehouse/fbo/seller/list
+```
+
+Normalize active seller warehouses into:
+
+```text
+SellerWarehouse
+  seller_warehouse_id: int
+  name/display label when returned
+  address summary when returned
+  is_active
+  is_pickup when returned
+```
+
+Discard contacts and courier comments.
+
+Seller warehouses are a small sync-owned catalog and belong in `OzonSourceSnapshot`.
+
+### 5.7 Hand-off points
+
+```text
+POST /v1/warehouse/fbo/list
+```
+
+This is **remote search**, not bulk sync. Current contract requires supply-type filter and `search` with at least 4 trimmed characters.
+
+Local flow:
+
+```text
+query >=4
+→ POST /api/ozon/handoff/search
+→ backend Ozon search
+→ HandoffPoint[]
+→ process-memory HandoffPointStore keyed by warehouse_id
+```
+
+Persisted preferred IDs are preferences only. After restart they must be resolved again. Unknown/stale frontend IDs fail before draft creation.
+
+### 5.8 Placement zone
 
 ```text
 POST /v1/product/placement-zone/info
 ```
 
-The app preserves Ozon's zone evidence; it does not infer a replacement zone from dimensions.
+Preserve Ozon evidence; do not infer replacement zones from dimensions.
 
-### Temporary supply validation
+### 5.9 Temporary supply validation
 
-New draft creation uses only current non-deprecated creation methods:
+Use only current method-specific draft flow:
 
 ```text
 POST /v1/draft/crossdock/create
@@ -236,17 +305,15 @@ POST /v2/draft/create/info
 POST /v2/draft/timeslot/info
 ```
 
-Explicitly forbidden in this milestone:
+Forbidden:
 
 ```text
 POST /v2/draft/supply/create
 ```
 
-Ozon draft lifecycle constraints are operational limits, not UI decorations: drafts are temporary; draft creation is rate-limited; multi-cluster draft size is bounded; timeslot search has a bounded date window. The backend must enforce the current registry limits and expose user-readable throttling states.
+`draft_id` is integer/int64 identity.
 
 ## 6. Credential vault
-
-### 6.1 Storage
 
 Secrets live only in:
 
@@ -254,141 +321,73 @@ Secrets live only in:
 data/ozon-credentials.json
 ```
 
-`data/` is already gitignored. The vault file contains version/KDF/cipher metadata and ciphertext only.
-
-Plaintext payload:
-
-```text
-client_id
-api_key
-```
-
-### 6.2 Cryptography
-
-Use standard audited primitives; no custom cipher.
-
-Canonical scheme:
+Canonical v1 scheme:
 
 ```text
 password UTF-8
-→ hashlib.scrypt
-   n = 32768
-   r = 8
-   p = 1
-   dklen = 32
-   random 16-byte salt
-→ 32-byte key
-→ AES-256-GCM
-   random 12-byte nonce
-   AAD = "sklad_ozon:ozon-vault:v1"
+→ hashlib.scrypt(n=32768, r=8, p=1, dklen=32, random 16-byte salt)
+→ AES-256-GCM(random 12-byte nonce)
+AAD = "sklad_ozon:ozon-vault:v1"
 ```
 
-AES-GCM comes from the pinned `cryptography` runtime dependency. Vault JSON stores base64 salt/nonce/ciphertext and exact KDF parameters. Writes are atomic (`temp → fsync where available → os.replace`).
+Vault JSON stores version/KDF/cipher metadata and ciphertext. Password is never stored. Forgotten password has no recovery path; reset vault and enter Ozon credentials again.
 
-Password is never stored. Forgotten password has no recovery path: the user deletes/resets the vault and enters Ozon credentials again.
+After unlock, decrypted credentials remain backend-memory-only until manual lock or process exit. No inactivity timeout.
 
-### 6.3 Session lifetime
+Frontend receives only configured/locked state, masked Client-Id suffix and last connection check. Saved API key is never returned.
 
-After successful unlock, decrypted credentials remain backend-memory-only until:
+## 7. Ozon HTTP client
 
-- user presses `Заблокировать`; or
-- application process exits.
-
-There is no inactivity timeout in the active milestone.
-
-Do not claim secure zeroization of immutable Python strings/bytes. Minimize copies, remove references on lock, and never serialize plaintext.
-
-### 6.4 Backend-only secret boundary
-
-Frontend can receive only:
-
-```text
-configured: bool
-locked: bool
-masked_client_id_suffix
-last_connection_check
-```
-
-It never receives stored API key or full saved credentials.
-
-## 7. Ozon HTTP client behavior
-
-The client is backend-only and has a fixed base URL:
+Backend-only fixed host:
 
 ```text
 https://api-seller.ozon.ru
 ```
 
-No frontend/user-provided arbitrary host or URL is accepted.
+Use the standard-library synchronous HTTP stack in a dedicated client. Required behavior:
 
-Use the Python standard library HTTP stack in a dedicated synchronous client, invoked from worker threads where necessary. Do not add a second HTTP framework solely for this feature.
-
-Required behavior:
-
-- connect/read timeouts;
+- finite request/socket timeout covering connection/read blocking;
 - JSON encoding/decoding;
-- `Client-Id` and `Api-Key` headers injected only inside the client;
-- rate-limit accounting;
-- stable normalized errors;
-- request correlation IDs with secret redaction;
-- pagination helpers;
-- cancellation between page calls;
-- read-only calls may retry boundedly on 429/selected 5xx with server `Retry-After` respected;
-- draft-creation calls are **not blindly retried after ambiguous network failure** because duplicate temporary drafts may have been created. Surface `DRAFT_CREATE_OUTCOME_UNKNOWN` instead.
+- secret headers injected only inside client;
+- stable normalized errors and redacted correlation IDs;
+- pagination helpers and cancellation between pages;
+- bounded retry for retry-safe reads on 429/selected 5xx respecting `Retry-After`;
+- **no blind retry** for draft creation after ambiguous transport failure (`DRAFT_CREATE_OUTCOME_UNKNOWN`).
 
-Never log request headers containing secrets or full external payloads containing buyer data.
+Do not add another HTTP framework solely to manufacture independent connect/read timeout knobs.
 
-## 8. API sync adapters and parity
+## 8. Supplier pack multiplicity
 
-API adapters must target existing domain contracts rather than duplicate analysis types.
-
-Before API mode can replace a file source, tests must prove semantic parity for the fields used by analysis:
-
-```text
-OrderRecord destination/origin/lifecycle/quantity
-AvailabilityRecord FBO quantity by cluster
-AvailabilityRecord inbound quantity by cluster
-seller stock evidence
-cluster identity
-article/SKU identity
-```
-
-A same-day API-vs-file fixture comparison is the acceptance gate for each migrated source. Differences are diagnostics, not silent normalization.
-
-Exact Ozon 56-day recommendation parity is not required because no verified equivalent API contract is assumed. Missing recommendation makes that comparison incomplete, not the whole analysis invalid.
-
-## 9. Pack multiplicity
-
-Supplier pack multiplicity remains local supplier evidence.
-
-Current source contract:
+Source:
 
 ```text
 sheet: Прайс списком
 КОД → seller article
-Упак → right-hand positive integer after '/'
+Упак → positive integer to the right of '/'
 ```
 
-Examples:
+Examples: `36/6→6`, `54/9→9`, `100+/1→1`.
+
+Article normalization:
 
 ```text
-36/6 → 6
-54/9 → 9
-100+/1 → 1
+"40750" → "40750"
+40750 → "40750"
+40750.0 → "40750"
+40750.5 → invalid/diagnostic
+blank → invalid
 ```
 
-`Оглавление!КРАТНОСТЬ` is not product multiplicity.
+Alphanumeric string articles remain trimmed strings. Missing/conflicting multiplicity blocks operational exportability; never default to `1`. `Оглавление!КРАТНОСТЬ` is not product multiplicity.
 
-Missing/conflicting multiplicity blocks exportable operational quantity for that SKU; never default silently to `1`.
+## 9. Whole-pack ShippablePlan
 
-## 10. Whole-pack ShippablePlan
-
-The operational whole-pack layer is built once for the full current analysis, before user shipment-scope selection.
+Build once across **all clusters** before shipment selection:
 
 ```text
-analytical Calculated Plan
-+ resolved seller stock
-+ pack multiplicity
+Calculated Plan
++ existing resolved seller stock
++ pack multiple
 + canonical unit volume
 → ShippablePlan
 ```
@@ -396,21 +395,17 @@ analytical Calculated Plan
 Every positive line satisfies:
 
 ```text
-shippable_qty % pack_multiple == 0
-sum(shippable_qty for SKU) <= resolved_seller_stock
+qty % pack_multiple == 0
+sum(qty for SKU) <= resolved seller stock
 ```
 
-Pack rounding is visible as operational adjustment, never additional demand.
+Pack rounding is an operational adjustment, not additional demand.
 
-Cluster selection later is **filter-only**. It never reallocates seller stock among the selected subset.
+Selected shipment clusters later are **filter-only**. They never trigger seller-stock reallocation.
 
-Live Ozon draft validation is the final current authority for whether the proposed quantity/cluster combination can actually be accepted. Static file `max_supply_qty` is fallback evidence only.
+Carry immutable `analysis_as_of` and source identity into ShippablePlan.
 
-## 11. Shipment intent and hand-off points
-
-The user controls intent, not fake availability.
-
-Scenario contract:
+## 10. Shipment intent
 
 ```text
 ShipmentScenario
@@ -420,10 +415,11 @@ ShipmentScenario
   allowed_methods
   preferred_clusters_per_shipment
   max_clusters_per_shipment
+  seller_warehouse_id: int | None
   selected_handoff_point_ids
 ```
 
-Supported methods:
+Methods:
 
 ```text
 PVZ_CROSSDOCK
@@ -431,161 +427,165 @@ SC_CROSSDOCK
 DIRECT
 ```
 
-For cross-dock validation, the scenario must contain one or more concrete hand-off point IDs returned by `/v1/warehouse/fbo/list`. A method label alone is insufficient to create a real draft.
-
-The UI lets the user search/select Ozon hand-off points and may persist non-secret preferred point IDs/order in Project JSON.
-
-DIRECT does not use a cross-dock hand-off point.
-
-Hard cluster limits belong to backend method rules:
+Hard limits:
 
 ```text
 DIRECT = 1 cluster
 multi-cluster cross-dock = max 20 clusters
 ```
 
-User limits may only reduce a hard method limit.
+User limits may only reduce hard limits.
 
-## 12. Candidate Shipment Builder
+### 10.1 Seller warehouse ownership
 
-The builder is pure/deterministic and **does not call Ozon**.
+Cross-dock and multi-cluster draft payloads require `delivery_info.seller_warehouse_id`.
+
+Rules:
+
+- resolve only against active `SellerWarehouse` records from the current source snapshot;
+- if exactly one active seller warehouse exists, backend may deterministically use it when scenario omits the ID;
+- if more than one active warehouse exists, user must explicitly choose `Склад отправления` before cross-dock candidate validation;
+- stale/inactive/unknown IDs fail closed before external draft creation;
+- DIRECT does not require this cross-dock `delivery_info` field.
+
+### 10.2 Hand-off point ownership
+
+Cross-dock also requires a concrete current hand-off point resolved from `HandoffPointStore`. A method label alone is insufficient.
+
+## 11. Candidate Shipment Builder
+
+Pure/deterministic; **does not call Ozon**.
 
 Input:
 
 ```text
 ShippablePlan
 ShipmentScenario
-method rule registry
+resolved active SellerWarehouse when required
+resolved HandoffPoint records when required
+method-rule registry
 ```
 
-Output:
+Output: bounded `CandidateShipment[]`.
+
+Each `CandidateAssignment` keeps at least:
 
 ```text
-CandidateShipment[]
+sku
+article
+destination_cluster_id
+quantity
+pack_multiple
+unit_volume_l
+total_volume_l
+placement_zone_kind
+placement_zones
 ```
 
-Candidate goals:
+Each cross-dock candidate also carries resolved `seller_warehouse_id` and `handoff_point_id`.
+
+Goals:
 
 1. preserve exact existing shippable quantities;
-2. group urgent/compatible clusters;
-3. respect hard/user cluster count limits;
-4. respect preliminary item-volume ceilings;
-5. respect placement-zone compatibility known locally;
+2. filter selected clusters only;
+3. group urgent/compatible clusters deterministically;
+4. respect hard/user cluster limits;
+5. apply local method/zone rules;
 6. minimize needless fragmentation;
-7. produce only a small deterministic set worth validating externally.
+7. emit only a small set worth checking externally.
 
-The candidate builder never says `окно доступно` or `Ozon принял`.
+No subset brute force.
 
-## 13. Bounded live validation
+### 11.1 PVZ volume rule
 
-`Найти варианты в Ozon` is an explicit user action. It may create temporary Ozon drafts; UI copy states that temporary drafts are created for checking and no real supply request is created.
-
-Validation flow:
+PVZ 1000 L is a **candidate-total estimated item-volume** pre-check:
 
 ```text
-CandidateShipment
-→ create appropriate temporary draft
-→ poll /v2/draft/create/info until terminal/timeout
-→ capture accepted/rejected item/cluster/warehouse evidence
-→ query /v2/draft/timeslot/info for requested date range
-→ ValidatedShipmentOption
+CandidateShipment.total_volume_l > 1000
+→ local block/split
 ```
 
-### 13.1 Bounded search
+It is not a per-line rule. `<=1000 L` means only `Предварительно подходит`; it does not prove packed cargo volume, box count, per-box weight or exact point acceptance.
 
-Do not enumerate cluster subsets.
+Placement zones survive to candidate and manifest. Multiple zones may trigger manual packing guidance but do not auto-split supply requests solely by zone.
 
-Default run budget:
+## 12. Bounded live validation
+
+`Найти варианты в Ozon` is explicit user action.
+
+Default external budget:
 
 ```text
 max_new_drafts_per_user_run = 6
 ```
 
-The backend also obeys Ozon's current per-minute/hour/day limits. It may return fewer validated options when the remaining external budget is insufficient.
+Backend also enforces current Ozon external limits. Repeated identical candidate checks may reuse short-lived process-memory evidence keyed by candidate fingerprint.
 
-Candidate order is deterministic so stopping at the budget boundary remains explainable.
-
-Repeated identical candidate validation within the temporary-draft lifetime may reuse cached validation evidence keyed by candidate fingerprint; cache never survives process restart.
-
-### 13.2 Date range
-
-The user chooses a date range. Backend clamps/rejects a range outside the current Ozon timeslot API maximum window rather than inventing availability.
-
-### 13.3 Failure semantics
-
-Keep separate:
+Flow:
 
 ```text
-OZON_REJECTED_CANDIDATE   # business validation response
-NO_TIMESLOT               # draft valid, requested period has no slot
-OZON_RATE_LIMITED         # temporary external throttle
-OZON_UNAVAILABLE          # transport/service failure
-DRAFT_CREATE_OUTCOME_UNKNOWN
-LOCAL_CANDIDATE_BLOCKED   # never sent because local hard rule failed
+CandidateShipment
+→ create method-specific temporary draft
+→ /v2/draft/create/info
+→ accepted/rejected + warehouse scoring/travel evidence
+→ /v2/draft/timeslot/info
+→ ValidatedShipmentOption
 ```
 
-An Ozon transport error never becomes `товар запрещён`.
-
-## 14. PVZ and placement-zone semantics
-
-Local volume uses item volume only and is a preliminary gate. It is not a packed-cargo model.
-
-For PVZ:
-
-- configured/current planning item-volume ceiling may reject an obviously too-large candidate;
-- passing the item-volume check means `Предварительно подходит`, not confirmed acceptance;
-- draft/timeslot evidence is stronger than the local check;
-- actual box count, per-box weight, packed outer volume, point-specific rules and final booking remain outside the local model;
-- KGT and unknown/multiple zone evidence are not auto-assigned to PVZ unless Ozon draft validation proves a usable path under a later explicit rule;
-- shipment detail shows zone composition and manual cargo-separation guidance where relevant;
-- XLSX never gains helper zone columns.
-
-## 15. Ranking validated options
-
-Ranking is operational, not cost optimization.
-
-Order of preference:
-
-1. candidate accepted by Ozon;
-2. has a timeslot in the user's requested period;
-3. protects earliest explainable stockout/urgency;
-4. chooses the latest still-on-time slot when several are equivalent;
-5. reduces shipment fragmentation;
-6. prefers user's hand-off point priority;
-7. stable ID tie-break.
-
-Do not call the result `самый дешёвый` or `экономически оптимальный` without a separate seller→Ozon supply-tariff model.
-
-`RouteCostIndex` and current customer-delivery route economics never enter this ranking.
-
-## 16. Local API boundary
-
-Active local endpoints by the end of the roadmap:
+For cross-dock/multi-cluster create payloads, `delivery_info` contains both:
 
 ```text
-GET  /api/ozon/credentials/status
-POST /api/ozon/credentials/setup
-POST /api/ozon/credentials/unlock
-POST /api/ozon/credentials/lock
-POST /api/ozon/connection/test
-POST /api/ozon/sync
-GET  /api/ozon/source/{source_snapshot_id}/status
-POST /api/analysis              # supports FILES or API source mode
-POST /api/analysis/stream       # same ownership with progress
-POST /api/shipment/candidates
-POST /api/shipment/validate
-POST /api/shipment/export
+seller_warehouse_id
+and
+resolved drop_off_warehouse { warehouse_id, warehouse_type }
 ```
 
-Endpoint names may be implemented under the existing router file structure, but ownership must remain clear: credentials/client, source sync, analysis, candidate builder, external validation, export.
+Do not invent point type; use normalized Ozon search evidence.
 
-No endpoint in this milestone creates the final supply order.
+Causal outcomes stay separate:
 
-## 17. Export
+```text
+Ozon rejected composition
+no timeslot
+rate limited
+transport unavailable
+unknown draft-create outcome
+local incompatibility
+```
 
-Manual execution remains first-class.
+Timeslot availability is observed evidence, not a booking.
 
-One workbook corresponds to one cluster within one planned shipment and has exactly:
+## 13. Operational ranking
+
+Ranking optimizes operational/service-level usefulness only:
+
+1. accepted by Ozon;
+2. has timeslot in requested range;
+3. protects earliest known urgency;
+4. latest still-on-time opportunity among equivalents;
+5. lower fragmentation / more covered assignment volume;
+6. user seller-warehouse/handoff preference where applicable;
+7. stable candidate ID.
+
+Do not claim cheapest/economically optimal inbound supply without a separate seller→FBO tariff contract.
+
+## 14. Product identity and export
+
+UI is article-first in presentation but **SKU is canonical selector/state identity**.
+
+Never collapse two Ozon SKUs because they share one seller article.
+
+Before aggregating export rows for one `article + destination_cluster`, all rows must agree on:
+
+```text
+sku
+article
+pack_multiple
+```
+
+Conflict → stable blocking diagnostic → no XLSX/ZIP for that option. Product name is display data, not canonical identity.
+
+Ozon workbook is exact three columns:
 
 ```text
 артикул
@@ -593,18 +593,17 @@ One workbook corresponds to one cluster within one planned shipment and has exac
 количество
 ```
 
-Multi-cluster shipment → ZIP with one XLSX per cluster.
+No helper/zone columns. One cluster → XLSX; multiple clusters → ZIP with one XLSX per cluster.
 
-Export consumes a validated/ranked option's assignments but does not recalculate demand or alter quantities. If a line was rejected by Ozon, it is excluded from an exportable accepted option and remains visible as rejected/unscheduled evidence in UI.
+## 15. UI target
 
-## 18. UI architecture
-
-The active UI target is defined in `2026-09-09-api-first-plan-ui-design.md`.
-
-Top-level sections remain:
+Top-level routes remain exactly:
 
 ```text
-План | Потоки спроса | Экономика | Данные
+План
+Потоки спроса
+Экономика
+Данные
 ```
 
 Inside `План`:
@@ -613,86 +612,54 @@ Inside `План`:
 Товары | Отгрузки
 ```
 
-`Товары` is article-first master/detail. `Отгрузки` is shipment intent → candidate/live validation → manifest results.
+- `Товары`: bounded article-first/SKU-backed selector and selected-product workspace.
+- `Отгрузки`: date/method/cluster intent, seller warehouse when needed, remote handoff search, explicit external validation and logistics manifests.
+- `Данные`: Ozon connection/sync primary; FILES manual import secondary and explicit.
 
-The existing historical Flow remains unchanged.
-
-## 19. Data freshness and stale ownership
-
-Keep separate clocks:
+Distinguish:
 
 ```text
-sourceSyncedAt
-analysisCalculatedAt
-shipmentValidatedAt
+Кандидат
+Проверено Ozon
+реальная заявка на поставку  # not implemented
 ```
 
-Changing analytical scenario settings marks analysis stale but does not automatically resync source data.
+Never show `Поставка создана`, `Забронировано` or equivalent before future PR-F.
 
-Refreshing Ozon source data invalidates the current analysis and validated shipment options.
-
-Changing only shipment scenario makes shipment results stale; analysis remains current.
-
-Previous successful results remain visible during refresh/recalculation with explicit stale labels.
-
-## 20. Security and privacy
-
-- Secrets never leave backend memory except encrypted vault bytes.
-- Vault password is never stored.
-- Raw Ozon PII is discarded during API adaptation and not serialized to frontend.
-- No arbitrary outbound host.
-- No secrets in exception messages/logging.
-- No full raw Ozon responses in normal logs.
-- Project JSON stores only non-secret preferences, e.g. preferred hand-off point IDs.
-- API source snapshots remain memory-only in this milestone.
-
-## 21. Runtime constraints
-
-SCOZ-lite architecture remains canonical:
+## 16. Active implementation sequence
 
 ```text
-start.bat
-→ project-local portable Python
-→ FastAPI 127.0.0.1:17843
-→ committed vanilla HTML/CSS/JS
+PR-API1  Ozon API core + encrypted vault
+PR-API2  API sources + source snapshot + seller warehouses + remote handoff search + FILES fallback
+PR-A     supply facts + supplier pack multiplicity
+PR-B     all-cluster whole-pack ShippablePlan
+PR-C     deterministic candidate builder
+PR-API3  temporary draft validation + live timeslots
+PR-D     ranking/orchestration + exact export
+PR-E     API-first Data/Plan/Shipment UI + root design-contract migration
 ```
 
-No npm/framework/build system/database/background service.
+Each PR owns only its layer. Do not collapse the roadmap.
 
-One new runtime dependency is permitted for authenticated encryption: `cryptography`. It must be pinned to a wheel-compatible release for the repository's portable Python and verified by Windows portable smoke before merge of PR-API1.
+## 17. Acceptance invariants
 
-## 22. Active implementation sequence
-
-```text
-PR-API1  Ozon API Core + Encrypted Credentials Vault
-PR-API2  Ozon API Data Sources + Explicit Excel Fallback
-PR-A     Supply Facts + Pack Multiplicity
-PR-B     Whole-Pack Shippable Plan
-PR-C     Candidate Shipment Builder
-PR-API3  Live Ozon Draft Validation + Timeslots
-PR-D     Shipment Orchestration + Ozon XLSX/ZIP Export
-PR-E     API-First Article Plan + Shipment UI
-```
-
-Do not collapse these into one implementation PR.
-
-## 23. Acceptance summary
-
-The milestone is complete only when:
+A context-free implementation must be able to answer:
 
 ```text
-user can unlock encrypted Ozon credentials without exposing the key
-API sync can replace routine order/FBO/FBS/cluster data files
-file mode still works explicitly as fallback
-API and file records are never silently merged
-existing demand/need/Flow/economics results stay regression-compatible
-whole-pack quantities preserve seller-stock conservation
-shipment scope is filter-only over full ShippablePlan
-cross-dock uses concrete Ozon hand-off points
-candidate generation is bounded and local
-live validation creates only temporary drafts
-Ozon rejection/timeslot/rate-limit/transport states remain distinct
-validated options show real current timeslot evidence
-XLSX/ZIP remains available
-no real Ozon supply request is created by the application
+Who owns API analysis date?             backend source snapshot, fixed UTC+03:00 business date
+Can browser relabel current stock?      no
+Default order-history coverage?         12 completed weeks, bounded backfill to max 52 when source-wide gaps require it
+What if an SKU has only 4 weeks?        existing short-history demand fallback
+Canonical FBS stock endpoint?           /v2/product/info/stocks-by-warehouse/fbs
+Are handoff points bulk-synced?         no, remote search >=4 chars
+Where do seller warehouses come from?   /v1/warehouse/fbo/seller/list in source sync
+Crossdock seller warehouse required?    yes; auto only when exactly one active
+Can selected clusters reallocate stock? no, filter-only
+Is PVZ 1000 L per line?                 no, candidate total
+Do placement zones survive?             yes, to manifest
+What is selector identity?              SKU
+Can conflicting same article merge?     no, fail closed
+What type is draft_id?                  int/int64
+Does temporary validation create supply? no
+Does active roadmap call /v2/draft/supply/create? no
 ```
