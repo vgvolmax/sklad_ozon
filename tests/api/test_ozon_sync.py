@@ -2,7 +2,7 @@ from datetime import date, timedelta
 
 from backend.domain.contracts import OrderLifecycle, OrderRecord
 from backend.ingestion.availability import AvailabilityRecord
-from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_STOCK_PATH
+from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_STOCK_PATH, PRODUCT_LIST_PATH
 from backend.ozon.adapters.catalog import ClusterCatalogResult
 from backend.ozon.source_contracts import Cluster, SellerWarehouse
 from backend.ozon.sync import capability_matrix, sync_ozon_source
@@ -169,3 +169,31 @@ def test_known_empty_product_universe_allows_complete_empty_dependencies(monkeyp
     assert calls == [("fbo", ()), ("zones", ())]
     assert capability_matrix(source)["need_fbo"]["complete"] is True
     assert capability_matrix(source)["shipment_compatibility"]["complete"] is True
+
+
+def test_malformed_product_list_sku_blocks_dependent_capabilities(monkeypatch):
+    import backend.ozon.sync as module
+    from backend.ozon.adapters.products import fetch_product_skus
+
+    class Client:
+        def post_json(self, path, payload, **_kwargs):
+            assert path == PRODUCT_LIST_PATH
+            return {"result": {"items": [{}], "total": 1, "last_id": "terminal"}}
+
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        _orders(end, 8) if path == FBO_POSTINGS_PATH else (), ()))
+    _patch_non_history(monkeypatch)
+    dependent_calls = []
+    monkeypatch.setattr(module, "fetch_product_skus", fetch_product_skus)
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: dependent_calls.append("fbo"))
+    monkeypatch.setattr(module, "fetch_placement_zones", lambda *_args: dependent_calls.append("zones"))
+
+    source = sync_ozon_source(Client())
+    evidence = {item.name: item for item in source.endpoint_evidence}
+
+    assert dependent_calls == []
+    assert evidence["products"].complete is False
+    assert evidence["fbo_stock"].complete is False
+    assert evidence["placement_zones"].complete is False
+    assert capability_matrix(source)["need_fbo"]["complete"] is False
+    assert capability_matrix(source)["shipment_compatibility"]["complete"] is False

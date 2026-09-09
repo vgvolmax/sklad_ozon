@@ -202,7 +202,8 @@ POST /v2/product/info/stocks-by-warehouse/fbs
 Explicit guard: repository source for the new adapter must not contain the deprecated `/v1/product/info/stocks-by-warehouse/fbs` path.
 
 Requirements:
-- enumerate the complete SKU universe through `/v3/product/list` (`visibility=ALL`, `last_id`) before FBO stock;
+- enumerate the complete SKU universe through `/v3/product/list` (`visibility=ALL`) before FBO stock: a valid non-negative integer `total` owns completeness, counted by raw items rather than unique SKUs; stop at `raw_count >= total` even with nonblank terminal `last_id`, and use a nonblank progressing `last_id` only while below `total`;
+- fail the SKU-universe evidence closed when any product item has malformed/missing/blank `sku`; never substitute `product_id` or `offer_id` for `sku`;
 - call `/v1/analytics/stocks` with only `skus` batches of at most 100 and map `available_stock_count`;
 - product-list or any FBO batch failure leaves FBO capability incomplete;
 - FBO maps by canonical warehouse/cluster to existing `AvailabilityRecord.fbo_quantity` semantics;

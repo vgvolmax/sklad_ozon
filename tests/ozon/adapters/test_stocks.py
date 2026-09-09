@@ -1,7 +1,5 @@
-import pytest
-from backend.ozon.adapters.products import fetch_product_skus
 from backend.ozon.adapters.stocks import fetch_fbo_stock, fetch_seller_stock, normalize_fbo_stock, normalize_fbs_stock
-from backend.ozon.endpoints import FBO_STOCK_PATH, FBS_STOCK_PATH, PRODUCT_LIST_PATH
+from backend.ozon.endpoints import FBO_STOCK_PATH, FBS_STOCK_PATH
 
 
 def test_current_fbo_items_use_available_stock_count():
@@ -35,14 +33,3 @@ def test_seller_stock_top_level_cursor_pagination():
     client=Client(); rows,diagnostics=fetch_seller_stock(client)
     assert not diagnostics and [r.fbs_quantity for r in rows]==[1,2]
     assert client.calls==[(FBS_STOCK_PATH,{"limit":1000}),(FBS_STOCK_PATH,{"limit":1000,"cursor":"next"})]
-
-
-def test_product_list_current_pagination_stable_dedupes_and_guards_cursor():
-    class Client:
-        def __init__(self,repeat=False): self.calls=[]; self.repeat=repeat
-        def post_json(self,path,payload,**kwargs):
-            self.calls.append((path,payload)); n=len(self.calls)
-            return {"result":{"items":[{"sku":2},{"sku":"2"},{"sku":" 3 "},{"sku":""}],"last_id":"next" if n==1 or self.repeat else ""}}
-    client=Client(); assert fetch_product_skus(client)==("2","3")
-    assert client.calls[0]==(PRODUCT_LIST_PATH,{"filter":{"visibility":"ALL"},"last_id":"","limit":1000})
-    with pytest.raises(ValueError,match="non-progressing"): fetch_product_skus(Client(repeat=True))

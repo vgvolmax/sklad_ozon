@@ -258,7 +258,12 @@ POST /v3/product/list
 ```
 
 `/v3/product/list` is the backend-only prerequisite that enumerates the complete
-current SKU universe with `visibility=ALL` and `last_id` pagination. The universe
+current SKU universe with `visibility=ALL`. Its valid non-negative integer `total`
+owns completeness: pagination stops once the count of raw returned items reaches
+`total`, even if terminal `last_id` is nonblank. `last_id` is only a continuation
+cursor while the raw count is below `total` and must be nonblank and progressing.
+Every raw item must contain a nonblank canonical `sku`; malformed identity makes
+the universe incomplete, and `product_id`/`offer_id` are never SKU fallbacks. The universe
 is sent to `/v1/analytics/stocks` in `skus` batches of at most 100; that endpoint
 has no offset pagination. `available_stock_count` maps to existing FBO availability
 evidence. A product-list or stock-batch failure leaves FBO evidence incomplete.
