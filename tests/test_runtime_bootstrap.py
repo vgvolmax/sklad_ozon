@@ -8,7 +8,7 @@ ROOT = Path(__file__).parents[1]
 def test_runtime_versions_are_exactly_pinned():
     assert (ROOT / "requirements.txt").read_text().splitlines() == [
         "fastapi==0.139.2", "uvicorn==0.51.0", "openpyxl==3.1.5",
-        "python-multipart==0.0.32",
+        "python-multipart==0.0.32", "cryptography==50.0.1",
     ]
     assert (ROOT / "requirements-dev.txt").read_text().splitlines() == [
         "-r requirements.txt", "pytest==8.4.2", "httpx==0.28.1",
@@ -52,3 +52,9 @@ def test_runtime_and_data_are_ignored_separately():
     ignored = (ROOT / ".gitignore").read_text().splitlines()
     assert "/runtime/" in ignored
     assert "/data/" in ignored
+
+
+def test_windows_portable_smoke_validates_aesgcm_import():
+    smoke = (ROOT / "tests/windows/portable-smoke.ps1").read_text()
+    assert "from cryptography.hazmat.primitives.ciphers.aead import AESGCM" in smoke
+    assert "'cryptography':'50.0.1'" in smoke

@@ -96,7 +96,7 @@ function Invoke-StartBat([string]$WorkingDirectory, [int]$TimeoutSeconds = 300, 
 function Test-RuntimeValid([string]$Runtime) {
     $python = Join-Path $Runtime "python.exe"
     if (-not (Test-Path $python)) { return $false }
-    & $python -c "import sys,fastapi,uvicorn,openpyxl,multipart; from importlib.metadata import version; expected={'fastapi':'0.139.2','uvicorn':'0.51.0','openpyxl':'3.1.5','python-multipart':'0.0.32'}; raise SystemExit(sys.version_info[:3] != (3,13,14) or any(version(k)!=v for k,v in expected.items()))"
+    & $python -c "import sys,fastapi,uvicorn,openpyxl,multipart; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from importlib.metadata import version; expected={'fastapi':'0.139.2','uvicorn':'0.51.0','openpyxl':'3.1.5','python-multipart':'0.0.32','cryptography':'50.0.1'}; raise SystemExit(sys.version_info[:3] != (3,13,14) or any(version(k)!=v for k,v in expected.items()))"
     return $LASTEXITCODE -eq 0
 }
 function Assert-Sentinel([string]$Path, [string]$Stage) {
