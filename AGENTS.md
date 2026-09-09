@@ -6,13 +6,13 @@ For current development, read in this order:
 
 1. `docs/superpowers/specs/2026-09-09-ozon-api-first-shipment-planner-design.md`;
 2. for frontend/UI work, `docs/superpowers/specs/2026-09-09-api-first-plan-ui-design.md`;
-3. when touching already-built demand/stockout/Flow layers, `docs/superpowers/specs/2026-09-03-real-data-demand-stockout-flow-design.md` and the matching 2026-09-03 PR1…PR5 design specs;
+3. when touching already-built demand/stockout/Flow layers, `docs/superpowers/specs/2026-09-03-real-data-demand-stockout-flow-design.md`;
 4. `docs/superpowers/specs/2026-09-02-ozon-fbo-product-completion-design.md` for Product Completion semantics not superseded above;
 5. `DESIGN.md` and `UX-CONTRACT.md` for the currently shipped visual/behavior system. Until PR-E migrates runtime + root contracts, the 2026-09-09 API-first UI design is more specific for target `План` / `Данные` behavior;
 6. `docs/superpowers/specs/2026-08-20-scoz-lite-portable-architecture-design.md` for runtime/technical architecture;
 7. exactly one matching active implementation plan from `docs/superpowers/plans/`.
 
-Do not reconstruct active behavior from Git history or archived documents when an active source above exists.
+Do not reconstruct active behavior from Git history or archived documents when an active source above exists. Detailed completed PR1…PR5 design documents are archived implementation history and are not part of the active reading path.
 
 ## Archive exclusion
 
