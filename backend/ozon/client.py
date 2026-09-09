@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import math
 import time
 from typing import Callable, Mapping, Protocol
 from urllib.error import HTTPError
@@ -18,6 +19,7 @@ from .vault import CredentialVault
 
 logger = logging.getLogger(__name__)
 _TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
+_MAX_SERVER_RETRY_AFTER_SECONDS = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +28,9 @@ class OzonRequestPolicy:
     max_attempts: int = 3
 
     def __post_init__(self) -> None:
-        if isinstance(self.max_attempts, bool) or self.max_attempts < 1:
+        if type(self.retry_safe) is not bool:
+            raise ValueError("retry_safe must be a bool")
+        if type(self.max_attempts) is not int or self.max_attempts < 1:
             raise ValueError("max_attempts must be a positive integer")
 
 
@@ -127,8 +131,14 @@ class OzonClient:
         if retry_after is not None:
             try:
                 value = float(retry_after)
-                if 0 <= value <= 60:
+                if math.isfinite(value) and 0 <= value <= _MAX_SERVER_RETRY_AFTER_SECONDS:
                     return value
+                if math.isfinite(value) and value > _MAX_SERVER_RETRY_AFTER_SECONDS:
+                    raise OzonClientError(
+                        OzonErrorCode.RATE_LIMITED,
+                        "Ozon API rate limit exceeds the client wait budget",
+                        status=response.status,
+                    )
             except (TypeError, ValueError):
                 pass
         return self._backoff(attempt)

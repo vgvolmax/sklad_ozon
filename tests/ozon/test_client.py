@@ -77,6 +77,21 @@ def test_retry_safe_is_bounded_and_respects_numeric_retry_after():
     assert sleeps == [2.0, 1.0]
 
 
+def test_retry_after_above_wait_budget_stops_without_early_retry():
+    transport = FakeTransport([
+        response(429, b"{}", {"Retry-After": "120"}), response(),
+    ])
+    sleeps = []
+    client = OzonClient(VaultStub(), transport=transport, sleeper=sleeps.append)
+
+    with pytest.raises(OzonClientError) as error:
+        client.post_json("/v1/test", {}, policy=OzonRequestPolicy(True, max_attempts=3))
+
+    assert error.value.code is OzonErrorCode.RATE_LIMITED
+    assert len(transport.calls) == 1
+    assert sleeps == []
+
+
 def test_non_retry_safe_policy_makes_exactly_one_attempt():
     transport = FakeTransport([response(503), response()])
     client = OzonClient(VaultStub(), transport=transport)
@@ -97,8 +112,28 @@ def test_errors_and_logs_do_not_expose_credentials(caplog):
     assert error.value.code is OzonErrorCode.UNAVAILABLE
 
 
-def test_request_policy_is_validated_and_immutable():
-    with pytest.raises(ValueError):
-        OzonRequestPolicy(True, max_attempts=0)
+@pytest.mark.parametrize("max_attempts", [0, -1, 1.5, True])
+def test_request_policy_rejects_non_positive_or_non_integer_attempts(max_attempts):
+    with pytest.raises(ValueError, match="positive integer"):
+        OzonRequestPolicy(True, max_attempts=max_attempts)
+
+
+@pytest.mark.parametrize("retry_safe", [1, "yes"])
+def test_request_policy_requires_boolean_retry_safe(retry_safe):
+    with pytest.raises(ValueError, match="retry_safe must be a bool"):
+        OzonRequestPolicy(retry_safe)
+
+
+@pytest.mark.parametrize("policy", [
+    OzonRequestPolicy(True),
+    OzonRequestPolicy(False, 1),
+    OzonRequestPolicy(True, 3),
+])
+def test_request_policy_accepts_valid_values(policy):
+    assert isinstance(policy.retry_safe, bool)
+    assert type(policy.max_attempts) is int
+
+
+def test_client_timeout_is_validated():
     with pytest.raises(ValueError):
         OzonClient(VaultStub(), timeout=0)

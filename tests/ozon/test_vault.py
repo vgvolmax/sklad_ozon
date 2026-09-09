@@ -106,3 +106,26 @@ def test_status_survives_process_restart_without_decrypting(tmp_path):
     assert restarted.status().configured
     assert restarted.status().locked
     assert restarted.status().masked_client_id_suffix == "…3456"
+
+
+@pytest.mark.parametrize("password", ["   ", "\t\n"])
+def test_setup_rejects_whitespace_only_password_without_creating_vault(tmp_path, password):
+    path = tmp_path / "vault.json"
+
+    with pytest.raises(ValueError, match="nonblank"):
+        CredentialVault(path).setup(CREDS, password)
+
+    assert not path.exists()
+
+
+def test_password_surrounding_whitespace_is_preserved_as_cryptographic_input(tmp_path):
+    path = tmp_path / "vault.json"
+    vault = CredentialVault(path)
+    vault.setup(CREDS, " abc ")
+    vault.lock()
+
+    assert vault.unlock(" abc ").locked is False
+    vault.lock()
+    with pytest.raises(OzonVaultError) as error:
+        vault.unlock("abc")
+    assert error.value.code is OzonErrorCode.AUTH_FAILED
