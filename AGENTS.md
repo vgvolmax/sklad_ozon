@@ -1,217 +1,141 @@
 # Codex Cloud instructions
 
-## Source of truth
+## Active source of truth
 
-For the active operational shipment-planner roadmap, read in this order:
+For current development, read in this order:
 
-1. `docs/superpowers/specs/2026-09-08-shipment-planner-clarifications-amendment.md`;
-2. `docs/superpowers/specs/2026-09-08-ozon-shipment-planner-design.md`;
-3. for `План` UI work, `docs/superpowers/specs/2026-09-08-article-first-plan-ui-amendment.md`;
-4. `docs/superpowers/specs/2026-09-03-real-data-demand-stockout-flow-design.md` and the matching already-built PR1…PR5 specs when touching those layers;
-5. `docs/superpowers/specs/2026-09-02-ozon-fbo-product-completion-design.md`;
-6. `UX-CONTRACT.md` and `DESIGN.md`, except where the 2026-09-08 article-first UI amendment or shipment clarifications are explicitly more specific for `План`;
-7. `docs/superpowers/specs/2026-08-20-scoz-lite-portable-architecture-design.md` for runtime/technical architecture;
-8. the matching **active** implementation plan below.
+1. `docs/superpowers/specs/2026-09-09-ozon-api-first-shipment-planner-design.md`;
+2. for frontend/UI work, `docs/superpowers/specs/2026-09-09-api-first-plan-ui-design.md`;
+3. when touching already-built demand/stockout/Flow layers, `docs/superpowers/specs/2026-09-03-real-data-demand-stockout-flow-design.md`;
+4. `docs/superpowers/specs/2026-09-02-ozon-fbo-product-completion-design.md` for Product Completion semantics not superseded above;
+5. `DESIGN.md` and `UX-CONTRACT.md` for the currently shipped visual/behavior system. Until PR-E migrates runtime + root contracts, the 2026-09-09 API-first UI design is more specific for target `План` / `Данные` behavior;
+6. `docs/superpowers/specs/2026-08-20-scoz-lite-portable-architecture-design.md` for runtime/technical architecture;
+7. exactly one matching active implementation plan from `docs/superpowers/plans/`.
 
-The shipment clarifications amendment has explicit precedence over the base shipment design, UI amendment and active PR-A…PR-E plans wherever it is more specific. Do not resolve a contradiction by guessing or by restoring the older selected-network architecture.
+Do not reconstruct active behavior from Git history or archived documents when an active source above exists. Detailed completed PR1…PR5 design documents are archived implementation history and are not part of the active reading path.
 
-Active implementation sequence:
+## Archive exclusion
+
+`docs/superpowers/archive/**` contains completed, abandoned or superseded documents **for historical audit only**.
+
+**Do not read, search, quote, or implement from `docs/superpowers/archive/**` during normal feature development.** Open archive files only when the user explicitly asks for history, rationale, comparison with an old design, or an audit of superseded work.
+
+Archive content has no precedence over active specs/plans even if an archived file says `approved`, `canonical`, `source of truth` or contains executable-looking steps.
+
+## Active implementation sequence
+
+Implement one PR scope at a time, in this order:
 
 ```text
-PR-A  docs/superpowers/plans/2026-09-08-pr-a-supply-facts-pack-multiplicity-implementation.md
-PR-B  docs/superpowers/plans/2026-09-08-pr-b-multiplicity-aware-shippable-plan-implementation.md
-PR-C  docs/superpowers/plans/2026-09-08-pr-c-shipment-batching-schedule-implementation.md
-PR-D  docs/superpowers/plans/2026-09-08-pr-d-local-shipment-api-ozon-export-implementation.md
-PR-E  docs/superpowers/plans/2026-09-08-pr-e-article-first-plan-shipment-ui-implementation.md
+PR-API1  docs/superpowers/plans/2026-09-09-pr-api1-ozon-api-core-vault-implementation.md
+PR-API2  docs/superpowers/plans/2026-09-09-pr-api2-api-data-sources-fallback-implementation.md
+PR-A     docs/superpowers/plans/2026-09-09-pr-a-supply-facts-pack-multiplicity-implementation.md
+PR-B     docs/superpowers/plans/2026-09-09-pr-b-whole-pack-shippable-plan-implementation.md
+PR-C     docs/superpowers/plans/2026-09-09-pr-c-candidate-shipment-builder-implementation.md
+PR-API3  docs/superpowers/plans/2026-09-09-pr-api3-live-draft-timeslots-implementation.md
+PR-D     docs/superpowers/plans/2026-09-09-pr-d-shipment-orchestration-export-implementation.md
+PR-E     docs/superpowers/plans/2026-09-09-pr-e-api-first-plan-ui-implementation.md
 ```
 
-Do not collapse PR-A…PR-E into one implementation PR.
+Do not collapse this sequence into one implementation PR.
 
-## Deferred selected-network roadmap
+`PR-F — Ozon Supply Execution` is future/non-active. There is intentionally no current implementation plan for it.
 
-The following 2026-09-08 designs are **historical/deferred for implementation**, even if their own older header/body says `approved`:
+## Canonical analytical safeguards
 
-- `docs/superpowers/specs/2026-09-08-selected-supply-network-coverage-planner-design.md`;
-- `docs/superpowers/specs/2026-09-08-route-cost-index-amendment.md` when it is being used to propose future placement topology;
-- the former selected-network PR-A…PR-E plans, whose files now contain DEFERRED redirects.
-
-Do **not** implement from those documents in the active milestone:
-
-- alternate-origin future coverage (`SKU × origin × destination` Coverage Planner);
-- hard LOCAL-first selected-network assignment;
-- RouteCostIndex/direct customer-delivery tariff as a future-placement selector;
-- desired coverage legs;
-- selected-network `PlanningBasis` / `PlanningSnapshot`;
-- selected-network `/api/replan`;
-- applied/draft selected supply-network persistence;
-- planned alternate-origin Flow surface.
-
-Git history preserves the old plans. They may return only after a new approved product design.
-
-The old documents remain useful only as historical rationale and do not override the active shipment-planner design or clarifications amendment.
-
-## What remains canonical and must not be broken
-
-### Demand / analysis
-
-- `destination_cluster` is customer-demand geography. Historical fulfillment origin never becomes demand ownership.
-- Routing-independent observed destination demand remains the quantity source for DemandEstimate.
-- External fulfillment does not erase destination demand.
-- Route cleaning and demand-history eligibility remain separate mechanisms.
-- Daily stockout/substitution detection remains `SKU × destination` before presentation aggregation.
-- Do not fabricate latent/lost demand when no approved evidence/model exists.
-- Current FBO and inbound remain upstream need inputs:
+- `destination_cluster` is customer-demand geography; historical fulfillment origin never becomes demand ownership.
+- Historical Flow is evidence, not future allocation weight.
+- Existing DemandEstimate, stockout, clean-route, Flow and route-economics math stays unchanged unless a later explicitly approved design changes it.
+- Current FBO and inbound remain upstream Need inputs:
 
 ```text
 raw_need = raw_demand_forecast - current_fbo_stock - inbound_qty  # when inbound enabled
 calculated_need_qty = max(0, ceil(raw_need))
 ```
 
-- Unknown FBO/inbound evidence is never coerced to zero.
-- Safe Plan remains the conservative analytical reference; Calculated Plan remains primary `Наш план`.
-- The existing analytical Ozon recommendation source remains authoritative for `calculate_need()` / Safe Plan.
-- A 56-day recommendation found inside the restrictions workbook is secondary control/reference evidence only; it never replaces the analytical Ozon signal.
-- Ozon recommendation remains an external comparison/control signal, not physical capacity.
-- Existing historical Flow, stockout impact, route economics and local counterfactual analysis stay in the product.
-- Historical Flow shares remain evidence only and are never future shipment weights.
+- Missing FBO/inbound evidence is unknown, never zero by convenience.
+- Calculated Plan remains primary `Наш план`; Safe Plan remains a conservative comparison only when its Ozon reference evidence is complete.
+- Do not substitute turnover/another Ozon API metric for the exact analytical Ozon recommendation merely to make Safe Plan complete.
+- Existing seller-stock resolution is authoritative: FBS/operational evidence first, conflicts blocking, explicit zero known, ProductEconomics `available_qty` only the current allowed fallback. Shipment code consumes the resolved result; it does not implement a second resolver.
+- `ProductEconomicsInput.volume_liters` remains canonical unit volume.
+- Supplier pack multiplicity comes from `Прайс списком`: seller `КОД` + positive right-hand integer of `Упак`; never use `Оглавление!КРАТНОСТЬ`.
+- Positive operational quantities are whole packs.
+- Whole-pack ShippablePlan is built across all clusters before shipment selection. Selected clusters are filter-only and do not reallocate seller stock.
 
-### Seller stock / whole-pack operationalization
+## API-first source safeguards
 
-- Seller available stock is a separate physical ceiling; it never reduces demand itself.
-- Shipment planning MUST reuse the seller-stock quantity already resolved by the existing analytical runtime. Do not create a second resolver.
-- Existing runtime semantics remain authoritative: FBS/operational availability evidence is resolved first when present, conflicts remain blocking, explicit all-zero remains known zero, and `ProductEconomicsInput.available_qty` is only the existing allowed fallback when FBS evidence is absent.
-- Product volume remains the canonical `ProductEconomicsInput.volume_liters` source.
-- Supplier product pack multiplicity comes from the approved supplier workbook contract: sheet `Прайс списком`, `КОД` + `Упак`, using the positive right-hand integer after `/`.
-- Example: `40750: 36/6 → pack_multiple = 6`.
-- Never use the supplier workbook's `Оглавление!КРАТНОСТЬ` currency-conversion divisor as product multiplicity.
-- Missing/conflicting multiplicity remains incomplete; do not default silently to `1`.
-- Every positive operational shipment quantity is a complete pack multiple.
-- Pack rounding is downstream operationalization and never creates/relabels demand.
-- Finite physical capacity and resolved seller stock are converted to complete packs with floor; desired analytical quantity may require ceil-to-pack when capacity/stock permit.
-- Reuse the existing deterministic per-SKU allocation eligibility/priority; do not add a new portfolio/global objective in this milestone.
-
-### Ozon restrictions
-
-- The already-uploaded Ozon restrictions report is the physical eligibility/capacity source for conservative planning.
-- Preserve `FINITE / UNLIMITED / UNKNOWN`; unknown never means unlimited.
-- `allowed = Да + FINITE(0)` is unusable for positive shipment quantity.
-- Multiple allowed warehouse maxima inside one cluster are **not summed**. Explicit UNLIMITED wins; otherwise use the maximum independently proven positive FINITE value.
-- Preserve placement-zone evidence at warehouse level and aggregate without guessing conflicts.
-- `Зона размещения`, card errors, equipment and liquidity fields explain/classify; they never override explicit `Возможно ли поставить товар`.
-- Preserve restrictions `report_generated_at` when it can be proven; unknown stays unknown.
-- Restrictions capacity is a dated snapshot pre-check, not confirmed capacity for a future selected shipment date and not a booked slot.
-- The restrictions workbook's numeric Ozon 56-day reference `0` is explicit zero; dash/blank is missing. It remains secondary evidence and does not drive Safe Plan.
-
-## Operational shipment-planner contract
-
-The active downstream flow is:
+Exactly one source mode owns an analysis run:
 
 ```text
-AnalysisSnapshot / Calculated Plan
-→ restrictions + resolved seller stock + pack multiplicity
-→ full all-cluster whole-pack ShippablePlan
-→ selected shipment clusters (filter-only)
-→ operator-defined shipment opportunities
-→ recommended shipment calendar
-→ exact Ozon XLSX / ZIP
-→ operator manually uploads/books the slot in Ozon
+API
+or
+FILES
 ```
 
-### Cluster selection
+Never silently mix API and file sources by domain, SKU, cluster or missing-row fallback. API failure does not switch to FILES automatically.
 
-Selected shipment clusters mean only:
+API adapters normalize into existing PII-safe domain contracts. Do not fork analytics by source mode.
 
-> include these destination clusters in the current operational shipment run.
+Current operational endpoint paths live only in the backend Ozon endpoint registry. If Ozon changes a version, change the adapter/registry and parity tests rather than spreading endpoint strings through application/frontend code.
 
-They do not let one cluster serve another cluster's future demand, do not rewrite unselected cluster quantities, and do not recompute seller-stock scarcity over the selected subset.
+Ozon source snapshots are memory-only in the active milestone. Raw buyer/address/phone/email payloads are discarded before snapshot assembly and never serialized to frontend.
 
-Canonical behavior is `all-cluster ShippablePlan → selected-cluster filter → batching/scheduling`.
+## Credential/security safeguards
 
-First-use selection rules are defined in the shipment clarifications amendment. Cluster edits are draft-only and issue no automatic request.
-
-### Dates and methods
-
-V1 opportunity methods are:
+Credential vault path:
 
 ```text
-PVZ_CROSSDOCK
-SC_CROSSDOCK
-DIRECT
+data/ozon-credentials.json
 ```
 
-Hard cluster caps belong in the backend method registry:
+`data/` is local/gitignored. Vault contains ciphertext/metadata only.
+
+Canonical vault:
 
 ```text
-DIRECT = 1 cluster
-PVZ_CROSSDOCK = 20 clusters
-SC_CROSSDOCK = 20 clusters
+hashlib.scrypt(n=32768, r=8, p=1, dklen=32, random 16-byte salt)
+→ AES-256-GCM (random 12-byte nonce)
+AAD = "sklad_ozon:ozon-vault:v1"
 ```
 
-User `max_clusters` may lower but never exceed the method hard cap.
+- Password is never stored.
+- Decrypted Client-Id/API-Key live backend-memory-only until manual lock or process exit.
+- No inactivity auto-lock in current scope.
+- Stored API key is never returned to frontend after setup.
+- No secrets in Project JSON, URL, logs, snapshots, errors, analytics or test artifacts.
+- Do not claim reliable secure memory zeroization in Python.
+- Ozon API calls originate only from localhost backend; frontend never calls `api-seller.ozon.ru` directly.
+- Fixed external host only; no user-provided arbitrary outbound URL.
 
-An opportunity owns explicit date, max clusters, optional/required lead days and effective volume cap.
+## Shipment-planner safeguards
 
-Without Ozon Seller API the app recommends a date; it never claims a slot is available, confirmed or booked.
-
-Shipment urgency uses the immutable `analysis_as_of` of the parent analysis/ShippablePlan. Do not accept an independent browser-controlled analysis date for shipment scheduling.
-
-Current inbound evidence has quantity but no ETA. It must not postpone depletion/urgency by itself.
-
-### PVZ
-
-Current reviewed V1 planning ceiling is 1000 liters total item-volume estimate for a PVZ cross-dock shipment. A concrete Ozon point may have a lower real limit.
-
-`<=1000 L` means only **preliminarily compatible**, never fully validated.
-
-V1 has no cargo-box/pallet packing model. Do not claim validation of final packed-box volume, box count, per-box weight, pallet count, live point capacity or live slot availability. Keep those as explicit manual Ozon checks.
-
-KGT and unknown/multiple placement-zone evidence are not automatically assigned to PVZ.
-
-Shipment detail must show zone composition and a manual cargo-preparation warning where placement zones must be separated. Do not add a zone helper column to the Ozon XLSX and do not automatically split separate supply requests solely by zone.
-
-### Scheduling
-
-- Use a bounded deterministic heuristic, not brute-force cluster subset search or a general LP/min-cost-flow solver.
-- Scheduler objective is operational/service-level feasibility, not seller-to-FBO cost optimization.
-- Never reuse customer-delivery `RouteCostIndex` / `DirectRouteQuote` as a supply-shipment cost signal.
-- Prefer the latest feasible opportunity that is still on/before the explainable latest recommended ship date.
-- If only later opportunities fit, choose the earliest feasible late option and keep days-late explicit.
-- Unknown urgency/date quality remains explicit.
-- Every split remains whole-pack.
-- Max-cluster and volume constraints are hard per opportunity.
-- Unscheduled residual quantity and causal constraint reasons must remain visible.
-- UI wording is `Рекомендуемое расписание/отгрузки`, not unsupported `самый дешёвый` / `экономически оптимальный` claims.
-
-A valid calculation request requires at least one selected cluster with positive shippable quantity and at least one enabled ShipmentOpportunity. Empty executable scenarios must not return misleading successful empty plans.
-
-## Local API / export boundary
-
-"No Ozon API" means no external Seller API/network integration in the active roadmap. Local FastAPI endpoints are canonical:
+Active flow:
 
 ```text
-POST /api/shipment-plan
-POST /api/shipment-export
+Calculated Plan
+→ resolved stock + pack multiple + volume
+→ full ShippablePlan
+→ shipment intent + concrete Ozon hand-off points
+→ bounded local candidates
+→ temporary Ozon draft validation
+→ current timeslots
+→ ranked validated options
+→ XLSX/ZIP
+→ user performs final real supply action in Ozon
 ```
 
-- `/api/shipment-plan` recalculates only downstream shipment scheduling from immutable analytical/operational inputs.
-- Its date basis comes from the parent analysis/ShippablePlan, not a free-standing browser `as_of`.
-- `/api/shipment-export` renders an already-calculated planned shipment; it does not recalculate demand.
-- No endpoint may call `api-seller.ozon.ru` in this milestone.
-- One Ozon workbook corresponds to one cluster inside one planned shipment.
-- Workbook columns are exactly:
+- DIRECT hard max = 1 cluster.
+- Multi-cluster cross-dock hard max = 20 clusters.
+- Cross-dock requires a concrete Ozon hand-off point ID from the API catalog.
+- Candidate builder is deterministic/bounded; no cluster-subset brute force.
+- Default live-validation budget is at most 6 new temporary drafts per user run plus current Ozon external limits.
+- Draft create calls are not blindly retried after ambiguous network failure.
+- Product rejection, no timeslot, rate limit, transport unavailable and unknown create outcome remain causally distinct.
+- Local PVZ/item-volume checks are preliminary; do not claim packed-box/weight/point acceptance that is not modeled.
+- Shipment ranking is operational/service-level. Never use customer-delivery `RouteCostIndex` / `DirectRouteQuote` as seller→FBO supply cost evidence.
+- No endpoint or frontend action in the active roadmap may call `POST /v2/draft/supply/create` or claim a real supply was created/booked.
 
-```text
-артикул
-имя (необязательно)
-количество
-```
-
-- Multi-cluster planned shipment → one ZIP containing one XLSX per cluster.
-- Do not add helper columns to Ozon templates.
-
-## Plan UI safeguards
-
-The article-first UI amendment is authoritative for `План` where not corrected by the shipment clarifications amendment, until PR-E folds it into root `DESIGN.md` / `UX-CONTRACT.md`.
+## UI safeguards
 
 Keep top-level routes exactly:
 
@@ -222,90 +146,41 @@ Keep top-level routes exactly:
 Данные
 ```
 
-Inside `План`:
+Inside `План` target runtime:
 
 ```text
 Товары | Отгрузки
 ```
 
-### `Товары`
+- `Товары`: article-first bounded selector left, selected product context right; one product identity, focused cluster table, no giant primary `SKU × cluster` table.
+- `Отгрузки`: shipment intent, hand-off selector, explicit `Найти варианты в Ozon`, validated logistics manifests and XLSX/ZIP export.
+- `Данные`: API connection/sync is primary; manual reports are an explicit reserve mode, never a peer auto-toggle.
+- Temporary-draft disclosure must state that real supply requests are not created.
+- Distinguish `Кандидат` from `Проверено Ozon`. Do not show `Поставка создана`, `Забронировано` or equivalent real-supply success before future PR-F.
+- Frontend owns presentation/state only; Python owns business formulas, candidate grouping, Ozon validation/ranking and export.
+- Keep separate source/analysis/shipment freshness and dirty ownership.
+- Preserve historical Flow and existing visual identity.
+- PR-E must migrate root `DESIGN.md` / `UX-CONTRACT.md` in the same changeset as shipped API-first UI.
+- Target WCAG 2.2 AA, native semantic controls, stable busy geometry, persistent correction-oriented failures and 200% zoom operability.
 
-- Primary navigation unit is one SKU/article, not `SKU × cluster` row.
-- Reuse the master/detail interaction grammar of `Потоки спроса → По артикулу`: bounded selector left, selected context right.
-- Show product identity once in the right header.
-- Primary product planning evidence is persistently visible; do not require repeated `Открыть детали` buttons.
-- Focused cluster table defaults to:
+## Runtime and development
 
-```text
-Кластер | FBO | В пути | Ozon | Потребность | Аналитический план |
-Кратность | К поставке | Объём | Зона | Статус
-```
-
-- Preserve the decision-line visual signature.
-- Do not move route economics/history into the default cluster table; `Потоки спроса` / `Экономика` keep those responsibilities.
-
-### `Отгрузки`
-
-- Owns selected shipment scope, opportunity editor, downstream recalc, shipment manifests and Ozon export.
-- Shipment result surfaces use restrained logistics-manifest structure, not KPI-card mosaics.
-- Do not label recommended dates as confirmed slots/capacity.
-- Show restrictions snapshot date when known.
-- PVZ states use preliminary-compatibility wording plus manual checks.
-- Show placement-zone composition/manual cargo-separation warning without changing XLSX columns.
-
-### Dirty state
-
-Keep two independent concepts:
-
-```text
-analysisDirty
-shipmentDirty
-```
-
-- horizon/inbound/source change → analysis dirty/full `Пересчитать план`;
-- shipment clusters/dates/methods/lead/max-clusters/volume change → shipment dirty only;
-- shipment edits never silently issue a full analysis request;
-- failure keeps the previous successful result and current draft for retry.
-
-## Real-scale / frontend production safeguards
-
-- Production frontend remains committed vanilla HTML/CSS/JavaScript: no npm, TypeScript, framework, compiler or bundler.
-- Python owns business formulas, shipment constraints, scheduling and XLSX generation; frontend owns state transitions/presentation only.
-- Reuse shared primitives/tokens instead of screen-local equivalents.
-- Before any PR-E UI implementation, read `DESIGN.md`, `UX-CONTRACT.md`, the article-first UI amendment, shipment clarifications amendment and Frontend Design Premium requirements.
-- PR-E must update root `DESIGN.md` and `UX-CONTRACT.md` in the same changeset as runtime Plan UI.
-- Target WCAG 2.2 AA; use native semantic controls, visible focus, stable busy geometry and persistent correction-oriented errors.
-- Search has an explicit clear button and keyboard focus restoration.
-- Do not render every SKU/cluster as a giant card matrix.
-- Flow keeps bounded selected-context views; no global Sankey/chord and no route-count-dependent unbounded canvas.
-- Test Plan at realistic article/cluster cardinality and 200% zoom; selector should stack above detail rather than squeeze into an unusable split.
-- Verify `Потоки спроса`, `Экономика` and `Данные` after any shared CSS/layout change.
-
-## Canonical runtime contract
+Canonical runtime remains SCOZ-lite:
 
 ```text
 repository ZIP
-→ extract fully
 → start.bat
-→ project-local portable Python
-→ FastAPI bound to 127.0.0.1:17843
-→ browser opens after /api/health succeeds
+→ project-local Python 3.13.14
+→ FastAPI 127.0.0.1:17843
+→ committed vanilla HTML/CSS/JavaScript
 ```
 
-`start.bat` remains the only canonical entry point. Do not restore `file://`, direct HTML launch, SheetJS/browser-side XLSX parsing or a parallel browser-only runtime.
-
-[SCOZ](https://github.com/vgvolmax/SCOZ) remains the reference for proven portable Windows patterns. `sklad_ozon` stays SCOZ-lite: do not introduce SQLite/migrations/accounts/auth/background-job infrastructure without a demonstrated approved need. Project JSON remains the persistence boundary where persistence is needed.
-
-## Development and verification
-
-- Work outside `main`.
-- Use TDD for behavior changes.
-- Implement only one active PR scope at a time.
-- Do not rewrite working upstream analytics merely to fit the shipment feature.
-- Use dependency-free functional cores and imperative shells; FastAPI routes remain thin.
-- Runtime dependencies are pinned; add none without a demonstrated need.
-- Test Python with `python -m pytest -q`.
-- The `/api/analysis/stream` regression test currently lives in `tests/api/test_analysis.py`; do not invent `tests/api/test_analysis_stream.py`.
-- Windows portable smoke remains authoritative for runtime behavior.
-- Existing real-scale Flow acceptance remains mandatory when Flow/shared layout code is touched.
-- Preserve metadata, lifecycle semantics, PII boundary, fail-closed ingestion, incomplete-period behavior, tariff coverage semantics, tax/VAT/co-invest economics and existing counterfactual contracts unless a later approved design explicitly changes them.
+- No npm, TypeScript, frontend framework, compiler or bundler.
+- No SQLite/database/background-service architecture without a later approved need.
+- `cryptography` is the only newly approved runtime dependency for the current API-first roadmap; pin it and verify Windows wheel/bootstrap behavior in PR-API1.
+- Use TDD and work outside `main`.
+- FastAPI routes remain thin; pure domain/adapters remain independently testable.
+- Run `python -m pytest -q` before completion.
+- `/api/analysis/stream` regression tests live in `tests/api/test_analysis.py`.
+- Windows portable smoke remains authoritative for runtime/bootstrap behavior.
+- Existing real-scale Flow acceptance remains mandatory when shared layout/frontend code changes.

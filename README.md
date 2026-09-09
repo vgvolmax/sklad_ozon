@@ -17,15 +17,20 @@
 
 Системный Python и Node/npm устанавливать не нужно, права администратора не
 нужны, PATH не изменяется. Последующие запуски повторно используют проверенный
-project-local `runtime/`. После его подготовки обычная работа не требует сети.
+project-local `runtime/`. После его подготовки обычная работа текущего runtime
+может выполняться локально; активный API-first roadmap 2026-09-09 добавляет
+явное сетевое подключение к Ozon Seller API для синхронизации и проверки
+вариантов поставки.
 
-FastAPI слушает только `127.0.0.1:17843`. Отчёты и данные продавца обрабатываются
-локально и не отправляются во внешние сервисы. `runtime/` можно пересоздать;
-локальные артефакты `data/` при repair/rebuild не удаляются.
+FastAPI слушает только `127.0.0.1:17843`. Текущий файловый runtime обрабатывает
+отчёты локально. В API-first roadmap внешние запросы разрешены только backend-
+клиенту Ozon на фиксированный `api-seller.ozon.ru`; секреты не передаются во
+frontend. `runtime/` можно пересоздать; локальные артефакты `data/` при
+repair/rebuild не удаляются.
 
 Если запуск сообщает код `RUNTIME_REPAIR_REQUIRED`, подключитесь к интернету и
 снова запустите `start.bat`: повреждённый runtime будет пересоздан, а содержимое
-`data/` сохранится. Полезные диагностические файлы —
+`data/` сохранено. Полезные диагностические файлы —
 `data/startup_status.json` и `data/server_console.log`.
 
 ## Архитектура
@@ -48,11 +53,11 @@ Frontend является тонким presentation layer. Формулы, им�
 
 1. **где возник спрос** — delivery/destination cluster;
 2. **откуда Ozon физически закрыл спрос** — origin/dispatch cluster;
-3. **куда выгоднее положить следующий товар** — результат экономики,
-   ограничений и оптимизации.
+3. **сколько нужно следующей поставки** — Product Completion;
+4. **как операционно исполнить рассчитанную поставку** — API-first shipment planner.
 
 Отгрузка `Казань → Москва` является московским спросом, закрытым Казанью.
-Product Completion развивает это разделение в полную цепочку принятия решения:
+Product Completion сохраняет эту семантику в цепочке принятия решения:
 
 ```text
 Спрос
@@ -62,19 +67,21 @@ Product Completion развивает это разделение в полну�
 → сравнение с Ozon
 → маршрутная экономика
 → Safe Plan / Calculated Plan
-→ распределение по выбранному objective
+→ операционное исполнение рассчитанного плана
 ```
 
-Ozon recommendation служит внешним сигналом для сравнения и ограничивает
-консервативный Safe Plan. Основной Calculated Plan опирается на собственную
-потребность и физическую допустимость, а пользователь может оптимизировать его
-по максимальной прибыли или максимальной марже. Ограничения recommendation
-ceiling и единственного optimizer objective относились к завершённой runtime
-migration и superseded новым Product Completion design для бизнес-логики.
+Ozon recommendation остаётся внешним сигналом сравнения, когда доступно точное
+сопоставимое evidence. Основной Calculated Plan опирается на собственную
+потребность и существующую физическую/экономическую модель. API-first roadmap
+не переписывает demand/stockout/Need/Flow/economics; он меняет источники
+оперативных данных и добавляет whole-pack planning, временную Ozon draft-
+валидацию, актуальные timeslots и ручной XLSX/ZIP hand-off.
+
+Финальное создание реальной заявки Ozon **не входит** в активный roadmap.
 
 ## Разработка
 
-Canonical automated test command целевой архитектуры:
+Canonical automated test command:
 
 ```bash
 python -m pytest -q
@@ -94,25 +101,32 @@ smoke, включая первый bootstrap, настоящее offline-пер�
 
 ## Документы
 
-### Текущий Product Completion
+### Активный API-first roadmap
+
+- [Canonical API-first shipment planner design](docs/superpowers/specs/2026-09-09-ozon-api-first-shipment-planner-design.md)
+- [API-first Plan/Data UI design](docs/superpowers/specs/2026-09-09-api-first-plan-ui-design.md)
+- [Active implementation plans](docs/superpowers/plans/)
+- [AGENTS — обязательный порядок чтения для Codex](AGENTS.md)
+
+### Сохраняемая аналитическая база
 
 - [Product Completion design](docs/superpowers/specs/2026-09-02-ozon-fbo-product-completion-design.md)
-- [DESIGN — визуальная система и UI](DESIGN.md)
-- [UX-CONTRACT — обязательный UX-контракт](UX-CONTRACT.md)
+- [Real-data demand / stockout / Flow design](docs/superpowers/specs/2026-09-03-real-data-demand-stockout-flow-design.md)
+- [DESIGN — текущая визуальная система и UI](DESIGN.md)
+- [UX-CONTRACT — текущий обязательный UX-контракт](UX-CONTRACT.md)
 
-Новый Product Completion implementation plan будет добавлен отдельно. Старые
-MVP-планы не являются планом реализации Product Completion.
+`DESIGN.md` и `UX-CONTRACT.md` будут синхронно мигрированы в PR-E вместе с
+реальным API-first UI, чтобы root-контракты не описывали ещё не поставленный
+runtime.
 
 ### Runtime architecture
 
 - [Canonical SCOZ-lite portable architecture](docs/superpowers/specs/2026-08-20-scoz-lite-portable-architecture-design.md)
 - [Codex Cloud environment](docs/superpowers/codex-cloud-environment.md)
 
-SCOZ-lite design остаётся каноническим для runtime/technical architecture и не
-отменяет бизнес-правила Product Completion.
+### Archive
 
-### Historical documents
-
-- [2026-08-19 business/analytical design](docs/superpowers/specs/2026-08-19-ozon-fbo-unit-economics-optimizer-design.md)
-- [2026-08-19 browser-only implementation plan](docs/superpowers/plans/2026-08-19-mvp-implementation.md)
-- [2026-08-20 SCOZ-lite MVP implementation plan PR1–PR8](docs/superpowers/plans/2026-08-20-scoz-lite-mvp-implementation.md)
+Завершённые и superseded документы перемещены в
+[`docs/superpowers/archive/`](docs/superpowers/archive/README.md).
+Они не являются источником требований для активной разработки и не должны
+читаться Codex без отдельного запроса на исторический аудит.
