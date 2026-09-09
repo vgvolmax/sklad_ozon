@@ -10,7 +10,7 @@ This document is self-contained for the active roadmap. Archived shipment/networ
 
 The application must answer with minimal manual Ozon-report work:
 
-> what quantity to ship, to which destination clusters, through which Ozon hand-off point/method, from which seller warehouse where required, and which currently observed Ozon timeslot is the best operational option.
+> what quantity to ship, to which destination clusters, through which Ozon hand-off point/method, from which seller warehouse where required, and which currently observed Ozon timeslots are available for the best-ranked operational shipment options.
 
 The application does **not** create the final Ozon supply request in this milestone. Temporary Ozon drafts are allowed only for validation and timeslot discovery. The user remains the final actor who creates/confirms the real supply in Ozon. XLSX/ZIP export remains the manual hand-off.
 
@@ -28,7 +28,7 @@ Ozon API sync
 → temporary Ozon draft validation
 → /v2 draft info + warehouse/travel evidence
 → /v2 live timeslots
-→ ranked ValidatedShipmentOptions
+→ ranked ValidatedShipmentOptions with current timeslot evidence
 → exact XLSX/ZIP
 → user performs final real Ozon action manually
 ```
@@ -44,6 +44,7 @@ Active PRs MUST NOT:
 - merge API and FILES evidence inside one analysis run;
 - create a hybrid FILES-analysis + live-API-validation source mode;
 - invent a new urgency/stockout-date model in shipment code;
+- select, optimize, reserve or persist one canonical `best`/`selected` timeslot inside shipment ranking;
 - use `RouteCostIndex` / `DirectRouteQuote` as seller→Ozon inbound-cost evidence;
 - brute-force all cluster subsets with Ozon drafts;
 - call Ozon Seller API from frontend JavaScript;
@@ -585,7 +586,7 @@ unknown draft-create outcome
 local incompatibility
 ```
 
-Timeslot availability is observed evidence, not a booking.
+Timeslot availability is observed evidence, not a booking. Preserve all normalized current timeslots on the validated option; do not collapse them into one app-selected window.
 
 ## 13. Operational ranking
 
@@ -594,10 +595,12 @@ Ranking optimizes operational/service-level usefulness only.
 Default active ranking keys, in order:
 
 1. accepted by Ozon;
-2. has timeslot in requested range;
+2. has one or more timeslots in requested range;
 3. lower fragmentation / more useful covered assignment volume;
 4. user seller-warehouse/handoff preference where applicable;
 5. stable candidate ID.
+
+The timeslot key is boolean capability evidence only. When several current windows exist, ranking does not choose the first, earliest, latest, shortest or otherwise `best` timeslot. `ValidatedShipmentOption.timeslots` remains the source of truth for those observed windows, and the UI may display them for the user. Final slot choice belongs to the later/manual real Ozon action unless a future approved PR-F design explicitly introduces slot selection.
 
 Do **not** derive `urgency_date`, stockout date, days-late or latest-still-on-time math inside shipment code. If a later approved upstream analytical contract already exposes an immutable canonical urgency field, a later design may insert urgency keys into ranking explicitly. Until then urgency is absent, not inferred.
 
@@ -653,6 +656,7 @@ Inside `План`:
 - Shipment dates use native `input[type="date"]` unless a future approved UX requirement needs an authored calendar.
 - Multiple seller warehouses use native `<select>` unless a future approved UX requirement needs an authored select.
 - Hand-off search remains an authored accessible remote combobox/listbox because asynchronous Ozon search/results require owned behavior.
+- Shipment manifests show the currently observed timeslot windows as evidence when available; there is no app-owned selected-timeslot state/control in this milestone.
 
 Distinguish:
 
@@ -700,6 +704,7 @@ Do placement zones survive?             yes, to manifest
 What is selector identity?              SKU
 Can conflicting same article merge?     no, fail closed
 May shipment code invent urgency date?  no
+Does app select one timeslot?            no, all current windows remain evidence; final choice is manual/future PR-F
 What type is draft_id?                  int/int64
 Does temporary validation create supply? no
 Does active roadmap call /v2/draft/supply/create? no
