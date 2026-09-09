@@ -9,6 +9,7 @@
 - Ranking never recalculates demand, Need, seller stock or whole-pack quantities.
 - Ranking uses Ozon validation/timeslots plus existing immutable plan/candidate evidence only.
 - Shipment code does not invent `urgency_date`, stockout date, days-late or latest-still-on-time math.
+- Timeslots remain observed evidence on `ValidatedShipmentOption`; PR-D does not select, reserve, rank or persist one canonical timeslot.
 - `RouteCostIndex` / `DirectRouteQuote` are not seller→FBO supply-cost evidence and must not influence rank.
 - Rejected/unscheduled quantities never disappear.
 - Export is backend-only and fail-closed on identity/pack conflicts.
@@ -26,7 +27,6 @@ Create/extend immutable shipment-plan contracts, for example:
 class RankedShipmentOption:
     option_id: str
     validated_option: ValidatedShipmentOption
-    selected_timeslot: OzonTimeslot | None
     rank_reasons: tuple[str, ...]
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +44,8 @@ class ShipmentPlan:
 
 All parent identities are immutable/backend-owned.
 
+`ValidatedShipmentOption.timeslots` remains the complete normalized ordered evidence returned by PR-API3. Do not copy one element into `selected_timeslot`, `recommended_timeslot`, `best_timeslot` or an equivalent backend-owned field.
+
 Do not add urgency/date-to-stockout fields merely because the ranking service could calculate them. Such a field may enter this contract only after a later approved upstream analytical design owns it.
 
 ---
@@ -54,21 +56,27 @@ Canonical keys, in order:
 
 ```text
 1 accepted by Ozon
-2 has timeslot inside requested range
+2 has one or more timeslots inside requested range
 3 lower fragmentation / more useful covered assignment volume
 4 user seller-warehouse/handoff preference where applicable
 5 stable candidate ID
 ```
 
+`has timeslot` is a boolean capability/ranking signal only. When several current windows exist, their order/evidence remains attached to the validated option; PR-D must not infer that the first, earliest, latest or shortest window is the user's preferred final slot.
+
 Tests:
 - accepted+slot outranks accepted+no-slot and rejected;
+- multiple timeslots do not create a backend `selected_timeslot` or change candidate quantities;
 - among equivalent accepted+slot options, lower fragmentation/more covered assignment volume wins;
 - seller warehouse/handoff user priority only breaks otherwise equivalent choices;
 - stable candidate ID final tie-break;
 - source guard proves no route-cost imports;
-- source guard proves no shipment-layer urgency/stockout-date calculation.
+- source guard proves no shipment-layer urgency/stockout-date calculation;
+- source/contract guard proves no `selected_timeslot`, `recommended_timeslot` or `best_timeslot` ownership is introduced.
 
 If a future approved upstream contract exposes a canonical immutable urgency field, ranking changes require a separate design update; do not opportunistically infer one from `current_weekly_rate`, FBO, inbound or Need.
+
+A future real-supply execution design may introduce explicit slot selection if the API action actually requires/owns it. That is outside this milestone.
 
 ---
 
@@ -152,9 +160,11 @@ POST /api/shipment/plan
 POST /api/shipment/export
 ```
 
-`/api/shipment/plan` consumes backend-produced validated options + immutable parent identities and ranks them. It must reject source/analysis/ShippablePlan/scenario mismatch.
+`/api/shipment/plan` consumes backend-produced validated options + immutable parent identities and ranks shipment options. It must reject source/analysis/ShippablePlan/scenario mismatch.
 
 `analysis_as_of` comes only from parent analysis; request cannot override it.
+
+The endpoint returns each ranked option with all current `ValidatedShipmentOption.timeslots` evidence. It does not accept or return a backend-owned selected slot in this milestone.
 
 `/api/shipment/export` accepts only backend-produced ranked/exportable option identity, rechecks identity/pack invariants and returns bytes + media type + Content-Disposition.
 
@@ -166,6 +176,7 @@ No endpoint calls Ozon real supply creation.
 
 Tests must cover:
 - accepted/no-slot/rejected ordering;
+- multiple current timeslots preserved as evidence with no backend-selected slot;
 - fragmentation/covered-volume ordering;
 - residual quantity conservation;
 - seller warehouse/handoff tie-break;
@@ -187,4 +198,4 @@ python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_ac
 python -m pytest -q
 ```
 
-Acceptance: validated options are ranked operationally and explainably without inventing urgency math, every input quantity has a causal outcome, export is exact/fail-closed, and no real Ozon supply is created.
+Acceptance: validated shipment options are ranked operationally and explainably without inventing urgency or selecting a timeslot, all current windows remain evidence for the user, every input quantity has a causal outcome, export is exact/fail-closed, and no real Ozon supply is created.
