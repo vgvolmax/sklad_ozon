@@ -1,300 +1,149 @@
-# API-First Plan UI — Frontend Design Premium Contract
+# API-First Plan & Data UI — Canonical Design
 
 **Date:** 2026-09-09  
-**Status:** APPROVED / ACTIVE UI TARGET  
-**Scope:** frontend consequences of `2026-09-09-ozon-api-first-shipment-planner-design.md`  
-**Supersedes:** archived 2026-09-08 article-first Plan amendment for active implementation.  
-**Runtime note:** root `DESIGN.md` / `UX-CONTRACT.md` continue to describe the currently shipped UI until PR-E changes runtime; PR-E must update both root contracts in the same changeset.
+**Status:** APPROVED / ACTIVE UI SOURCE OF TRUTH  
+**Scope:** target `План` / `Данные` UI for the active API-first shipment roadmap.  
+**Business owner:** `2026-09-09-ozon-api-first-shipment-planner-design.md`.
 
-## 1. Design intent
+This document is self-contained. Prior shipment/UI correction overlays are archived history only.
 
-Preserve the existing Sklad Ozon visual identity. This is not a rebrand.
+## 1. Product register
+
+The product remains a dense light engineering/logistics console for a Russian-speaking Ozon FBO operator.
 
 Keep:
 
-- light engineering-console register;
-- existing semantic palette and tokens;
-- Golos Text / JetBrains Mono roles;
-- compact data density;
-- decision-line signature `Ozon → Наша потребность → План`;
-- four top-level sections: `План`, `Потоки спроса`, `Экономика`, `Данные`;
-- historical Flow as its own analytical mode.
+- established palette/type/spacing language from `DESIGN.md` and runtime tokens;
+- `Ozon → Наша потребность → План` as the signature comparison line;
+- compact desktop/laptop density;
+- top-level routes exactly `План | Потоки спроса | Экономика | Данные`;
+- historical `Потоки спроса` behavior and current economics screens unless a later approved design changes them.
 
-Do not add gradients, glass, dark-dashboard language, decorative KPI mosaics or Ozon-brand imitation.
+Do not introduce gradients, glassmorphism, marketing hero blocks, dark-dashboard language, decorative KPI mosaics or Ozon-brand imitation.
 
-The new memorable operational element is the **shipment manifest**: a restrained logistics worksheet showing exact date/method/clusters/quantity and Ozon evidence state.
+Target WCAG 2.2 AA and 200% zoom operability.
 
-## 2. Canonical UI ownership
+## 2. Information architecture
 
-New recurring behaviors have one owner each:
+Inside `План`:
 
 ```text
-OzonConnectionPanel
-CredentialVaultDialog
-SourceModePanel
-ArticlePlanSelector
-PlanProductWorkspace
-ShipmentIntentForm
-HandoffPointSelector
-ShipmentManifest
-OzonValidationStatus
+Товары | Отгрузки
 ```
 
-They may be implemented as shared functions in the existing vanilla `SkladOzon` namespace. Equivalent screen-local variants are prohibited.
+### `План → Товары`
 
-Reuse existing shared SearchField, Notice, ProgressPanel, button/input styling, scrollbar baseline and Flow primitives.
+Single job:
 
-## 3. `Данные` — API first hierarchy
+> inspect one SKU-backed product context, compare Ozon/Need/Plan, and see exact whole-pack quantities by destination cluster.
 
-The default screen starts with Ozon connection/source state, not a wall of upload controls.
-
-Desktop structure:
+Desktop composition:
 
 ```text
-Данные
-
-┌─ Ozon API ───────────────────────────────────────────────────┐
-│ ● Подключено                         Синхронизировано 08:31  │
-│ Client-Id ···4821                                           │
-│ [Обновить данные] [Заблокировать] [Заменить подключение]    │
-└──────────────────────────────────────────────────────────────┘
-
-Данные Ozon
-Заказы                    ✓ 08:31
-Остатки FBO               ✓ 08:31
-Поставки в пути           ✓ 08:31
-Остаток продавца          ✓ 08:31
-Кластеры / склады         ✓ 08:31
-Зоны размещения           ✓ 08:31
-
-Наши данные
-Юнитка                    ✓ актуальна
-Кратность поставщика      ✓ актуальна
-
-Резервный режим
-[Использовать ручной импорт]
+┌ bounded product selector ┐ ┌ selected product workspace ┐
+│ article / short name     │ │ identity + decision line   │
+│ SKU secondary            │ │ cluster table              │
+│ shipment summary         │ │ assignment evidence        │
+└──────────────────────────┘ └────────────────────────────┘
 ```
 
-The Ozon panel is a work-status surface, not a decorative card.
+At narrow width / 200% zoom, selector stacks above workspace. Do not squeeze two unusable columns.
 
-## 4. Credential vault flows
+### `План → Отгрузки`
 
-### 4.1 First setup
+Single job:
 
-Use an app-owned form/dialog:
+> express shipment intent, resolve seller/handoff points, explicitly ask Ozon to validate bounded candidates, and inspect/export validated logistics options.
+
+The user controls intent. The UI never fabricates availability.
+
+### `Данные`
+
+Canonical hierarchy:
 
 ```text
-Подключить Ozon API
-
-Client-Id
-[________________________]
-
-API-Key
-[••••••••••••••••••••••] [Показать]
-
-Пароль хранилища
-[••••••••••••••]
-
-Повторите пароль
-[••••••••••••••]
-
-Пароль понадобится после каждого запуска приложения.
-Если пароль будет утерян, подключение нужно настроить заново.
-
-[Сохранить и проверить подключение]
+Ozon API connection/session
+→ source freshness/capability status
+→ seller-local Unitka / pack-multiplicity inputs
+→ explicit FILES fallback
 ```
 
-Rules:
+API is primary. FILES is a reserve workflow, not a peer auto-toggle.
 
-- API key and passwords are masked by default;
-- `Показать` exists only while entering/replacing a new API key;
-- never show the saved key again;
-- no browser-native validation bubbles;
-- invalid fields keep values, expose inline correction text and `aria-invalid`;
-- busy button geometry is stable;
-- setup success replaces the form with connection status;
-- setup failure never logs/displays the API key.
+## 3. Canonical product identity
 
-### 4.2 Locked after restart
+Presentation is article-first; state identity is SKU.
 
 ```text
-Ozon API
-○ Хранилище заблокировано
-
-Пароль
-[••••••••••••••]
-[Разблокировать]
+selectedSku = canonical selector identity
+article = primary seller-facing label
 ```
 
-Wrong password:
+Never collapse two Ozon SKUs because they share one article. If that occurs, render separate SKU-backed selector items and show an identity diagnostic.
+
+Search may match article, SKU and name.
+
+## 4. `План → Товары`
+
+### 4.1 Product selector
+
+Each selector item represents exactly one SKU-backed product, not one cluster.
+
+Compact item:
 
 ```text
-Не удалось разблокировать хранилище.
-Проверьте пароль и попробуйте ещё раз.
+40750 · Кран шаровой ...
+SKU 123456789
+К поставке 48 · 6 кластеров
 ```
 
-Do not expose cryptographic terms to the end user.
+At most one concise blocking/incomplete status is shown in the selector item. Detailed diagnostics stay in the workspace.
 
-### 4.3 Unlocked session
+Search is local and immediate with an explicit clear button; clear restores input focus.
 
-```text
-● Подключено
-Client-Id ···4821
-Хранилище разблокировано для этой сессии
-```
+Selection reconciliation:
 
-Actions:
+- keep prior SKU if it still exists;
+- otherwise choose first visible stable item;
+- never use article alone as state key.
 
-```text
-Обновить данные
-Заблокировать
-Заменить подключение
-```
+### 4.2 Product header
 
-No automatic inactivity lock. Manual lock and process exit end the unlocked session.
-
-## 5. Source mode UX
-
-API is the primary mode. FILES is a reserve workflow, not a peer toggle.
-
-Do not render a casual radio/toggle like:
+Show identity once:
 
 ```text
-API | Excel
-```
-
-Primary state:
-
-```text
-Основной источник: Ozon API
-[Использовать ручной импорт]
-```
-
-Entering manual mode must explain before switching:
-
-```text
-Ручной импорт используется как резервный режим.
-Данные API и файлов в одном расчёте не смешиваются.
-Live-проверка поставок зависит от разблокированного Ozon API.
-```
-
-After explicit switch:
-
-```text
-Источник расчёта: ручной импорт
-```
-
-File upload controls then become visible. Returning to API mode is another explicit action.
-
-Never silently fall back after API failure.
-
-## 6. Sync progress and freshness
-
-`Обновить данные` initiates one explicit sync operation. Show stable progress with business stages, for example:
-
-```text
-Обновляем данные Ozon
-3 из 6 · Остатки FBO
-```
-
-The previous successful source snapshot remains available and visibly marked stale while refresh runs/fails.
-
-Required data states:
-
-```text
-Актуально
-Обновляется
-Устарело
-Недоступно
-Неполные данные
-Ручной источник
-```
-
-Show three distinct timestamps when relevant:
-
-```text
-Данные Ozon обновлены
-План рассчитан
-Варианты Ozon проверены
-```
-
-Do not collapse all freshness into one timestamp.
-
-## 7. `План → Товары`
-
-### 7.1 Master/detail
-
-The current giant `SKU × cluster` primary table is replaced.
-
-```text
-┌───────────────────────┬───────────────────────────────────────┐
-│ Поиск                 │ 40750 · Герметик анаэробный 250 мл  │
-│ Фильтры               │ SKU 3118873729                      │
-│                       │ Кратность 6 · Остаток 186           │
-│ 40750                 ├───────────────────────────────────────┤
-│ 40749                 │ Ozon → Потребность → План           │
-│ 40748                 │                                       │
-│ ...                   ├───────────────────────────────────────┤
-│                       │ Кластеры выбранного артикула          │
-│                       │                                       │
-│                       ├───────────────────────────────────────┤
-│                       │ Его назначенные отгрузки              │
-└───────────────────────┴───────────────────────────────────────┘
-```
-
-One selector item = one article/SKU. Full product name appears once in selected context, not repeated per cluster.
-
-No primary `Открыть детали` on every cluster row.
-
-### 7.2 Left selector
-
-Each item shows only information useful for choosing context:
-
-```text
-40750 · короткое имя
-SKU secondary
-К поставке 102 шт. · 6 кластеров
-```
-
-At most one concise warning badge.
-
-Search matches article/SKU/name, is local/immediate and has an explicit clear button.
-
-### 7.3 Product header
-
-```text
-article + full product name
+article
+full product name
 SKU
-Кратность
-Наш resolved остаток
-Доступно полными упаковками
-Объём/шт.
-Зона / качество зоны
-Источник/актуальность данных
+pack multiple
+resolved seller stock
+whole-pack available
+unit volume
+placement-zone evidence/quality
+analysis/source freshness
 ```
 
-Unknown is `Не рассчитано`, never frontend zero fallback.
+Unknown values render `Не рассчитано`, never zero by frontend fallback.
 
-### 7.4 Decision line
+### 4.3 Decision line
 
-Preserve the visual signature:
+Keep:
 
 ```text
 Ozon → Наша потребность → План
 ```
 
-When exact API Ozon recommendation is unavailable, show:
+If API mode lacks an exact comparable Ozon recommendation, show e.g.:
 
 ```text
 Ozon: нет сопоставимого API-сигнала
-Потребность 101 → Аналитический план 101 → К поставке 102
 ```
 
-Do not fabricate a replacement recommendation.
+Never substitute another metric.
 
-### 7.5 Cluster table
+### 4.4 Selected-SKU cluster table
 
-Default columns:
+Default target columns:
 
 ```text
 Кластер
@@ -310,90 +159,215 @@ Ozon
 Статус
 ```
 
-This table belongs only to the selected article and owns its local overflow/pagination.
+The table belongs only to selected SKU and owns its local overflow/pagination. Product name/article are not repeated in every cluster row.
 
-Rounding is explicit:
+Pack adjustment is explicit (`17 → 18`, `кратность 6`) and is not styled as an error unless a real constraint exists.
+
+Selected shipment clusters later are filter-only; changing them never changes this analytical/whole-pack table quantity.
+
+## 5. `Данные` API connection and vault
+
+### 5.1 First setup
 
 ```text
-17 → 18 шт.
-кратность 6
+Подключить Ozon API
+
+Client-Id
+[____________]
+
+API-Key
+[••••••••••••] [Показать]
+
+Пароль хранилища
+[••••••••]
+
+Повторите пароль
+[••••••••]
+
+Пароль потребуется после каждого запуска.
+Если пароль забыт, подключение нужно настроить заново.
+
+[Сохранить и проверить]
 ```
 
-## 8. `План → Отгрузки` — user intent first
+API key/password are masked by default. Show/hide applies only while entering/replacing a new key. Saved API key is never rendered back.
 
-The user specifies intent rather than inventing Ozon availability.
+### 5.2 Locked restart
 
-Canonical form:
+```text
+Ozon API
+○ Хранилище заблокировано
+
+Пароль
+[••••••••]
+
+[Разблокировать]
+```
+
+Wrong password preserves typed value and shows a persistent correction-oriented error.
+
+### 5.3 Unlocked state
+
+```text
+Ozon API
+● Подключено
+Client-Id ···4821
+Разблокировано для этой сессии
+
+[Обновить данные]
+[Заблокировать]
+[Заменить подключение]
+```
+
+No inactivity auto-lock.
+
+## 6. API source UX
+
+After unlock, show business-domain freshness separately:
+
+```text
+Заказы / история
+FBO остатки
+Поставки в пути
+Остаток продавца
+Кластеры
+Склады отправления продавца
+Зоны размещения
+```
+
+Do not render one generic green `sync ok` if a capability is incomplete.
+
+Three timestamps remain distinct:
+
+```text
+Данные Ozon обновлены
+План рассчитан
+Варианты Ozon проверены
+```
+
+`source_as_of` is backend-owned and shown as the data basis, not editable in API mode.
+
+API history range is backend-owned. Do not add an everyday control for the 12-week/backfill policy.
+
+Failed refresh keeps previous successful snapshot visible and marks new refresh failure without silently entering FILES mode.
+
+## 7. FILES fallback
+
+Primary surface uses an action such as:
+
+```text
+[Использовать ручной импорт]
+```
+
+On entry, disclose:
+
+```text
+Ручной импорт — резервный режим.
+Данные API и файлов в одном расчёте не смешиваются.
+```
+
+The mode change is explicit user action. API errors never toggle it automatically.
+
+## 8. Shipment intent
+
+Target controls:
 
 ```text
 Период поставки
-[15.09.2026] — [25.09.2026]
+[date from] — [date to]
 
 Способы
 ☑ ПВЗ
 ☑ СЦ
 ☑ Прямая
 
-Точки отгрузки
-[Новая Рига, ПВЗ …                 ×]
-[Хоругвино, СЦ …                  ×]
-[Добавить точку]
-
 Кластеры
-14 выбрано [Изменить]
+[scope selector]
 
-Кластеров в одной поставке
-Желательно [3]
-Максимум  [5]
+Кластеров в поставке
+желательно [3]
+максимум   [5]
+
+Склад отправления
+[resolved seller warehouse / selector when required]
+
+Точка отгрузки
+[remote Ozon search]
 
 [Найти варианты в Ozon]
 ```
 
-Changing any field marks shipment results stale only. It must not trigger backend work automatically.
+Editing any field changes shipment draft state only. It does not recalculate analysis, refetch source data or call Ozon.
 
-## 9. Handoff point selector
+### 8.1 Cluster initialization
 
-Cross-dock candidates require a concrete Ozon point. The user chooses from API-returned hand-off points.
+- first complete positive ShippablePlan: select all positive complete clusters;
+- after user explicitly changes selection: preserve surviving selected IDs on later analysis;
+- newly appearing clusters default unselected;
+- selection is filter-only and never reallocates seller stock.
 
-Selector behavior:
+### 8.2 Seller warehouse selector
 
-- searchable by name/address;
-- point type visible (`ПВЗ`, `СЦ`, etc.);
-- selected point ID is backend/business identity;
-- user may save preferred non-secret point IDs/order;
-- no free-form warehouse ID input in normal UX;
-- a missing required point prevents `Найти варианты` with inline guidance.
+Seller warehouses come from the current API source snapshot.
 
-DIRECT does not require a cross-dock point.
+Rules:
 
-## 10. Temporary draft disclosure
+- if exactly one active seller warehouse exists, show it as fixed resolved context and backend may auto-use it for cross-dock;
+- if multiple active seller warehouses exist and cross-dock is selected, require explicit `Склад отправления` selection;
+- DIRECT does not require this cross-dock field;
+- stale/inactive IDs surface a blocking correction message;
+- do not expose seller-warehouse contacts/courier comments.
 
-`Найти варианты в Ozon` is a safe-but-external operation and must say what happens:
+Persisted preferred seller warehouse ID is non-secret preference only; backend still validates it against current snapshot.
+
+## 9. HandoffPointSelector
+
+Hand-off points are remote Ozon search results, not preloaded catalog data.
+
+Interaction:
+
+```text
+<4 trimmed characters → no request
+>=4 → ~300 ms debounced localhost search
+```
+
+Required:
+
+- IME/composition-safe input;
+- stale-response/run-sequence protection;
+- clear button cancels/invalidates pending work and restores focus;
+- previous selected points remain visible while new search is busy/fails;
+- show Ozon-returned name, address and point type;
+- no free-form warehouse ID entry;
+- unknown/stale preferred IDs must be resolved again after restart;
+- cross-dock action remains blocked until selected point IDs resolve in backend `HandoffPointStore`.
+
+Do not claim address search beyond what Ozon actually documents for its search string.
+
+## 10. External validation disclosure
+
+Near `Найти варианты в Ozon` show persistent explanatory copy:
 
 ```text
 Для проверки приложение создаст временные черновики в Ozon.
 Реальные заявки на поставку не создаются.
 ```
 
-This copy is visible near the action; no repetitive confirmation modal is required for every run.
+The button is the only user action that starts candidate → temporary draft → timeslot validation.
 
-## 11. Candidate / checked / real lifecycle
+If vault is locked, direct the user to `Данные` to unlock. Do not embed an ad-hoc secret/password prompt in Plan.
 
-The UI must distinguish three concepts.
+## 11. Candidate and validation states
 
-### 11.1 `Кандидат`
+Keep concepts distinct:
 
-Locally generated, not yet sent to Ozon.
+```text
+Кандидат
+Проверено Ozon
+реальная заявка на поставку  # future, absent now
+```
 
-### 11.2 `Проверено Ozon`
-
-Temporary draft validation has returned and current timeslot evidence is available.
-
-### 11.3 Real supply
-
-Not represented as a completed app state in this milestone.
-
-Forbidden copy before future PR-F:
+Forbidden success copy in current milestone:
 
 ```text
 Поставка создана
@@ -401,158 +375,158 @@ Forbidden copy before future PR-F:
 Заявка подтверждена
 ```
 
-A timeslot discovered for a temporary draft may be labelled:
+Observed timeslot copy may say:
 
 ```text
-Окно доступно при проверке 08:47
+Окно доступно при проверке
 ```
 
 not `забронировано`.
 
 ## 12. Shipment manifests
 
-Validated option example:
+Validated options are rendered as restrained logistics worksheets, not decorative KPI cards.
+
+Show when available:
 
 ```text
-18 сентября · ПВЗ
-Москва · Пермь · Казань
-
-1 930 шт. · 824 л · 17 SKU
-
-Ozon
-✓ Состав принят
-✓ Доступно окно 14:00–18:00
-≈ 3 дня до размещения
-Проверено сегодня, 08:47
-
-[Скачать шаблоны Ozon]
+date / method
+seller warehouse (for cross-dock)
+concrete hand-off point
+clusters
+accepted qty / estimated item volume / SKU count
+Ozon acceptance state
+timeslot evidence
+optional travel time
+checked timestamp
+placement-zone composition
+manual packing note when relevant
 ```
 
-The manifest is a logistics document, not a KPI card. Use hierarchy, hairline separators and existing tokens; avoid big icons/colors.
+Rejected/partial lines stay visible with affected article/SKU/cluster/qty and human-readable Ozon reason.
 
-Rejected/partial option:
-
-```text
-18 сентября · ПВЗ
-34 SKU принято
-2 SKU не принято Ozon
-
-40750 · Казань
-<human-readable Ozon reason>
-
-[Показать детали]
-```
-
-Rejections remain in context and are never silently removed.
-
-## 13. Error/state vocabulary
-
-User-facing distinctions must follow backend causal states:
+Causal states stay distinct:
 
 ```text
 Ozon отклонил состав
-Нет доступных окон в выбранный период
-Ozon временно ограничил частоту проверок
+Нет доступных окон
+Ozon ограничил частоту проверок
 Не удалось связаться с Ozon
 Результат создания временного черновика неизвестен
 Не подходит по локальному ограничению
+Склад отправления недоступен/не выбран
+Точка отгрузки устарела/не разрешена
 ```
 
-Do not turn network/service failure into product rejection.
+Network failure must never render as product rejection.
 
-## 14. PVZ copy
+## 13. PVZ and placement-zone wording
 
-Before Ozon validation:
+PVZ 1000 L is a **candidate-total estimated item-volume** pre-check.
+
+Before live validation:
 
 ```text
 Предварительно подходит для ПВЗ
 ```
 
-After successful Ozon draft/timeslot validation:
+Passing does not prove actual packed volume, box count, per-box weight or exact point acceptance.
+
+After successful temporary draft/timeslot validation:
 
 ```text
 Состав принят Ozon · окно найдено
 ```
 
-Still keep operational note when relevant:
+Still show manual reminder where relevant:
 
 ```text
 Перед фактической отгрузкой проверьте упаковку, число/вес коробов
 и требования выбранной точки в Ozon.
 ```
 
-Do not claim the local item-volume calculation validates final packed cargo.
-
-## 15. Manual export
-
-Every validated exportable manifest exposes one action:
+Placement zones are backend-owned evidence. If an option contains multiple zones, show zone composition and manual guidance such as:
 
 ```text
-Скачать шаблоны Ozon
+При упаковке разделите грузоместа по зонам размещения
 ```
 
-One cluster → XLSX. Multiple clusters → one ZIP containing per-cluster XLSX.
+Frontend never recomputes zone compatibility or invents boxes/pallets.
 
-Export errors stay local to the chosen manifest; the validated schedule remains visible.
+## 14. Export UX
 
-## 16. Async resilience
-
-All API operations follow the existing production behavior contract:
-
-- stable control geometry while busy;
-- duplicate submit prevention;
-- previous successful data/analysis/validation stays visible during refresh;
-- stale-response protection by request/run ID;
-- cancel superseded local search immediately;
-- persistent correction-oriented errors for failures needing action;
-- toasts may acknowledge but never hold the only error detail;
-- no browser `alert/confirm/prompt`.
-
-## 17. Accessibility / responsive
-
-Target WCAG 2.2 AA.
-
-Use native semantic buttons, labels, inputs, checkboxes and tables where appropriate. All icon-only controls have accessible names. Focus remains visible.
-
-At 200% zoom/narrow desktop:
+Only backend-produced exportable accepted/ranked options expose:
 
 ```text
-article selector
-↓
-selected article detail
+[Скачать шаблоны Ozon]
 ```
 
-rather than squeezing two unusable columns.
+One cluster → XLSX. Multiple → ZIP. Browser never generates or repairs quantities.
 
-Shipment intent fields stack logically. Manifest actions remain reachable. Root page must not use `overflow:hidden` to fake fit.
+Backend identity conflicts disable export and show the blocking reason while keeping the validated option visible.
 
-## 18. Root contract migration
+## 15. Async/freshness ownership
 
-PR-E must update root `DESIGN.md` and `UX-CONTRACT.md` in the same changeset as runtime UI so they become the durable post-migration contracts.
-
-Until then:
-
-- this file is authoritative for target API-first Plan/Data behavior;
-- root docs remain evidence of currently shipped visual/runtime patterns;
-- archived 2026-09-08 UI docs are not implementation sources.
-
-## 19. UI acceptance
-
-Using realistic data (100+ articles, 20+ clusters):
+Separate state ownership:
 
 ```text
-vault setup/unlock/lock is keyboard usable and never reveals saved API key
-API sync status and source mode are always obvious
-manual fallback is explicit and never silently mixed with API
-article appears once in selector, not once per cluster
-search 40750 isolates one selected context immediately
-cluster table has local overflow, not page-wide horizontal sprawl
-shipment form requires concrete hand-off point for cross-dock
-editing shipment intent does not auto-call backend
-Find variants explains temporary drafts and never claims real supply creation
-candidate vs Ozon-checked states are visibly distinct
-Ozon rejection/no-slot/rate-limit/network errors remain distinct
-previous successful result stays visible when stale/refresh fails
-200% zoom remains operable
-Flow/Economics/Data sibling routes remain usable after shared CSS changes
+sourceDirty / source freshness
+analysisDirty / analysis freshness
+shipmentDirty / validation freshness
 ```
+
+Rules:
+
+- source refresh invalidates downstream analysis/shipment;
+- horizon/inbound changes invalidate analysis/shipment but do not auto-sync;
+- shipment scope/date/method/seller warehouse/handoff changes invalidate shipment only;
+- no checkbox/date edit triggers network automatically;
+- duplicate submits are prevented;
+- stale responses cannot replace newer state;
+- previous successful result remains visible during refresh and recoverable failure.
+
+## 16. Shared behavior owners
+
+Reuse/extend shared project owners rather than screen-local copies. Target recurring owners include:
+
+```text
+SearchField
+Notice/status
+ProgressPanel
+DataTable/table framing
+FormState
+FlowView
+OzonConnectionPanel
+CredentialVaultDialog
+SourceModePanel
+ArticlePlanSelector
+PlanProductWorkspace
+ShipmentIntentForm
+SellerWarehouseSelector
+HandoffPointSelector
+ShipmentManifest
+OzonValidationStatus
+```
+
+Native semantic buttons/labels/checkboxes/tables are preferred when sufficient. No browser `alert`, `confirm` or `prompt` for product flows.
+
+All enabled interactive controls need default/hover/focus-visible/active/disabled/busy/error behavior. Busy state keeps stable geometry.
+
+## 17. PR-E completion gate
+
+PR-E must make runtime, `DESIGN.md` and `UX-CONTRACT.md` agree on:
+
+```text
+API-first Data hierarchy
+article-first SKU-backed Plan
+seller warehouse resolution
+remote HandoffPointSelector
+shipment intent / candidate / validation lifecycle
+candidate-total PVZ wording
+zone composition/manual packing note
+manual backend XLSX/ZIP export
+no selected-network future workflow
+no real supply creation
+```
+
+After PR-E, root docs are the durable shipped contract and must contain no transitional/superseded target semantics.

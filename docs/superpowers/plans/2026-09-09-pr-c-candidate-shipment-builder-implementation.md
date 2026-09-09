@@ -1,38 +1,27 @@
 # PR-C Candidate Shipment Builder Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Implement task-by-task with TDD. Read `AGENTS.md` and the canonical API-first shipment design first.
 
-**Goal:** Build a pure deterministic, bounded set of shipment candidates from the immutable `ShippablePlan` and user shipment intent, without calling Ozon or claiming timeslot availability.
+**Goal:** build a pure deterministic bounded set of local shipment candidates from immutable ShippablePlan + user shipment intent, without calling Ozon or claiming timeslot availability.
 
-**Architecture:** A new `backend/shipment` domain owns scenario, method rules, hand-off point selection and candidate grouping. The builder filters the already-calculated all-cluster `ShippablePlan`, applies local hard rules/whole-pack/volume/zone checks and emits a small ordered candidate set for PR-API3 to validate externally. No demand, seller-stock or route-economic reallocation occurs.
+## Global invariants
 
-**Tech Stack:** Python 3.13.14, frozen dataclasses, Decimal, pytest; no network and no new dependency.
-
-**Spec:** `docs/superpowers/specs/2026-09-09-ozon-api-first-shipment-planner-design.md`
-
-## Global Constraints
-
-- Selected clusters are filter-only over `ShippablePlan`.
-- Do not move quantity from unselected to selected clusters.
-- Do not call Ozon from the candidate builder.
+- Selected clusters are filter-only over ShippablePlan.
+- No demand/seller-stock/economics reallocation.
 - DIRECT hard max = 1 cluster.
-- Multi-cluster cross-dock hard max = 20 clusters; user max may only lower this.
-- Cross-dock requires at least one concrete selected Ozon hand-off point ID.
-- Local PVZ/item-volume checks are preliminary only.
-- No RouteCostIndex or seller→Ozon cost optimization.
-- Every candidate keeps complete-pack quantities.
-- Candidate generation is deterministic and bounded; no subset brute force.
+- Multi-cluster cross-dock hard max = 20 clusters.
+- Cross-dock requires a resolved handoff point and a resolved active seller warehouse.
+- Seller warehouses come from current API source snapshot; handoff points come from process-memory HandoffPointStore.
+- PVZ 1000 L is candidate-total estimated item volume, never per-line.
+- Preserve exact `placement_zones` into candidates.
+- Candidate generation is deterministic/bounded; no cluster-subset brute force.
+- No network call in this PR.
 
 ---
 
-### Task 1: Define shipment intent, method and candidate contracts
+## Task 1 — shipment intent and candidate contracts
 
-**Files:**
-- Create: `backend/shipment/__init__.py`
-- Create: `backend/shipment/contracts.py`
-- Create: `tests/shipment/test_contracts.py`
-
-**Interfaces:**
+Create `backend/shipment/contracts.py` + tests.
 
 ```python
 class ShipmentMethod(str, Enum):
@@ -48,6 +37,7 @@ class ShipmentScenario:
     allowed_methods: tuple[ShipmentMethod, ...]
     preferred_clusters_per_shipment: int
     max_clusters_per_shipment: int
+    seller_warehouse_id: int | None
     selected_handoff_point_ids: tuple[int, ...]
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +45,8 @@ class MethodRule:
     method: ShipmentMethod
     hard_max_clusters: int
     requires_handoff_point: bool
-    preliminary_max_item_volume_l: Decimal | None
+    requires_seller_warehouse: bool
+    preliminary_max_shipment_item_volume_l: Decimal | None
 
 @dataclass(frozen=True, slots=True)
 class CandidateAssignment:
@@ -67,12 +58,15 @@ class CandidateAssignment:
     unit_volume_l: Decimal
     total_volume_l: Decimal
     placement_zone_kind: str
+    placement_zones: tuple[str, ...]
 
 @dataclass(frozen=True, slots=True)
 class CandidateShipment:
     candidate_id: str
     method: ShipmentMethod
+    seller_warehouse_id: int | None
     handoff_point_id: int | None
+    handoff_warehouse_type: str | None
     cluster_ids: tuple[str, ...]
     assignments: tuple[CandidateAssignment, ...]
     total_qty: int
@@ -80,206 +74,181 @@ class CandidateShipment:
     reason_codes: tuple[str, ...]
 ```
 
-- [ ] **Step 1: Add validation tests for nonempty selected clusters/methods, date order, positive preferred/max cluster counts, preferred≤max, unique IDs and valid hand-off IDs.**
-- [ ] **Step 2: Add method-rule tests proving DIRECT=1 and cross-dock≤20 are backend hard rules.**
-- [ ] **Step 3: Run RED, implement contracts and default rule registry, run GREEN.**
+Validate unique IDs, dates, positive preferred/max counts, preferred≤max and bool-as-int rejection.
 
-```bash
-python -m pytest tests/shipment/test_contracts.py -q
-```
+Default rules:
 
-- [ ] **Step 4: Commit.**
-
-```bash
-git add backend/shipment tests/shipment/test_contracts.py
-git commit -m "feat: define shipment candidate contracts"
+```text
+DIRECT: hard_max_clusters=1, no crossdock seller/handoff requirement
+PVZ_CROSSDOCK: hard_max_clusters=20, seller warehouse + handoff required, max item volume=1000 L
+SC_CROSSDOCK: hard_max_clusters=20, seller warehouse + handoff required
 ```
 
 ---
 
-### Task 2: Build filter-only selected shipment scope
+## Task 2 — filter-only shipment scope
 
-**Files:**
-- Create: `backend/shipment/scope.py`
-- Create: `tests/shipment/test_scope.py`
+Create pure `select_shipment_scope(plan, selected_cluster_ids)`.
 
-**Interfaces:**
+Tests:
+- selecting Moscow+Perm returns exact original line quantities;
+- Kazan disappears without redistribution;
+- selected lines never increase;
+- no positive selected scope → `EMPTY_SHIPMENT_SCOPE`.
 
-```python
-def select_shipment_scope(plan: ShippablePlan, selected_cluster_ids: Iterable[str]) -> tuple[ShippableLine, ...]: ...
+---
+
+## Task 3 — resolve seller warehouse
+
+Create `backend/shipment/seller_warehouse.py` + tests.
+
+Resolution inputs:
+- scenario `seller_warehouse_id`;
+- current `OzonSourceSnapshot.seller_warehouses`.
+
+Rules for cross-dock:
+
+```text
+0 active warehouses → SELLER_WAREHOUSE_UNAVAILABLE
+1 active + scenario None → auto-resolve that one
+>1 active + scenario None → SELLER_WAREHOUSE_REQUIRED
+explicit unknown/inactive → SELLER_WAREHOUSE_INVALID
+explicit active → use it
 ```
 
-- [ ] **Step 1: Add three-cluster fixture and assert selecting Moscow+Perm returns exact original line quantities and no Kazan lines.**
-- [ ] **Step 2: Assert no selected line quantity increases relative to the all-cluster plan and total seller-stock allocation is not recomputed.**
-- [ ] **Step 3: Add empty/no-positive scope validation with stable reason `EMPTY_SHIPMENT_SCOPE`.**
-- [ ] **Step 4: Run RED, implement simple identity filter, run GREEN and commit.**
+DIRECT returns no cross-dock seller warehouse and ignores the field for draft purposes.
 
-```bash
-python -m pytest tests/shipment/test_scope.py -q
-git add backend/shipment/scope.py tests/shipment/test_scope.py
-git commit -m "feat: select filter-only shipment scope"
+Stable resolved record retains ID/name/address summary only.
+
+---
+
+## Task 4 — resolve handoff points from HandoffPointStore
+
+Create `backend/shipment/handoff.py` + tests.
+
+Do not read handoff points from source snapshot.
+
+Resolve scenario IDs against PR-API2 process-memory store and preserve user priority order.
+
+Rules:
+- duplicate IDs rejected/normalized deterministically;
+- unknown/stale ID → `HANDOFF_POINT_UNRESOLVED`;
+- cross-dock with none → `HANDOFF_POINT_REQUIRED`;
+- DIRECT ignores cross-dock point requirement;
+- retain exact Ozon `warehouse_type` evidence for later draft payload.
+
+No free-form frontend ID becomes trusted merely because it is syntactically integer.
+
+---
+
+## Task 5 — local compatibility rules
+
+Create `backend/shipment/rules.py` + tests.
+
+Line-level rules may inspect placement-zone evidence, but PVZ volume is checked only after candidate aggregation.
+
+Conservative zone behavior:
+- known compatible sortable/non-sortable evidence may remain candidate-eligible;
+- KGT/UNKNOWN/MULTIPLE follows canonical conservative method rules;
+- unknown evidence is not rewritten from dimensions;
+- multiple zones remain preserved for later manual packing guidance.
+
+Stable reason vocabulary includes e.g.:
+
+```text
+METHOD_CLUSTER_LIMIT
+PVZ_PRELIMINARY_VOLUME_LIMIT
+PLACEMENT_ZONE_UNSUPPORTED
+PLACEMENT_ZONE_INCOMPLETE
+SELLER_WAREHOUSE_REQUIRED
+SELLER_WAREHOUSE_INVALID
+HANDOFF_POINT_REQUIRED
+HANDOFF_POINT_UNRESOLVED
 ```
 
 ---
 
-### Task 3: Resolve selected hand-off points against API catalog
+## Task 6 — deterministic bounded grouping
 
-**Files:**
-- Create: `backend/shipment/handoff.py`
-- Create: `tests/shipment/test_handoff.py`
+Create `backend/shipment/candidates.py` + tests.
 
-**Interfaces:**
-
-```python
-def resolve_handoff_points(
-    selected_ids: Iterable[int],
-    catalog: Iterable[HandoffPoint],
-) -> tuple[HandoffPoint, ...]: ...
-```
-
-- [ ] **Step 1: Add tests for selected point resolution, unknown/stale ID, duplicate IDs and stable user order.**
-- [ ] **Step 2: Prove cross-dock candidate generation cannot proceed without a resolved compatible hand-off point; DIRECT ignores cross-dock point requirement.**
-- [ ] **Step 3: Run RED, implement, run GREEN and commit.**
-
-```bash
-python -m pytest tests/shipment/test_handoff.py -q
-git add backend/shipment/handoff.py tests/shipment/test_handoff.py
-git commit -m "feat: resolve Ozon handoff points"
-```
-
----
-
-### Task 4: Implement deterministic local candidate compatibility
-
-**Files:**
-- Create: `backend/shipment/rules.py`
-- Create: `tests/shipment/test_rules.py`
-
-**Interfaces:**
-
-```python
-@dataclass(frozen=True, slots=True)
-class LocalCompatibility:
-    compatible: bool
-    reason_codes: tuple[str, ...]
-
-
-def check_local_compatibility(line: ShippableLine, method: ShipmentMethod, rule: MethodRule) -> LocalCompatibility: ...
-```
-
-- [ ] **Step 1: Add DIRECT tests: one destination cluster only, no cross-dock handoff dependency.**
-- [ ] **Step 2: Add PVZ preliminary tests: known sortable/non-sortable evidence may pass local pre-check; KGT/UNKNOWN/MULTIPLE follows the canonical conservative rule and never displays as confirmed acceptance.**
-- [ ] **Step 3: Add item-volume test where candidate clearly exceeds configured planning ceiling and is locally blocked; passing ceiling yields only preliminary compatibility.**
-- [ ] **Step 4: Add exact reason codes (`METHOD_CLUSTER_LIMIT`, `PVZ_PRELIMINARY_VOLUME_LIMIT`, `PLACEMENT_ZONE_UNSUPPORTED`, etc.).**
-- [ ] **Step 5: Run RED, implement pure rules, run GREEN and commit.**
-
-```bash
-python -m pytest tests/shipment/test_rules.py -q
-git add backend/shipment/rules.py tests/shipment/test_rules.py
-git commit -m "feat: add local shipment compatibility rules"
-```
-
----
-
-### Task 5: Implement bounded candidate grouping
-
-**Files:**
-- Create: `backend/shipment/candidates.py`
-- Modify: `backend/shipment/__init__.py`
-- Create: `tests/shipment/test_candidates.py`
-
-**Public interface:**
+Public interface:
 
 ```python
 def build_candidate_shipments(
     *,
     plan: ShippablePlan,
     scenario: ShipmentScenario,
-    handoff_points: Iterable[HandoffPoint],
+    seller_warehouses,
+    handoff_store,
     max_candidates: int = 12,
 ) -> tuple[CandidateShipment, ...]: ...
 ```
 
-Deterministic strategy:
+Strategy:
 
 ```text
-1. filter selected positive ShippableLines only
-2. derive urgency key from existing current_weekly_rate/FBO/inbound evidence where complete
-3. order clusters urgent first; stable ID tie-break
-4. for each allowed method in stable scenario order, pack clusters greedily up to min(user max, method hard max)
-5. aim for preferred cluster count before opening another candidate when feasible
-6. respect preliminary item-volume/zone rules
-7. cross-dock candidates fan out only across explicitly selected hand-off points in user priority order
-8. stop at max_candidates; never enumerate subsets
+1 filter selected positive ShippableLines
+2 resolve seller warehouse/handoff requirements per method
+3 derive urgency from existing analytical evidence only
+4 stable-sort clusters urgent first + stable ID tie-break
+5 greedily group up to min(user max, hard max)
+6 preserve exact line whole-pack quantities
+7 compute candidate total volume
+8 if PVZ candidate total >1000 L, split/block deterministically; never pass because each line <1000
+9 apply placement-zone method rules
+10 fan out across selected handoff points only in user priority order
+11 stop at max_candidates; never enumerate subsets
 ```
 
-- [ ] **Step 1: Add deterministic fixture and assert exact candidate IDs/order for repeated runs. Candidate ID is a stable hash/fingerprint of method, handoff, cluster IDs and assignment quantities—not Python object identity.**
-- [ ] **Step 2: Add cluster-limit tests for DIRECT=1, user max 5 and hard cross-dock 20.**
-- [ ] **Step 3: Add split test where volume forces two whole-pack candidates without modifying line quantity.**
-- [ ] **Step 4: Add hand-off priority fixture with two selected points and prove output stays bounded rather than multiplying every combinatorial option.**
-- [ ] **Step 5: Add max-candidates fixture with 20+ clusters and assert builder stops deterministically at the configured bound.**
-- [ ] **Step 6: Run RED, implement greedy bounded builder, run GREEN.**
+Candidate ID is stable fingerprint of immutable plan identity + method + seller warehouse + handoff + cluster IDs + SKU quantities.
 
-```bash
-python -m pytest tests/shipment/test_candidates.py -q
-```
-
-- [ ] **Step 7: Commit.**
-
-```bash
-git add backend/shipment/candidates.py backend/shipment/__init__.py tests/shipment/test_candidates.py
-git commit -m "feat: build bounded shipment candidates"
-```
+Tests:
+- repeat-run exact IDs/order;
+- DIRECT=1;
+- crossdock max 20 and user max lowering it;
+- every line <1000 L but candidate aggregate >1000 L is blocked/split;
+- whole-pack quantity conservation;
+- multiple placement zones survive in assignments;
+- two handoff points remain bounded;
+- 20+ clusters stop at max candidates.
 
 ---
 
-### Task 6: Add local candidate endpoint without external validation
+## Task 7 — local candidate API
 
-**Files:**
-- Modify: `backend/api.py`
-- Create: `backend/shipment/wire.py`
-- Create: `tests/api/test_shipment_candidates.py`
+Modify `backend/api.py`, create/modify `backend/shipment/wire.py`, add `tests/api/test_shipment_candidates.py`.
 
-**Endpoint:**
+Endpoint:
 
 ```text
 POST /api/shipment/candidates
 ```
 
-Request contains immutable `analysis_snapshot_id`/`ShippablePlan` identity plus `ShipmentScenario`. Backend resolves hand-off IDs from the source snapshot catalog.
+Request contains immutable analysis/ShippablePlan identity + ShipmentScenario.
 
-- [ ] **Step 1: Add strict request parsing tests rejecting unknown methods, bool-as-int, duplicate IDs, stale source/snapshot identity and cross-dock with no selected hand-off point.**
-- [ ] **Step 2: Add positive API fixture and assert endpoint returns local candidates only; response has no `timeslot`, `accepted_by_ozon` or booked language.**
-- [ ] **Step 3: Add no-network guard proving this endpoint never invokes OzonClient.**
-- [ ] **Step 4: Run RED, implement endpoint, run GREEN and commit.**
+Backend:
+- resolves current source snapshot seller warehouses;
+- resolves handoff IDs from HandoffPointStore;
+- validates `analysis_as_of`/snapshot identity;
+- performs no OzonClient call.
 
-```bash
-python -m pytest tests/api/test_shipment_candidates.py -q
-git add backend/api.py backend/shipment/wire.py tests/api/test_shipment_candidates.py
-git commit -m "feat: expose local shipment candidates"
-```
+Response contains local candidates only; no `timeslot`, `accepted_by_ozon`, `booked` or real-supply language.
+
+Add no-network guard.
 
 ---
 
-### Task 7: PR-C regression and scale gate
+## Task 8 — regression/scale gate
 
-- [ ] **Step 1: Run shipment candidate suites.**
+Run:
 
 ```bash
 python -m pytest tests/shipment tests/api/test_shipment_candidates.py -q
-```
-
-- [ ] **Step 2: Run realistic 100+ SKU / 20+ cluster fixture and assert bounded candidate count/time without subset explosion.**
-- [ ] **Step 3: Run analysis/Product Completion regressions.**
-
-```bash
 python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_acceptance.py -q
-```
-
-- [ ] **Step 4: Run full suite.**
-
-```bash
 python -m pytest -q
 ```
 
-Acceptance: candidate generation is pure, bounded, deterministic, filter-only and honest about being unvalidated by Ozon.
+Also run a realistic 100+ SKU / 20+ cluster fixture and assert bounded candidate count/time.
+
+Acceptance: candidate generation is pure, deterministic, filter-only, whole-pack preserving, seller/handoff identities are resolved before external validation, PVZ 1000 L applies to candidate total, and placement-zone evidence remains available for manifests.

@@ -1,42 +1,32 @@
 # PR-E API-First Article Plan & Shipment UI Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `frontend-design`, `frontend-design-premium`, and superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Execute task-by-task with TDD and browser review checkpoints.
+> **Required skills:** `frontend-design`, `frontend-design-premium`, plus Superpowers execution workflow. Implement task-by-task with tests and browser review checkpoints.
 
-**Goal:** Make Ozon API the primary `Данные` workflow, replace the wide Plan table with article-first master/detail, and expose shipment intent/live Ozon validation/manifests without changing the established visual identity or historical Flow.
+**Goal:** make Ozon API the primary `Данные` workflow, replace the wide Plan table with SKU-backed article-first master/detail, and expose shipment intent/live Ozon validation/manifests without changing the established visual identity or historical Flow.
 
-**Architecture:** Keep the four-route vanilla frontend and existing shared primitives. `Данные` gets one canonical Ozon connection/source panel plus explicit manual fallback. `План` gets `Товары | Отгрузки`; Products consumes backend analysis/ShippablePlan presentation contracts, Shipments edits local intent and calls candidate→validate→plan→export endpoints only on explicit actions. Root `DESIGN.md` and `UX-CONTRACT.md` are migrated in the same changeset so shipped UI and durable contracts finish aligned.
+**Stack:** committed vanilla HTML/CSS/JavaScript + existing FastAPI. No npm/framework/bundler/new frontend dependency.
 
-**Tech Stack:** committed vanilla HTML/CSS/JavaScript, existing FastAPI endpoints, pytest frontend/static/browser-model tests; no npm/framework/bundler/new frontend dependency.
+## Global invariants
 
-**Specs:**
-- `docs/superpowers/specs/2026-09-09-ozon-api-first-shipment-planner-design.md`
-- `docs/superpowers/specs/2026-09-09-api-first-plan-ui-design.md`
-
-## Global Constraints
-
-- Preserve top-level `План | Потоки спроса | Экономика | Данные`.
-- Do not change established palette/type/tokens except where root docs/runtime already drift and the same PR reconciles them.
-- Frontend never receives stored API key or password.
-- API-first and FILES fallback are explicit modes; no silent fallback/mixing.
-- One article selector item = one SKU/article, never one per cluster.
-- Historical `Потоки спроса` remains unchanged.
-- Frontend does not calculate demand, pack allocation, candidate grouping, Ozon acceptance, urgency, ranking or XLSX.
-- Shipment field edits are draft-only; no automatic external calls.
-- `Найти варианты в Ozon` explains temporary drafts and never claims a real supply is created/booked.
-- Previous successful data/analysis/shipment result stays visible through stale/loading/failure states.
-- Target WCAG 2.2 AA and 200% zoom.
-- PR-E must update root `DESIGN.md` and `UX-CONTRACT.md` to final canonical runtime behavior.
+- Top-level routes remain `План | Потоки спроса | Экономика | Данные`.
+- API and FILES are explicit non-mixing modes.
+- Frontend never receives saved API key/password.
+- SKU is selector/state identity; article is primary display label.
+- Shipment edits are local draft state only; no automatic external calls.
+- Cross-dock requires resolved seller warehouse + resolved remote-search handoff point.
+- `Найти варианты в Ozon` may create temporary drafts but never real supply requests.
+- Frontend never calculates demand, whole-pack allocation, candidate grouping, Ozon acceptance, ranking or XLSX.
+- Preserve previous successful result during refresh/failure.
+- WCAG 2.2 AA; 200% zoom operable.
+- Same PR updates runtime + root `DESIGN.md` + root `UX-CONTRACT.md` to final post-migration truth.
 
 ---
 
-### Task 1: Add canonical Ozon connection/vault frontend state
+## Task 1 — canonical API connection/vault state
 
-**Files:**
-- Modify: `frontend/assets/js/core.js`
-- Modify: `tests/frontend/test_ui_state.py`
-- Create: `tests/frontend/test_ozon_connection.py`
+Modify `frontend/assets/js/core.js`; tests in `tests/frontend/test_ui_state.py` / `test_ozon_connection.py`.
 
-**State contract:**
+State may include:
 
 ```javascript
 ozonConnection: {
@@ -48,8 +38,9 @@ ozonConnection: {
   error: null
 },
 source: {
-  mode: 'api',             // api | files
+  mode: 'api',
   snapshotId: null,
+  sourceAsOf: null,
   syncedAt: null,
   syncBusy: false,
   syncError: null,
@@ -57,81 +48,73 @@ source: {
 }
 ```
 
-- [ ] **Step 1: Add initial/reconcile tests for configured/locked/unlocked states; no secret field exists in long-lived app state after setup submit.**
-- [ ] **Step 2: Add stale-response/run-sequence state for status/sync operations.**
-- [ ] **Step 3: Add explicit source-mode transition helper: switching to files requires deliberate action; API error alone never changes mode.**
-- [ ] **Step 4: Run RED, implement state helpers, run GREEN and commit.**
+No secret field exists in long-lived app state.
 
-```bash
-python -m pytest tests/frontend/test_ui_state.py tests/frontend/test_ozon_connection.py -q
-git add frontend/assets/js/core.js tests/frontend/test_ui_state.py tests/frontend/test_ozon_connection.py
-git commit -m "feat: add Ozon connection UI state"
-```
+Add stale-response/run-sequence ownership and explicit API→FILES transition helper; API error alone never changes mode.
 
 ---
 
-### Task 2: Render first-setup/unlock/lock Ozon connection UI in `Данные`
+## Task 2 — render Ozon connection in `Данные`
 
-**Files:**
-- Modify: `frontend/assets/js/app.js`
-- Modify: `frontend/assets/css/app.css`
-- Modify: `frontend/index.html` only if stable form containers are needed.
-- Modify: `tests/frontend/test_ozon_connection.py`
+Render semantic setup/unlock/lock forms using existing tokens/primitives.
 
-- [ ] **Step 1: Add semantic form tests for Client-Id, masked API-Key, vault password, confirmation and real labels. Show/hide API key exists only for entering/replacing a new key.**
-- [ ] **Step 2: Add validation tests: password mismatch, empty fields, inline error association, no browser validation bubble/alert and stable busy geometry.**
-- [ ] **Step 3: Add locked-after-restart view requiring password only; wrong password preserves entry and shows `Не удалось разблокировать хранилище...`.**
-- [ ] **Step 4: Add unlocked connection panel with masked Client-Id suffix and `Обновить данные`, `Заблокировать`, `Заменить подключение`. Never render saved API key.**
-- [ ] **Step 5: Wire setup/unlock/lock/test localhost endpoints with stale-response protection and persistent failure recovery.**
-- [ ] **Step 6: Use existing tokens/components; no crypto jargon or new visual palette.**
-- [ ] **Step 7: Run focused tests and commit.**
+First setup fields:
+- Client-Id;
+- masked API-Key with temporary show/hide;
+- vault password + confirmation.
 
-```bash
-python -m pytest tests/frontend/test_ozon_connection.py -q
-git add frontend/assets/js/app.js frontend/assets/css/app.css frontend/index.html tests/frontend/test_ozon_connection.py
-git commit -m "feat: manage Ozon connection in Data view"
+After save, never render saved API key. Restart locked view asks only vault password.
+
+Unlocked panel shows masked Client-Id suffix and actions:
+
+```text
+Обновить данные
+Заблокировать
+Заменить подключение
 ```
+
+No crypto jargon in normal UI. Errors are persistent/correction-oriented, labels are real, no browser validation bubbles/`alert()`.
 
 ---
 
-### Task 3: Make API sync primary and manual files an explicit fallback
+## Task 3 — API-first source hierarchy and explicit FILES fallback
 
-**Files:**
-- Modify: `frontend/assets/js/core.js`
-- Modify: `frontend/assets/js/app.js`
-- Modify: `frontend/assets/css/app.css`
-- Modify: `tests/frontend/test_analysis_submit.py`
-- Create/Modify: `tests/frontend/test_data_quality.py`
+In `Данные`, render business-domain freshness rows:
 
-- [ ] **Step 1: Render API-first Data hierarchy: connection status → Ozon domain freshness rows → local Unitka/pack inputs → `Использовать ручной импорт`. Existing upload controls stay hidden until fallback mode is explicitly entered.**
-- [ ] **Step 2: Add fallback disclosure copy proving `Данные API и файлов в одном расчёте не смешиваются`; switching mode is user action, not an error fallback.**
-- [ ] **Step 3: Add sync progress with stable business stages and preserve previous snapshot on failed refresh; show `sourceSyncedAt`, not analysis/shipment timestamps as one value.**
-- [ ] **Step 4: Extend analysis request builder: API mode sends source snapshot ID plus local economics/pack files/settings; FILES mode keeps legacy multipart; never includes both source families.**
-- [ ] **Step 5: Add stale ownership tests: source refresh invalidates analysis/shipment; analysis setting change does not auto-sync; shipment intent change does neither.**
-- [ ] **Step 6: Run tests and commit.**
-
-```bash
-python -m pytest tests/frontend/test_analysis_submit.py tests/frontend/test_data_quality.py tests/frontend/test_ui_state.py -q
-git add frontend/assets/js/core.js frontend/assets/js/app.js frontend/assets/css/app.css tests/frontend
-git commit -m "feat: make Ozon API the primary data source"
+```text
+Заказы / история
+FBO остатки
+Поставки в пути
+Остаток продавца
+Кластеры
+Склады отправления продавца
+Зоны размещения
 ```
+
+Show source basis (`sourceAsOf`) read-only in API mode. Do not expose everyday control for backend 12-week/backfill history policy.
+
+Keep seller-local Unitka/pack inputs separate.
+
+Manual files are hidden/secondary until user explicitly chooses `Использовать ручной импорт`, with disclosure that API/file data are not mixed.
+
+Failed refresh preserves prior source snapshot and never silently switches mode.
+
+Extend analysis request builder:
+- API mode sends source snapshot identity + local seller inputs/settings;
+- FILES mode keeps legacy file bundle;
+- never both;
+- API mode does not send arbitrary historical `as_of`.
 
 ---
 
-### Task 4: Replace Plan global row state with article-first context
+## Task 4 — article-first Plan state
 
-**Files:**
-- Modify: `frontend/assets/js/core.js`
-- Modify: `tests/frontend/test_ui_state.py`
-- Modify/Create: `tests/frontend/test_plan_view.py`
-
-**State:**
+Canonical state:
 
 ```javascript
 planView: {
-  subview: 'products',      // products | shipments
+  subview: 'products',
   articleQuery: '',
-  articleFilter: 'all',
   selectedSku: null,
   clusterSort: {key:'cluster', direction:'asc'},
   clusterPage: 1,
@@ -139,52 +122,46 @@ planView: {
 }
 ```
 
-- [ ] **Step 1: Add `buildArticlePlanItems(snapshot)` tests: 24 cluster decision rows for article 40750 become exactly one selector item.**
-- [ ] **Step 2: Add selection reconciliation: keep prior SKU if still present; else first visible stable article; no item→null.**
-- [ ] **Step 3: Add local search/filter helper matching article/SKU/name; clear is immediate and restores focus.**
-- [ ] **Step 4: Add `products|shipments` subview helper while top-level route remains `plan`.**
-- [ ] **Step 5: Run RED, implement model/state helpers, run GREEN and commit.**
+`buildArticlePlanItems` groups cluster rows under SKU identity, not article alone.
 
-```bash
-python -m pytest tests/frontend/test_ui_state.py tests/frontend/test_plan_view.py -q
-git add frontend/assets/js/core.js tests/frontend/test_ui_state.py tests/frontend/test_plan_view.py
-git commit -m "feat: add article-first Plan state"
-```
+If one article maps to multiple SKUs, render separate selector items and identity diagnostic.
+
+Selection reconciliation keeps prior SKU if still available; otherwise first visible stable SKU.
+
+Local search matches article/SKU/name; explicit clear restores focus.
 
 ---
 
-### Task 5: Render article selector, persistent detail and focused cluster table
+## Task 5 — render product selector/workspace
 
-**Files:**
-- Modify: `frontend/assets/js/app.js`
-- Modify: `frontend/assets/css/app.css`
-- Modify: `tests/frontend/test_plan_view.py`
+Left bounded selector item:
 
-- [ ] **Step 1: Render bounded left selector: `article · short name`, SKU secondary, `К поставке N · M кластеров`, at most one concise warning. Each item is a semantic button with selected state.**
-- [ ] **Step 2: Render selected product header once: article/full name/SKU, pack multiple, resolved seller stock, whole-pack available, unit volume, placement-zone quality, source freshness. Unknown=`Не рассчитано`.**
-- [ ] **Step 3: Render decision line. If exact Ozon comparison is absent in API mode, show `Ozon: нет сопоставимого API-сигнала` instead of zero/substitute.**
-- [ ] **Step 4: Render only canonical selected-SKU cluster columns: `Кластер | FBO | В пути | Ozon | Потребность | Аналитический план | Кратность | К поставке | Объём | Зона | Статус`.**
-- [ ] **Step 5: Show rounding explicitly (`17 → 18`, `кратность 6`) without warning tone unless a real constraint exists. Remove repeated product identity and default `Открыть детали` per cluster.**
-- [ ] **Step 6: Desktop bounded selector + flexible detail; at 200% zoom/narrow width stack selector above detail; cluster table owns overflow, never root page.**
-- [ ] **Step 7: Run tests and commit.**
-
-```bash
-python -m pytest tests/frontend/test_plan_view.py -q
-git add frontend/assets/js/app.js frontend/assets/css/app.css tests/frontend/test_plan_view.py
-git commit -m "feat: render article-first Plan workspace"
+```text
+article · short name
+SKU secondary
+К поставке N · M кластеров
 ```
+
+Selected header shows identity once: article/name/SKU, pack multiple, resolved seller stock, whole-pack available, unit volume, placement-zone quality, source freshness.
+
+Unknown = `Не рассчитано`.
+
+Decision line stays `Ozon → Наша потребность → План`; absent exact Ozon signal is explicit, never zero/substitute.
+
+Selected-SKU table columns:
+
+```text
+Кластер | FBO | В пути | Ozon | Потребность | Аналитический план |
+Кратность | К поставке | Объём | Зона | Статус
+```
+
+At 200% zoom/narrow width, selector stacks above detail; table owns horizontal overflow.
 
 ---
 
-### Task 6: Add shipment intent and hand-off point selector
+## Task 6 — shipment intent state and cluster initialization
 
-**Files:**
-- Modify: `frontend/assets/js/core.js`
-- Modify: `frontend/assets/js/app.js`
-- Modify: `frontend/assets/css/app.css`
-- Create: `tests/frontend/test_shipment_view.py`
-
-**State:**
+State:
 
 ```javascript
 shipmentView: {
@@ -192,6 +169,7 @@ shipmentView: {
   dateFrom: null,
   dateTo: null,
   allowedMethods: [],
+  sellerWarehouseId: null,
   selectedHandoffPointIds: [],
   preferredClusters: 3,
   maxClusters: 5,
@@ -204,136 +182,178 @@ shipmentView: {
 }
 ```
 
-- [ ] **Step 1: Add first-use cluster behavior: if no prior explicit selection, select all positive complete ShippablePlan clusters; after explicit selection preserve surviving IDs and leave newly appearing clusters unselected.**
-- [ ] **Step 2: Render date range, method checkboxes, preferred/max clusters and searchable hand-off selector backed by API catalog. No free-form Ozon warehouse ID.**
-- [ ] **Step 3: Cross-dock requires selected hand-off point; DIRECT does not. Backend still validates.**
-- [ ] **Step 4: Changing any shipment field sets shipment dirty only and makes no request.**
-- [ ] **Step 5: Validate at least one positive selected cluster/method and valid dates before action; preserve values/errors with accessible descriptions.**
-- [ ] **Step 6: Add nearby disclosure: `Для проверки приложение создаст временные черновики в Ozon. Реальные заявки на поставку не создаются.`**
-- [ ] **Step 7: Run tests and commit.**
+First complete ShippablePlan selects all positive complete clusters. After user explicitly edits scope, preserve surviving IDs and leave newly appearing clusters unselected.
 
-```bash
-python -m pytest tests/frontend/test_shipment_view.py tests/frontend/test_ui_state.py -q
-git add frontend/assets/js/core.js frontend/assets/js/app.js frontend/assets/css/app.css tests/frontend/test_shipment_view.py
-git commit -m "feat: add shipment intent workspace"
-```
+Field edits mark shipment dirty only and make no request.
 
 ---
 
-### Task 7: Wire explicit candidate → validate → plan async flow
+## Task 7 — SellerWarehouseSelector
 
-**Files:**
-- Modify: `frontend/assets/js/core.js`
-- Modify: `frontend/assets/js/app.js`
-- Modify: `tests/frontend/test_shipment_view.py`
+Seller warehouses come from current API source snapshot.
 
-- [ ] **Step 1: `Найти варианты в Ozon` is the only action that starts this external workflow. It first calls `/api/shipment/candidates`, then `/api/shipment/validate`, then `/api/shipment/plan` with backend-produced identities.**
-- [ ] **Step 2: Add request ownership/run sequence so old responses cannot overwrite a newer scenario.**
-- [ ] **Step 3: Busy UI preserves previous successful manifests and stable controls; show business stage (`Собираем варианты`, `Проверяем в Ozon`, `Получаем окна`, `Ранжируем`).**
-- [ ] **Step 4: Failure preserves prior successful result + current edited draft and remains `dirty`; never auto-switches source mode.**
-- [ ] **Step 5: Add locked-vault handling: explain `Разблокируйте Ozon API`, link/focus Data connection action; no secret prompt embedded ad hoc in Plan.**
-- [ ] **Step 6: Run tests and commit.**
+Behavior:
 
-```bash
-python -m pytest tests/frontend/test_shipment_view.py -q
-git add frontend/assets/js/core.js frontend/assets/js/app.js tests/frontend/test_shipment_view.py
-git commit -m "feat: validate shipment options with Ozon"
+```text
+0 active + crossdock selected → blocking unavailable state
+1 active → show fixed resolved warehouse; no unnecessary chooser
+>1 active + crossdock selected → require explicit Склад отправления
+DIRECT-only → seller warehouse crossdock field not required
 ```
+
+Persisted ID is only preference; backend validates current active identity.
+
+Show safe non-secret label/address evidence only. Do not surface contact/courier-comment fields.
+
+Changing seller warehouse marks shipment dirty only.
 
 ---
 
-### Task 8: Render candidate/validated manifests and causal failures
+## Task 8 — remote HandoffPointSelector
 
-**Files:**
-- Modify: `frontend/assets/js/app.js`
-- Modify: `frontend/assets/css/app.css`
-- Modify: `tests/frontend/test_shipment_view.py`
-- Modify: `tests/frontend/test_plan_view.py`
+Do not use a preloaded API catalog.
 
-- [ ] **Step 1: Render lifecycle labels `Кандидат` and `Проверено Ozon`; prohibit real-supply completion copy (`Поставка создана`, `Забронировано`, `Заявка подтверждена`).**
-- [ ] **Step 2: Render validated manifest with date/method/clusters, qty/liters/SKU count, accepted status, actual observed timeslot, optional travel time and `Проверено <time>`.**
-- [ ] **Step 3: Render partial rejection with affected article/cluster/qty/human-readable Ozon reason; rejected lines remain visible.**
-- [ ] **Step 4: Distinguish no-slot, rate-limit, Ozon unavailable, draft outcome unknown and local block using persistent copy from canonical vocabulary.**
-- [ ] **Step 5: Render PVZ wording `Предварительно подходит` before validation; after validation `Состав принят Ozon · окно найдено`, plus manual packaging/point note when relevant.**
-- [ ] **Step 6: In Products view, selected SKU shows only its backend assignments grouped by validated option without duplicating global shipment UI.**
-- [ ] **Step 7: Run tests and commit.**
+Interaction:
 
-```bash
-python -m pytest tests/frontend/test_shipment_view.py tests/frontend/test_plan_view.py -q
-git add frontend/assets/js/app.js frontend/assets/css/app.css tests/frontend/test_shipment_view.py tests/frontend/test_plan_view.py
-git commit -m "feat: render validated shipment manifests"
+```text
+<4 trimmed chars → no request
+>=4 → ~300 ms debounced POST /api/ozon/handoff/search
 ```
+
+Required:
+- IME-safe input;
+- stale-response protection/cancel semantics;
+- explicit clear;
+- selected points persist visually during search busy/failure;
+- show returned name/address/point type;
+- no free-form warehouse ID;
+- stale preferred ID after restart must be searched/resolved again.
+
+Cross-dock action requires resolved selected point; backend remains final validator.
 
 ---
 
-### Task 9: Add manual Ozon template download
+## Task 9 — explicit candidate→validate→plan workflow
 
-**Files:**
-- Modify: `frontend/assets/js/app.js`
-- Modify: `tests/frontend/test_shipment_view.py`
+Only `Найти варианты в Ozon` starts external flow:
 
-- [ ] **Step 1: Accepted/exportable ranked option shows `Скачать шаблоны Ozon`; rejected/unknown options do not expose enabled export.**
-- [ ] **Step 2: POST exact backend-ranked option identity to `/api/shipment/export`, receive blob and filename from Content-Disposition; never generate XLSX/ZIP in browser.**
-- [ ] **Step 3: Busy/error stays local to selected manifest and schedule remains visible. No `alert()`.**
-- [ ] **Step 4: Run tests and commit.**
-
-```bash
-python -m pytest tests/frontend/test_shipment_view.py -q
-git add frontend/assets/js/app.js tests/frontend/test_shipment_view.py
-git commit -m "feat: download Ozon shipment templates"
+```text
+/api/shipment/candidates
+→ /api/shipment/validate
+→ /api/shipment/plan
 ```
+
+Near action, persistent disclosure:
+
+```text
+Для проверки приложение создаст временные черновики в Ozon.
+Реальные заявки на поставку не создаются.
+```
+
+Busy stages may be:
+
+```text
+Собираем варианты
+Проверяем в Ozon
+Получаем окна
+Ранжируем
+```
+
+Run identity prevents stale responses overwriting newer scenario. Previous successful manifests remain visible during refresh/failure. Locked vault directs user to `Данные`, not an ad-hoc password prompt.
 
 ---
 
-### Task 10: Migrate root DESIGN.md and UX-CONTRACT.md to shipped API-first UI
+## Task 10 — manifests and causal failures
 
-**Files:**
-- Modify: `DESIGN.md`
-- Modify: `UX-CONTRACT.md`
-- Modify: `tests/frontend/test_product_shell.py`
-- Modify: `tests/frontend/test_plan_view.py`
-- Modify: `tests/frontend/test_ozon_connection.py`
+Render lifecycle labels:
 
-- [ ] **Step 1: Preserve current tokens, Creative North Star, decision line and Flow visual contract. Replace only superseded wide-Plan/file-primary/selected-network workflow language with the now-shipped API-first article/shipment design.**
-- [ ] **Step 2: Canonical UI Map owns `OzonConnectionPanel`, `CredentialVaultDialog`, `SourceModePanel`, `ArticlePlanSelector`, `PlanProductWorkspace`, `ShipmentIntentForm`, `HandoffPointSelector`, `ShipmentManifest`, `OzonValidationStatus`. Remove active `SupplyNetworkSelector`/selected-network replan ownership.**
-- [ ] **Step 3: Document three freshness clocks and independent source/analysis/shipment dirty ownership.**
-- [ ] **Step 4: Document secret-field behavior, manual fallback, temporary draft disclosure and the absence of final real supply creation.**
-- [ ] **Step 5: Add static tests preventing drift back to `/api/replan`, global Plan wide table or file-primary Data workflow as canonical.**
-- [ ] **Step 6: Run tests and commit.**
-
-```bash
-python -m pytest tests/frontend/test_product_shell.py tests/frontend/test_plan_view.py tests/frontend/test_ozon_connection.py -q
-git add DESIGN.md UX-CONTRACT.md tests/frontend
-git commit -m "docs: make API-first Plan UI canonical"
+```text
+Кандидат
+Проверено Ozon
 ```
+
+Never render `Поставка создана`, `Забронировано`, `Заявка подтверждена`.
+
+Validated manifest includes when available:
+- date/method;
+- seller warehouse for cross-dock;
+- concrete handoff point;
+- clusters;
+- accepted qty / estimated item volume / SKU count;
+- acceptance/timeslot/travel evidence;
+- checked timestamp;
+- placement-zone composition and manual packing note.
+
+Keep rejected/partial rows in context with article/SKU/cluster/qty/Ozon reason.
+
+Distinct persistent failures:
+
+```text
+Ozon отклонил состав
+Нет доступных окон
+Ozon ограничил частоту проверок
+Не удалось связаться с Ozon
+Результат создания временного черновика неизвестен
+Не подходит по локальному ограничению
+Склад отправления недоступен/не выбран
+Точка отгрузки устарела/не разрешена
+```
+
+PVZ before live validation uses `Предварительно подходит`; candidate-total ≤1000 L never becomes a packed-cargo guarantee.
+
+For multiple placement zones show backend-provided composition and manual guidance; frontend does not recompute zone rules.
 
 ---
 
-### Task 11: Frontend Design Premium verification gate
+## Task 11 — backend export download
 
-- [ ] **Step 1: Run all frontend tests and unchanged Flow regressions.**
+Accepted/exportable ranked option shows `Скачать шаблоны Ozon`.
 
-```bash
-python -m pytest tests/frontend -q
-python -m pytest tests/frontend/test_flow_view.py tests/frontend/test_flow_real_scale.py -q
+POST backend option identity to `/api/shipment/export`; use returned blob + Content-Disposition filename. Browser never builds/repairs workbook data.
+
+Identity conflict disables export with persistent reason while manifest remains visible.
+
+---
+
+## Task 12 — final durable design/UX contract migration
+
+In the same PR, update root `DESIGN.md` and `UX-CONTRACT.md` to match shipped runtime.
+
+Required final durable ownership includes:
+
+```text
+API-first Data hierarchy
+SKU-backed article-first Plan
+OzonConnectionPanel/CredentialVaultDialog
+SellerWarehouseSelector
+remote HandoffPointSelector
+ShipmentIntentForm
+candidate/validation lifecycle
+ShipmentManifest/OzonValidationStatus
+candidate-total PVZ semantics
+zone composition/manual packing guidance
+backend XLSX/ZIP export
+no selected-network future workflow
+no real supply creation
 ```
 
-- [ ] **Step 2: Run API integration suites.**
+Remove transitional language and empty component-map placeholders by either defining real shipped component ownership or explicitly omitting unsupported groups per DESIGN.md contract.
+
+Do not change visual identity merely to fill documentation.
+
+---
+
+## Task 13 — verification gate
+
+Focused suites:
 
 ```bash
-python -m pytest tests/api/test_ozon_credentials.py tests/api/test_ozon_sync.py tests/api/test_analysis.py tests/api/test_shipment_candidates.py tests/api/test_shipment_validate.py tests/api/test_shipment_plan.py tests/api/test_shipment_export.py -q
-```
-
-- [ ] **Step 3: Run full suite.**
-
-```bash
+python -m pytest tests/frontend/test_ui_state.py tests/frontend/test_ozon_connection.py tests/frontend/test_data_quality.py -q
+python -m pytest tests/frontend/test_plan_view.py tests/frontend/test_shipment_view.py -q
+python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_acceptance.py -q
 python -m pytest -q
 ```
 
-- [ ] **Step 4: Run Frontend Design Premium project audit/verification checklist in strict mode and fix all blocking findings.**
+Run project Premium/static design audit if configured, plus real browser review at normal desktop and 200% zoom/narrow width. Preserve existing real-scale Flow acceptance because shared shell/layout changes may affect it.
 
-- [ ] **Step 5: Real browser acceptance with 100+ articles/20+ clusters: first vault setup, restart/locked state, API sync success/failure/stale, manual fallback, article search `40750`, shipment intent, temporary draft disclosure, accepted/partial/no-slot/rate-limit/network states, export, keyboard and 200% zoom.**
-
-- [ ] **Step 6: Verify all four top-level routes remain reachable and shared CSS changes do not regress Flow/Economics/Data.**
-
-PR-E is complete only when runtime UI and root durable contracts agree and no screen suggests that the app created/booked a real Ozon supply.
+Acceptance: API is primary Data workflow, Plan is SKU-backed article-first, shipment intent resolves seller/handoff identities, live validation is explicit/honest, manifests/export remain backend-owned, and runtime + root durable contracts finish aligned.
