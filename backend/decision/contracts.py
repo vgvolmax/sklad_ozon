@@ -8,7 +8,7 @@ from backend.supply.contracts import AllocationObjective
 from backend.analytics.clean_routes import CleanRouteResult
 from backend.analytics.demand_estimate import DemandEstimate
 from backend.analytics.routes import RouteProfile
-from backend.domain.contracts import ReportMeta
+from backend.domain.contracts import ReportMeta, SourceMode
 from backend.domain.signals import RecommendationDistortionSignal, SignalConfidence, StockoutSignal
 from backend.economics import RouteOpportunity, UnitEconomicsResult
 from backend.supply.contracts import OptimizationResult
@@ -338,3 +338,6 @@ class AnalysisSnapshot:
     stockout_impact: StockoutImpactPresentation
     data_quality: DataQualityPresentation
     diagnostics: tuple[DiagnosticView, ...]
+    analysis_as_of: object | None = None
+    source_mode: SourceMode = SourceMode.FILES
+    source_snapshot_id: str | None = None

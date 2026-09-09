@@ -6,6 +6,13 @@ from enum import Enum
 from typing import Generic, TypeVar
 
 
+class SourceMode(str, Enum):
+    """The single, domain-neutral owner of an analysis run's source data."""
+
+    API = "api"
+    FILES = "files"
+
+
 class OrderLifecycle(str, Enum):
     FULFILLED = "fulfilled"
     IN_PROGRESS = "in_progress"

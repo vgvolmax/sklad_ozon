@@ -4,6 +4,8 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 import asyncio
+import csv
+import io
 import json
 import logging
 from pathlib import Path, PurePath
@@ -11,6 +13,7 @@ from queue import Queue
 from threading import Event, Thread
 from time import perf_counter
 from uuid import uuid4
+from types import SimpleNamespace
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from backend.application import analyze
@@ -24,7 +27,7 @@ from backend.decision import (DataQualityFact, DiagnosticView, InputStatusView,
 from backend.decision.snapshot import first_nonblank
 from backend.supply import AllocationObjective
 from backend.ingestion.cluster_resolution import resolve_analysis_clusters
-from backend.domain.contracts import ReportMeta, ImportDiagnostic
+from backend.domain.contracts import ReportMeta, ImportDiagnostic, SourceMode
 from backend.ingestion.availability import import_availability
 from backend.ingestion.restrictions import import_restrictions
 from backend.ingestion.orders import import_orders
@@ -38,12 +41,17 @@ from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
 from backend.ozon.contracts import OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import CONNECTION_TEST_PATH
 from backend.ozon.vault import CredentialVault, OzonVaultError
+from backend.ozon.handoff import HandoffPointStore, search_handoff_points
+from backend.ozon.source_store import OzonSourceSnapshotStore
+from backend.ozon.sync import capability_matrix, sync_ozon_source
 MAX_UPLOAD_BYTES=64*1024*1024
 router=APIRouter()
 logger=logging.getLogger(__name__)
 PROJECT_PATH=Path(__file__).resolve().parents[1]/"data"/"project.json"
 OZON_VAULT=CredentialVault(Path(__file__).resolve().parents[1]/"data"/"ozon-credentials.json")
 OZON_CLIENT=OzonClient(OZON_VAULT)
+HANDOFF_STORE=HandoffPointStore()
+OZON_SOURCE_STORE=OzonSourceSnapshotStore()
 DECIMAL_NAMES=['acquiring_rate','advertising_rate','buyout_rate','fixed_fbo_fee','income_tax_rate','vat_rate','co_invest_rate','min_profit_per_unit','min_margin_rate','min_roi']
 STAGES={
     "preparing":(1,"Подготовка файлов"), "reports":(2,"Чтение отчётов"),
@@ -135,6 +143,41 @@ def ozon_connection_test():
         return error(statuses.get(exc.code,502),exc.code.value,str(exc),None)
     return vault_response(OZON_VAULT.record_connection_check())
 
+@router.post('/api/ozon/handoff/search')
+async def ozon_handoff_search(request:Request):
+    body=await json_object(request)
+    if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
+    query=body.get('query')
+    supply_types=body.get('supply_types',[])
+    if not isinstance(query,str) or len(query.strip())<4:
+        return error(400,'HANDOFF_QUERY_TOO_SHORT','Enter at least 4 characters.','query')
+    if not isinstance(supply_types,list) or not all(isinstance(item,str) and item.strip() for item in supply_types):
+        return error(400,'INVALID_SUPPLY_TYPES','Expected a list of supply types.','supply_types')
+    try:
+        OZON_VAULT.require_credentials()
+        points=search_handoff_points(OZON_CLIENT,query,tuple(supply_types))
+        HANDOFF_STORE.put_all(points)
+        return {'api_version':1,'items':wire(points)}
+    except OzonVaultError as exc:return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
+    except OzonClientError as exc:return error(503,exc.code.value,str(exc),None)
+
+@router.post('/api/ozon/sync')
+def ozon_sync():
+    try:
+        OZON_VAULT.require_credentials()
+        snapshot=sync_ozon_source(OZON_CLIENT)
+        OZON_SOURCE_STORE.put(snapshot)
+        return {'api_version':1,'source':wire(snapshot),'capabilities':capability_matrix(snapshot)}
+    except OzonVaultError as exc:return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
+
+@router.get('/api/ozon/source/{source_snapshot_id}/status')
+def ozon_source_status(source_snapshot_id:str):
+    snapshot=OZON_SOURCE_STORE.get(source_snapshot_id)
+    if snapshot is None:return error(404,'OZON_SOURCE_SNAPSHOT_NOT_FOUND','Ozon source snapshot was not found.','source_snapshot_id')
+    return {'api_version':1,'source_snapshot_id':source_snapshot_id,'source_as_of':snapshot.source_as_of.isoformat(),
+            'source_timezone':snapshot.source_timezone,'capabilities':capability_matrix(snapshot),
+            'endpoint_evidence':wire(snapshot.endpoint_evidence),'diagnostics':wire(snapshot.diagnostics)}
+
 def input_status(*results):
     return {
         "ok": not any(
@@ -149,6 +192,32 @@ def input_status(*results):
             for diagnostic in result.diagnostics
         )),
     }
+
+def _csv_bytes(headers, rows):
+    stream=io.StringIO(newline=''); writer=csv.writer(stream,delimiter=';')
+    writer.writerow(headers); writer.writerows(rows)
+    return stream.getvalue().encode('utf-8')
+
+def _snapshot_report_bytes(snapshot):
+    """Adapt normalized API evidence into the existing import boundary."""
+    fbs_by_sku={}
+    for row in snapshot.operational_seller_stock:
+        fbs_by_sku.setdefault(row.sku,[]).append(row.fbs_quantity)
+    availability=[]
+    for row in snapshot.availability:
+        availability.append([row.sku,row.warehouse,row.cluster,row.available_quantity,"",row.article,
+                             "" if row.fbo_quantity is None else row.fbo_quantity,
+                             "" if not fbs_by_sku.get(row.sku) else fbs_by_sku[row.sku][0],
+                             row.product_name,"" if row.inbound_quantity is None else row.inbound_quantity])
+    restrictions=[[row.sku,row.warehouse,'Разрешено','',row.cluster] for row in snapshot.availability if row.cluster]
+    orders=[[row.sku,row.quantity,row.seller_price,row.origin_cluster,row.destination_cluster,row.raw_status,
+             row.accepted_at,row.article,row.product_name,row.origin_warehouse or ''] for row in snapshot.orders]
+    reports=(
+        ('ozon-api-availability.csv',_csv_bytes(['SKU','Склад','Кластер','Доступно','Рекомендуемая поставка','Артикул','Остаток FBO, шт','Остаток FBS, шт','Название товара','Товары в пути на склад озон, шт'],availability)),
+        ('ozon-api-restrictions.csv',_csv_bytes(['SKU','Склад','Статус','Причина','Кластер'],restrictions)),
+        ('ozon-api-orders.csv',_csv_bytes(['SKU','Количество','Цена продавца','Кластер отгрузки','Кластер доставки','Статус','Принят в обработку','Артикул','Название товара','Склад отгрузки'],orders)),
+    )
+    return [(SimpleNamespace(filename=name),data) for name,data in reports]
 
 _IMPORTERS={"availability":import_availability,"restrictions":import_restrictions,"orders":import_orders,"tariffs":import_tariffs,"product-economics":import_product_economics}
 for _kind,_importer in _IMPORTERS.items():
@@ -172,6 +241,8 @@ async def import_unitka(request:Request):
 
 async def prepare_analysis(request:Request, request_id="http"):
     form=await request.form(); common=['availability_file','restrictions_file','orders_file']
+    try: source_mode=SourceMode(str(form.get('source_mode','files')).strip().lower())
+    except ValueError:return error(400,'INVALID_SOURCE_MODE','Expected api or files.','source_mode')
     explicit_horizon=form.get("horizon_days")
     if explicit_horizon is not None:
         value=str(explicit_horizon).strip()
@@ -185,14 +256,29 @@ async def prepare_analysis(request:Request, request_id="http"):
     if raw_objective != AllocationObjective.MAX_MARGIN.value:
         return error(400,"INVALID_OPTIMIZATION_OBJECTIVE","Unsupported optimization objective.","optimization_objective")
     objective=AllocationObjective.MAX_MARGIN
-    for field in common:
-        if form.get(field) is None:return error(400,'MISSING_FIELD','Required multipart field is missing.',field)
+    snapshot=None
+    if source_mode is SourceMode.API:
+        if any(form.get(field) is not None for field in common):
+            return error(400,'MIXED_SOURCE_MODE','API source cannot be combined with Ozon report files.',None)
+        source_snapshot_id=str(form.get('source_snapshot_id','')).strip()
+        if not source_snapshot_id:return error(400,'MISSING_SOURCE_SNAPSHOT_ID','API source snapshot identity is required.','source_snapshot_id')
+        snapshot=OZON_SOURCE_STORE.get(source_snapshot_id)
+        if snapshot is None:return error(400,'OZON_SOURCE_SNAPSHOT_NOT_FOUND','Ozon source snapshot was not found.','source_snapshot_id')
+    else:
+        for field in common:
+            if form.get(field) is None:return error(400,'MISSING_FIELD','Required multipart field is missing.',field)
     unitka=form.get('unitka_file'); legacy=(form.get('tariffs_file'),form.get('product_economics_file'))
     if unitka is not None and any(legacy): return error(400,'MIXED_INPUT_MODE','Unitka cannot be combined with legacy economics files.','unitka_file')
     if unitka is None and not all(legacy): return error(400,'MISSING_ECONOMICS_INPUT','Provide unitka_file or both legacy economics files.','unitka_file')
     files=common+(['unitka_file'] if unitka is not None else ['tariffs_file','product_economics_file'])
-    try: as_of=date.fromisoformat(str(form.get('as_of','')))
-    except ValueError:return error(400,'INVALID_DATE','Expected YYYY-MM-DD.','as_of')
+    if source_mode is SourceMode.API:
+        legacy_as_of=str(form.get('as_of','')).strip()
+        if legacy_as_of and legacy_as_of != snapshot.source_as_of.isoformat():
+            return error(400,'API_AS_OF_MISMATCH','API analysis date must equal source snapshot date.','as_of')
+        as_of=snapshot.source_as_of
+    else:
+        try: as_of=date.fromisoformat(str(form.get('as_of','')))
+        except ValueError:return error(400,'INVALID_DATE','Expected YYYY-MM-DD.','as_of')
     values={}
     for name in DECIMAL_NAMES:
         try:
@@ -205,10 +291,18 @@ async def prepare_analysis(request:Request, request_id="http"):
     tax=str(form.get('tax_system',''))
     if tax not in {'usn_income','usn_income_minus_expenses','osno','manual'}:return error(400,'INVALID_TAX_SYSTEM','Unsupported tax system.','tax_system')
     raw=[]
-    for field in files:
-        try: raw.append((form[field],await read(form[field],field,request_id)))
-        except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.',field)
-    return raw, unitka, files, values, tax, as_of, (explicit_horizon,raw_inbound=="true",objective)
+    if source_mode is SourceMode.API:
+        raw.extend(_snapshot_report_bytes(snapshot))
+        economic_files=(['unitka_file'] if unitka is not None else ['tariffs_file','product_economics_file'])
+        for field in economic_files:
+            try: raw.append((form[field],await read(form[field],field,request_id)))
+            except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.',field)
+    else:
+        for field in files:
+            try: raw.append((form[field],await read(form[field],field,request_id)))
+            except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.',field)
+    provenance=(source_mode,snapshot.source_snapshot_id if snapshot else None)
+    return raw, unitka, files, values, tax, as_of, (explicit_horizon,raw_inbound=="true",objective), provenance
 
 @router.post('/api/analysis')
 async def analysis(request:Request):
@@ -275,7 +369,7 @@ class AnalysisCancelled(Exception):
     """Internal cooperative cancellation at progress boundaries."""
 
 
-def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_request=(None,True,AllocationObjective.MAX_MARGIN), *, progress_callback=None, request_id="http"):
+def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_request=(None,True,AllocationObjective.MAX_MARGIN), provenance=(SourceMode.FILES,None), *, progress_callback=None, request_id="http"):
     """Run imports, joins, domain analysis and serialization for both transports."""
     def progress(stage, current=None, total=None, detail=None):
         if progress_callback is not None:
@@ -455,7 +549,8 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         safe_allocations=result.safe_allocations,calculated_allocations=result.allocations,products=products.records,
         diagnostics=diagnostic_views,data_quality=data_quality,freshness_warnings=tuple(warnings),
         product_identities=product_identities, daily_locality=result.daily_locality,
-        stockout_episode_impacts=result.stockout_episode_impacts)
+        stockout_episode_impacts=result.stockout_episode_impacts,analysis_as_of=as_of,
+        source_mode=provenance[0],source_snapshot_id=provenance[1])
     return {"api_version":1,"complete":complete,"snapshot":wire(snapshot),"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"safe_allocations":wire(result.safe_allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}
 
 
