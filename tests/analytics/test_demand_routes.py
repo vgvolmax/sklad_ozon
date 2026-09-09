@@ -197,13 +197,19 @@ def test_history_and_skus_have_independent_weekly_denominators():
 @pytest.mark.parametrize("bad_order", [
     order(quantity=-1),
     order(sku=" "),
-    order(origin=""),
     order(destination=""),
 ])
 @pytest.mark.parametrize("function", [aggregate_demand, build_route_profile])
 def test_invalid_canonical_orders_fail_explicitly(function, bad_order):
     with pytest.raises(DomainValidationError):
         function((bad_order,), AS_OF)
+
+
+def test_blank_origin_is_valid_for_demand_and_excluded_from_routes():
+    blank_origin = order(origin="")
+
+    assert aggregate_demand((blank_origin,), AS_OF).cells
+    assert build_route_profile((blank_origin,), AS_OF).routes == ()
 
 
 def test_results_and_nested_contracts_are_immutable():

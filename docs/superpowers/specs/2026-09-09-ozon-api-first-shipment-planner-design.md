@@ -61,6 +61,10 @@ Future `PR-F — Ozon Supply Execution` requires a separate approved design.
 ### 3.1 Destination owns demand
 
 `destination_cluster` is customer-demand geography. Fulfillment origin never creates destination demand.
+An order with a known destination and blank or unresolved origin still contributes
+to destination demand, but it does not contribute to fulfillment-route or Flow
+evidence. The origin remains blank; adapters and analytics must never invent an
+origin from destination, region, city, or a synthetic placeholder.
 
 ### 3.2 Need
 
@@ -237,14 +241,33 @@ POST /v4/posting/fbs/list
 ```
 
 Normalize only the fields needed by existing `OrderRecord` semantics.
+FBO and FBS use endpoint-specific normalizers: both take origin/destination only
+from `financial_data.cluster_from/cluster_to`; FBO requests analytics and
+financial blocks, while v4 FBS maps `product_id`, `product_offer_id`,
+`product_name`, and `status_alias`. Region/city are never destination substitutes.
+History date boundaries and retained posting event timestamps use the fixed
+UTC+03:00 business calendar. Business-day boundaries are converted to their UTC
+instants for Ozon requests; offset-aware response instants are represented in
+UTC+03:00 before downstream daily/ISO-week analytics.
 
 ### 5.2 Current FBO stock
 
 ```text
 POST /v1/analytics/stocks
+POST /v3/product/list
 ```
 
-Maps current warehouse/cluster stock to existing FBO availability evidence. `/v2/analytics/stock_on_warehouses` is not the new architecture owner.
+`/v3/product/list` is the backend-only prerequisite that enumerates the complete
+current SKU universe with `visibility=ALL`. Its valid non-negative integer `total`
+owns completeness: pagination stops once the count of raw returned items reaches
+`total`, even if terminal `last_id` is nonblank. `last_id` is only a continuation
+cursor while the raw count is below `total` and must be nonblank and progressing.
+Every raw item must contain a nonblank canonical `sku`; malformed identity makes
+the universe incomplete, and `product_id`/`offer_id` are never SKU fallbacks. The universe
+is sent to `/v1/analytics/stocks` in `skus` batches of at most 100; that endpoint
+has no offset pagination. `available_stock_count` maps to existing FBO availability
+evidence. A product-list or stock-batch failure leaves FBO evidence incomplete.
+`/v2/analytics/stock_on_warehouses` is not the new architecture owner.
 
 ### 5.3 Inbound FBO supply
 
@@ -257,6 +280,9 @@ POST /v1/supply-order/bundle
 ```
 
 Only states not yet available as FBO stock contribute. Completed/cancelled/rejected/final states do not. Unknown states are diagnostic/incomplete. Tests must prove no double subtraction with current FBO stock.
+Supply `bundle_id` is an opaque string. Bundle contents use top-level `items` and
+per-bundle `last_id` pagination. Destination resolves strictly from
+`storage_warehouse.warehouse_id` through the v1 warehouse mapping.
 
 ### 5.4 Seller/FBS stock
 
@@ -267,6 +293,8 @@ POST /v2/product/info/stocks-by-warehouse/fbs
 ```
 
 Do not implement the deprecated `/v1/product/info/stocks-by-warehouse/fbs` path.
+Parse top-level `products` with top-level `cursor/has_next`; keep every warehouse
+observation and use Ozon's `free_stock` as canonical available quantity.
 
 ### 5.5 Clusters
 
@@ -275,7 +303,9 @@ POST /v2/cluster/list
 POST /v1/cluster/list
 ```
 
-Cluster IDs are canonical; display names never become identity by fuzzy matching.
+`/v2` owns canonical `macrolocal_cluster_id` and macro display name. `/v1` maps
+`logistic_clusters[].warehouses[].warehouse_id` to `macrolocal_cluster_id`.
+Display names never become identity by fuzzy matching.
 
 ### 5.6 Seller warehouses
 
@@ -325,6 +355,8 @@ POST /v1/product/placement-zone/info
 ```
 
 Preserve Ozon evidence; do not infer replacement zones from dimensions.
+Requests contain `skus` batches of at most 100 and responses use
+`products_placement[].sku/placement_zone`; blank or `UNSPECIFIED` is incomplete.
 
 ### 5.9 Temporary supply validation
 
