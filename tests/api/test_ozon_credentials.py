@@ -78,6 +78,17 @@ def test_setup_rejects_confirmation_mismatch_without_writing(local_api):
     assert_no_secrets(response)
 
 
+def test_setup_rejects_whitespace_only_password_without_writing(local_api):
+    client, vault, _ = local_api
+    response = client.post("/api/ozon/credentials/setup", json={
+        "client_id": CLIENT_ID, "api_key": API_KEY,
+        "password": "   ", "password_confirmation": "   ",
+    })
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "MISSING_FIELD"
+    assert not vault.status().configured
+
+
 def test_wrong_password_returns_safe_normalized_error(local_api):
     client, _, _ = local_api
     setup(client)
@@ -86,6 +97,24 @@ def test_wrong_password_returns_safe_normalized_error(local_api):
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "OZON_AUTH_FAILED"
     assert_no_secrets(response)
+
+
+def test_unlock_rejects_whitespace_only_password_before_cryptography(local_api, monkeypatch):
+    client, vault, _ = local_api
+    setup(client)
+    client.post("/api/ozon/credentials/lock")
+    derive_calls = []
+
+    def record_derive(*args):
+        derive_calls.append(args)
+        raise AssertionError("cryptography must not run for blank input")
+
+    monkeypatch.setattr(vault, "_derive_key", record_derive)
+    response = client.post("/api/ozon/credentials/unlock", json={"password": "\t\n"})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "MISSING_FIELD"
+    assert derive_calls == []
 
 
 def test_locked_connection_test_never_calls_transport(local_api):

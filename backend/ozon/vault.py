@@ -123,7 +123,7 @@ class CredentialVault:
 
     @staticmethod
     def _password_bytes(password: str) -> bytes:
-        if not isinstance(password, str) or not password:
+        if not isinstance(password, str) or not password.strip():
             raise ValueError("Vault password must be nonblank")
         return password.encode("utf-8")
 

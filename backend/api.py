@@ -98,7 +98,7 @@ async def ozon_credentials_setup(request:Request):
     body=await json_object(request)
     if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
     required=('client_id','api_key','password','password_confirmation')
-    if any(not isinstance(body.get(name),str) or not body[name] for name in required):
+    if any(not isinstance(body.get(name),str) or not body[name].strip() for name in required):
         return error(400,'MISSING_FIELD','Required credential field is missing.',None)
     if body['password']!=body['password_confirmation']:
         return error(400,'PASSWORD_CONFIRMATION_MISMATCH','Password confirmation does not match.','password_confirmation')
@@ -113,7 +113,7 @@ async def ozon_credentials_setup(request:Request):
 @router.post('/api/ozon/credentials/unlock')
 async def ozon_credentials_unlock(request:Request):
     body=await json_object(request)
-    if body is None or not isinstance(body.get('password'),str) or not body['password']:
+    if body is None or not isinstance(body.get('password'),str) or not body['password'].strip():
         return error(400,'MISSING_FIELD','Vault password is required.','password')
     try:return vault_response(OZON_VAULT.unlock(body['password']))
     except OzonVaultError as exc:return error(401,exc.code.value,'Vault password or encrypted data is invalid.',None)
