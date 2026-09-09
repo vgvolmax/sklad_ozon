@@ -59,6 +59,7 @@ def normalize_clusters(v2_response: dict, v1_response: dict | None = None) -> Cl
     for cluster_id in conflicted:
         by_id.pop(cluster_id, None)
     warehouse_to_macro: dict[int, int] = {}
+    conflicted_warehouse_ids: set[int] = set()
     if v1_response is not None:
         for raw in _list(v1_response, "clusters"):
             if not isinstance(raw, dict):
@@ -77,10 +78,13 @@ def normalize_clusters(v2_response: dict, v1_response: dict | None = None) -> Cl
                     except (KeyError, TypeError, ValueError):
                         diagnostics.append(ImportDiagnostic("error", "INVALID_CLUSTER_WAREHOUSE", "Invalid cluster warehouse mapping."))
                         continue
+                    if warehouse_id in conflicted_warehouse_ids:
+                        continue
                     previous = warehouse_to_macro.get(warehouse_id)
                     if previous is not None and previous != macro_id:
                         diagnostics.append(ImportDiagnostic("error", "CONFLICTING_WAREHOUSE_CLUSTER", f"Conflicting cluster for warehouse {warehouse_id}."))
                         warehouse_to_macro.pop(warehouse_id, None)
+                        conflicted_warehouse_ids.add(warehouse_id)
                     elif warehouse_id not in warehouse_to_macro:
                         warehouse_to_macro[warehouse_id] = macro_id
     return ClusterCatalogResult(tuple(by_id[key] for key in sorted(by_id)), warehouse_to_macro, tuple(diagnostics))

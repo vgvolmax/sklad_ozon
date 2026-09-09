@@ -24,6 +24,19 @@ def test_generic_local_id_is_not_canonical_macro_identity():
     assert result.clusters==() and result.diagnostics[0].code=="INVALID_CLUSTER"
 
 
+def test_conflicting_warehouse_mapping_remains_blocked_after_matching_observation():
+    response = {"clusters": [
+        {"macrolocal_cluster_id": 10, "logistic_clusters": [{"warehouses": [{"warehouse_id": 501}]}]},
+        {"macrolocal_cluster_id": 20, "logistic_clusters": [{"warehouses": [{"warehouse_id": 501}]}]},
+        {"macrolocal_cluster_id": 10, "logistic_clusters": [{"warehouses": [{"warehouse_id": 501}]}]},
+    ]}
+
+    result = normalize_clusters(v2(), response)
+
+    assert 501 not in result.warehouse_to_macrolocal
+    assert [item.code for item in result.diagnostics].count("CONFLICTING_WAREHOUSE_CLUSTER") == 1
+
+
 def test_seller_warehouse_strips_contacts_and_conflicts_fail_closed():
     response={"warehouses":[{"warehouse_id":1,"name":"W","address":"A","is_active":True,"phone":"PII"},
                               {"warehouse_id":2,"name":"X","address":"B","is_active":False}]}

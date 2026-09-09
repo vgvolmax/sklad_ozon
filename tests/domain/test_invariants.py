@@ -31,11 +31,18 @@ def test_lifecycle_populations(lifecycle, net, route):
     assert is_fulfilled_route(order(lifecycle)) is route
 
 
-@pytest.mark.parametrize("field", ["origin_cluster", "destination_cluster"])
+@pytest.mark.parametrize("field", ["destination_cluster"])
 def test_missing_direction_is_a_serializable_validation_error(field):
     with pytest.raises(DomainValidationError) as caught:
         validate_order(order(**{field: ""}))
     assert caught.value.as_dict()["field"] == field
+
+
+def test_blank_origin_preserves_demand_but_is_not_a_fulfilled_route():
+    record = validate_order(order(origin_cluster=""))
+
+    assert is_net_demand(record) is True
+    assert is_fulfilled_route(record) is False
 
 
 def test_foundation_value_guards_preserve_javascript_parity():

@@ -79,10 +79,20 @@ def resolve_analysis_clusters(
 
     resolved_orders = []
     for record in orders:
-        origin = resolved(record.origin_cluster, "orders", "origin_cluster")
+        origin, origin_diagnostic = resolve_cluster_id(
+            record.origin_cluster, aliases, valid_manual)
+        if origin_diagnostic is not None:
+            diagnostics.append(ImportDiagnostic(
+                "warning", "UNRESOLVED_ORIGIN_CLUSTER",
+                "orders.origin_cluster is unresolved; destination demand is preserved "
+                "but fulfillment-route evidence is excluded.",
+                field="origin_cluster",
+            ))
         destination = resolved(record.destination_cluster, "orders", "destination_cluster")
-        if origin is not None and destination is not None:
-            resolved_orders.append(replace(record, origin_cluster=origin, destination_cluster=destination))
+        if destination is not None:
+            resolved_orders.append(replace(
+                record, origin_cluster=origin or "", destination_cluster=destination,
+            ))
 
     return ClusterResolutionResult(
         tuple(resolved_availability), tuple(resolved_restrictions), tuple(resolved_orders),
