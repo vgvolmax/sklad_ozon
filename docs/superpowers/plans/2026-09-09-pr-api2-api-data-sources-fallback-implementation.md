@@ -138,6 +138,8 @@ Only source-wide unusable/missing completed-week coverage may trigger bounded ba
 Adapters may split requests into endpoint-compatible date chunks/pages internally.
 
 Normalize into existing `OrderRecord` fields consumed by analysis. Add fixtures proving:
+- FBO/FBS endpoint-specific wire shapes, with cluster ownership exclusively in `financial_data`;
+- v4 FBS `product_id`/`product_offer_id`/`product_name`/`status_alias` mapping;
 - two-page pagination;
 - destination/origin/SKU/article/name/qty/lifecycle/time normalization;
 - PII fields are discarded;
@@ -167,7 +169,7 @@ POST /v1/warehouse/fbo/seller/list
 ```
 
 Requirements:
-- canonical identity uses Ozon IDs, not fuzzy display-name matching;
+- v2 owns canonical macro ID/name; v1 maps warehouse IDs to `macrolocal_cluster_id`;
 - normalize active seller warehouses into `SellerWarehouse`;
 - discard seller-warehouse contacts/courier comments;
 - preserve enough name/address/is_active/is_pickup evidence for UI selection;
@@ -193,13 +195,18 @@ Endpoints:
 
 ```text
 POST /v1/analytics/stocks
+POST /v3/product/list
 POST /v2/product/info/stocks-by-warehouse/fbs
 ```
 
 Explicit guard: repository source for the new adapter must not contain the deprecated `/v1/product/info/stocks-by-warehouse/fbs` path.
 
 Requirements:
+- enumerate the complete SKU universe through `/v3/product/list` (`visibility=ALL`, `last_id`) before FBO stock;
+- call `/v1/analytics/stocks` with only `skus` batches of at most 100 and map `available_stock_count`;
+- product-list or any FBO batch failure leaves FBO capability incomplete;
 - FBO maps by canonical warehouse/cluster to existing `AvailabilityRecord.fbo_quantity` semantics;
+- seller stock parses top-level `products`/`cursor`/`has_next` and uses `free_stock`;
 - seller stock reaches the same evidence shape consumed by the existing seller-stock resolver;
 - explicit zero stays zero;
 - conflicting positive seller-stock evidence remains visible to existing resolver; do not sum/max it away;
@@ -228,6 +235,9 @@ POST /v1/supply-order/bundle
 ```
 
 Implement one explicit supply-state classifier. Count only quantity that is still inbound and not yet available FBO stock. Completed/cancelled/rejected/final states do not count. Unknown new Ozon state → diagnostic/incomplete, never silently counted or zeroed.
+Preserve UUID-like `bundle_id` as an opaque string. Fetch one bundle per paginated
+series (`limit=100`, top-level `items`, `has_next`, `last_id`) and resolve its
+destination only through storage warehouse ID → v1 macrolocal mapping → v2 name.
 
 Tests:
 - active/completed/cancelled/unknown states;
@@ -256,7 +266,9 @@ Endpoint:
 POST /v1/product/placement-zone/info
 ```
 
-Preserve exact normalized zone/unknown/multiple evidence. Do not infer replacement zones from dimensions.
+Send `skus` batches of at most 100 and parse
+`products_placement[].sku/placement_zone`. Preserve exact normalized zone/unknown
+evidence; blank and `UNSPECIFIED` remain incomplete. Do not infer replacement zones from dimensions.
 
 Placement-zone failure affects shipment-method compatibility only; it does not block demand/Need.
 

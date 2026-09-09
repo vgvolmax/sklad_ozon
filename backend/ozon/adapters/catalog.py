@@ -1,4 +1,6 @@
-"""Canonical Ozon-ID cluster and seller-warehouse catalogs."""
+"""Canonical macro-cluster catalog and warehouse-to-macro mapping."""
+
+from dataclasses import dataclass
 
 from backend.domain.contracts import ImportDiagnostic
 from backend.ozon.client import OzonClient, OzonRequestPolicy
@@ -30,22 +32,18 @@ def _v2_cluster(raw: dict) -> Cluster | None:
         return None
 
 
-def _v1_cluster(raw: dict) -> Cluster | None:
-    try:
-        cluster_id = int(raw["cluster_id"])
-        name = str(raw["name"]).strip()
-        return Cluster(cluster_id, name) if name else None
-    except (KeyError, TypeError, ValueError):
-        return None
+@dataclass(frozen=True, slots=True)
+class ClusterCatalogResult:
+    clusters: tuple[Cluster, ...]
+    warehouse_to_macrolocal: dict[int, int]
+    diagnostics: tuple[ImportDiagnostic, ...]
 
 
-def normalize_clusters(v2_response: dict, v1_response: dict | None = None):
+def normalize_clusters(v2_response: dict, v1_response: dict | None = None) -> ClusterCatalogResult:
     by_id: dict[int, Cluster] = {}
     conflicted: set[int] = set()
     diagnostics: list[ImportDiagnostic] = []
     candidates = [(_v2_cluster(raw), "v2") for raw in _list(v2_response, "clusters") if isinstance(raw, dict)]
-    if v1_response is not None:
-        candidates += [(_v1_cluster(raw), "v1") for raw in _list(v1_response, "clusters") if isinstance(raw, dict)]
     for cluster, _version in candidates:
         if cluster is None:
             diagnostics.append(ImportDiagnostic("error", "INVALID_CLUSTER", "Invalid canonical Ozon cluster evidence."))
@@ -60,7 +58,32 @@ def normalize_clusters(v2_response: dict, v1_response: dict | None = None):
         by_id[cluster.cluster_id] = cluster
     for cluster_id in conflicted:
         by_id.pop(cluster_id, None)
-    return tuple(by_id[key] for key in sorted(by_id)), tuple(diagnostics)
+    warehouse_to_macro: dict[int, int] = {}
+    if v1_response is not None:
+        for raw in _list(v1_response, "clusters"):
+            if not isinstance(raw, dict):
+                continue
+            try:
+                macro_id = int(raw["macrolocal_cluster_id"])
+            except (KeyError, TypeError, ValueError):
+                diagnostics.append(ImportDiagnostic("error", "INVALID_CLUSTER", "Invalid macrolocal cluster mapping."))
+                continue
+            for logistic in raw.get("logistic_clusters", ()):
+                if not isinstance(logistic, dict):
+                    continue
+                for warehouse in logistic.get("warehouses", ()):
+                    try:
+                        warehouse_id = int(warehouse["warehouse_id"])
+                    except (KeyError, TypeError, ValueError):
+                        diagnostics.append(ImportDiagnostic("error", "INVALID_CLUSTER_WAREHOUSE", "Invalid cluster warehouse mapping."))
+                        continue
+                    previous = warehouse_to_macro.get(warehouse_id)
+                    if previous is not None and previous != macro_id:
+                        diagnostics.append(ImportDiagnostic("error", "CONFLICTING_WAREHOUSE_CLUSTER", f"Conflicting cluster for warehouse {warehouse_id}."))
+                        warehouse_to_macro.pop(warehouse_id, None)
+                    elif warehouse_id not in warehouse_to_macro:
+                        warehouse_to_macro[warehouse_id] = macro_id
+    return ClusterCatalogResult(tuple(by_id[key] for key in sorted(by_id)), warehouse_to_macro, tuple(diagnostics))
 
 
 def normalize_seller_warehouses(response: dict):

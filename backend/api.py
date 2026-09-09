@@ -199,7 +199,7 @@ class PreparedAnalysisInputs:
     operational_availability: tuple
 
 
-def _api_prepared_inputs(snapshot) -> PreparedAnalysisInputs:
+def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedAnalysisInputs:
     imported_at = snapshot.synced_at_utc
     availability_meta = ReportMeta("ozon-api:availability", imported_at)
     restrictions_meta = ReportMeta("ozon-api:restrictions-unavailable", imported_at)
@@ -208,10 +208,16 @@ def _api_prepared_inputs(snapshot) -> PreparedAnalysisInputs:
         period_end=snapshot.history_to.isoformat())
     # Restrictions are explicitly unavailable, never fabricated as "allowed".
     restrictions = ImportResult((), (), restrictions_meta)
+    diagnostics_by_endpoint = {evidence.name: tuple(evidence.diagnostics)
+                               for evidence in snapshot.endpoint_evidence}
+    order_diagnostics = diagnostics_by_endpoint.get("orders_fbo", ()) + diagnostics_by_endpoint.get("orders_fbs", ())
+    availability_diagnostics = diagnostics_by_endpoint.get("fbo_stock", ())
+    if include_inbound:
+        availability_diagnostics += diagnostics_by_endpoint.get("inbound", ())
     return PreparedAnalysisInputs(
-        ImportResult(tuple(snapshot.availability), tuple(snapshot.diagnostics), availability_meta),
+        ImportResult(tuple(snapshot.availability), availability_diagnostics, availability_meta),
         restrictions,
-        ImportResult(tuple(snapshot.orders), (), orders_meta),
+        ImportResult(tuple(snapshot.orders), order_diagnostics, orders_meta),
         tuple(snapshot.availability) + tuple(snapshot.operational_seller_stock),
     )
 
@@ -288,7 +294,7 @@ async def prepare_analysis(request:Request, request_id="http"):
     if tax not in {'usn_income','usn_income_minus_expenses','osno','manual'}:return error(400,'INVALID_TAX_SYSTEM','Unsupported tax system.','tax_system')
     raw=[]; source_inputs=None
     if source_mode is SourceMode.API:
-        source_inputs=_api_prepared_inputs(snapshot)
+        source_inputs=_api_prepared_inputs(snapshot, include_inbound=raw_inbound == "true")
         economic_files=(['unitka_file'] if unitka is not None else ['tariffs_file','product_economics_file'])
         for field in economic_files:
             try: raw.append((form[field],await read(form[field],field,request_id)))
