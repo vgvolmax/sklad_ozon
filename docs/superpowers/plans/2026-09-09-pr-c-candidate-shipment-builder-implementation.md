@@ -8,6 +8,7 @@
 
 - Selected clusters are filter-only over ShippablePlan.
 - No demand/seller-stock/economics reallocation.
+- No new stockout-date/urgency model in shipment code.
 - DIRECT hard max = 1 cluster.
 - Multi-cluster cross-dock hard max = 20 clusters.
 - Cross-dock requires a resolved handoff point and a resolved active seller warehouse.
@@ -190,21 +191,23 @@ Strategy:
 ```text
 1 filter selected positive ShippableLines
 2 resolve seller warehouse/handoff requirements per method
-3 derive urgency from existing analytical evidence only
-4 stable-sort clusters urgent first + stable ID tie-break
-5 greedily group up to min(user max, hard max)
-6 preserve exact line whole-pack quantities
-7 compute candidate total volume
-8 if PVZ candidate total >1000 L, split/block deterministically; never pass because each line <1000
-9 apply placement-zone method rules
-10 fan out across selected handoff points only in user priority order
-11 stop at max_candidates; never enumerate subsets
+3 preserve existing upstream Calculated/Shippable priority/order evidence when available; otherwise use stable cluster ID ordering
+4 greedily group up to min(user max, hard max)
+5 preserve exact line whole-pack quantities
+6 compute candidate total volume
+7 if PVZ candidate total >1000 L, split/block deterministically; never pass because each line <1000
+8 apply placement-zone method rules
+9 fan out across selected handoff points only in user priority order
+10 stop at max_candidates; never enumerate subsets
 ```
+
+Do not derive `urgency_date`, stockout date, days-to-stockout or equivalent from `current_weekly_rate`, FBO, inbound, Need or other analysis fields. A future approved upstream urgency field may be consumed only after an explicit design change.
 
 Candidate ID is stable fingerprint of immutable plan identity + method + seller warehouse + handoff + cluster IDs + SKU quantities.
 
 Tests:
 - repeat-run exact IDs/order;
+- deterministic stable ordering without an urgency field;
 - DIRECT=1;
 - crossdock max 20 and user max lowering it;
 - every line <1000 L but candidate aggregate >1000 L is blocked/split;
@@ -251,4 +254,4 @@ python -m pytest -q
 
 Also run a realistic 100+ SKU / 20+ cluster fixture and assert bounded candidate count/time.
 
-Acceptance: candidate generation is pure, deterministic, filter-only, whole-pack preserving, seller/handoff identities are resolved before external validation, PVZ 1000 L applies to candidate total, and placement-zone evidence remains available for manifests.
+Acceptance: candidate generation is pure, deterministic, filter-only, whole-pack preserving, seller/handoff identities are resolved before external validation, PVZ 1000 L applies to candidate total, placement-zone evidence remains available for manifests, and no shipment-specific urgency model is introduced.

@@ -65,6 +65,18 @@ calculated_need_qty = max(0, ceil(raw_need))
 - Positive operational quantities are whole packs.
 - Whole-pack ShippablePlan is built across all clusters before shipment selection; selected clusters are filter-only.
 
+### Analysis provenance
+
+Every successful `AnalysisSnapshot` must carry immutable source provenance needed by downstream shipment layers:
+
+```text
+analysis_as_of
+source_mode = api | files
+source_snapshot_id = API source snapshot ID | None
+```
+
+In API mode `analysis_as_of == OzonSourceSnapshot.source_as_of` and `source_snapshot_id` is required. In FILES mode `source_snapshot_id=None` and the existing historically consistent file workflow owns `analysis_as_of`. Downstream code must consume these fields from the parent analysis snapshot; it must not reconstruct provenance from a browser request.
+
 ## API-first source safeguards
 
 Exactly one source mode owns an analysis run:
@@ -78,6 +90,8 @@ FILES
 Never silently mix sources by domain/SKU/cluster/missing-row fallback. API error never switches to FILES automatically.
 
 API adapters normalize into existing PII-safe domain contracts; do not fork analytics by source mode.
+
+FILES is a reserve **analytical** workflow. In the active milestone, live handoff search, temporary Ozon draft validation and timeslot discovery require an unlocked Ozon API session and API-backed source context. Do not combine a FILES analysis with live API operational catalogs/validation as a hybrid third mode.
 
 ### API source date
 
@@ -173,6 +187,7 @@ Calculated Plan
 - PVZ 1000 L is candidate-total estimated item-volume pre-check, not per-line and not packed-cargo proof.
 - Preserve exact `placement_zones` through candidate/validated manifest.
 - Ranking is operational/service-level; do not use customer-delivery route costs as inbound supply tariff.
+- **Do not invent `urgency_date`, stockout date or days-late math in the shipment layer.** Urgency may influence grouping/ranking only if a later approved upstream analytical contract already exposes an immutable canonical urgency field. Otherwise omit urgency keys entirely and rank by Ozon acceptance/timeslot, lower fragmentation/covered volume, user warehouse/handoff preference and stable identity.
 - No active endpoint/action may call `POST /v2/draft/supply/create` or claim a real supply was created/booked.
 
 ## Product identity/export safeguards
@@ -202,6 +217,10 @@ Inside target Plan:
 - `Товары`: bounded SKU-backed article-first selector + selected product workspace.
 - `Отгрузки`: date/method/cluster intent, SellerWarehouseSelector where needed, remote HandoffPointSelector, explicit `Найти варианты в Ozon`, validated manifests and export.
 - `Данные`: API connection/sync primary; FILES explicit reserve mode.
+- FILES mode does not expose live Ozon shipment validation; direct the user back to API mode for handoff search/draft/timeslot checks.
+- Use native `input[type="date"]` for shipment dates when platform-owned calendar behavior is acceptable.
+- Use native `<select>` for seller warehouse when more than one active warehouse requires a choice; do not build a custom select solely for styling.
+- Handoff point remains an authored accessible remote combobox/listbox because it owns asynchronous search/result behavior.
 - Temporary-draft disclosure must say real supply requests are not created.
 - Distinguish `Кандидат` from `Проверено Ozon`; never show real-supply success copy before PR-F.
 - Frontend owns presentation/state only; Python owns calculations, candidates, validation, ranking and export.

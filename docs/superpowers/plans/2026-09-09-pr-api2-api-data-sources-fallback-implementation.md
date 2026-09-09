@@ -2,7 +2,7 @@
 
 > **Required process:** implement task-by-task with TDD. Read `AGENTS.md` and the canonical 2026-09-09 API-first shipment design first.
 
-**Goal:** replace routine Ozon orders/availability/restrictions uploads with one immutable API source snapshot while preserving existing file importers as an explicit, non-mixing fallback.
+**Goal:** replace routine Ozon orders/availability/restrictions uploads with one immutable API source snapshot while preserving existing file importers as an explicit, non-mixing analytical fallback.
 
 **Architecture:** backend adapters fetch Ozon domains and normalize them into existing analytics contracts. `OzonSourceSnapshotStore` is process-memory-only. API mode and FILES mode feed the same existing analysis orchestration; analytics formulas are not forked.
 
@@ -14,29 +14,39 @@
 - Never fill missing API rows/domains from files.
 - Raw buyer/address/phone/email data never enters source snapshots/logs/frontend.
 - API `source_as_of` is backend-owned; browser cannot relabel current evidence.
+- Every successful `AnalysisSnapshot` persists `analysis_as_of`, `source_mode`, and `source_snapshot_id` provenance.
 - API history depth is backend-owned; default 12 completed ISO weeks, bounded backfill only for source-wide gaps, max 52 weeks.
 - Exact Ozon recommendation is not fabricated in API mode.
 - FBO and inbound remain distinct and parity-tested against existing Need semantics.
 - Handoff points are remote search results, **not** source-sync catalog data.
 - Seller warehouses are a small source-sync catalog.
 - Canonical seller/FBS stock endpoint is `/v2/product/info/stocks-by-warehouse/fbs`; do not implement v1.
+- FILES remains a reserve analytical mode only; do not introduce hybrid FILES analysis + live Ozon operational validation in this PR.
 
 ---
 
-## Task 1 — immutable API source contracts and store
+## Task 1 — immutable source-mode/API source contracts and store
+
+**Modify:**
+- `backend/domain/contracts.py`
 
 **Create:**
 - `backend/ozon/source_contracts.py`
 - `backend/ozon/source_store.py`
 - `tests/ozon/test_source_store.py`
 
-Minimum contracts:
+`SourceMode` is neutral analysis provenance, not an Ozon-adapter-owned type. Define it in the existing domain boundary so `AnalysisSnapshot` never needs to import from `backend.ozon`:
 
 ```python
+# backend/domain/contracts.py
 class SourceMode(str, Enum):
     API = "api"
     FILES = "files"
+```
 
+`backend/ozon/source_contracts.py` imports that neutral enum and defines API-specific source records:
+
+```python
 @dataclass(frozen=True, slots=True)
 class EndpointEvidence:
     name: str
@@ -84,6 +94,7 @@ source_as_of = synced_at_utc.astimezone(MOSCOW_BUSINESS_TZ).date()
 Do not require `zoneinfo`/IANA tzdata merely to compute the current Moscow business date in the portable Windows runtime.
 
 Tests:
+- stable neutral `SourceMode` values;
 - frozen/immutable contracts;
 - bounded store (for example latest 3 snapshots);
 - not-found identity;
@@ -363,24 +374,47 @@ python -m pytest tests/api/test_ozon_sync.py -q
 
 ---
 
-## Task 9 — existing analysis consumes API snapshot OR FILES
+## Task 9 — existing analysis consumes API snapshot OR FILES and persists provenance
 
 **Modify:**
+- `backend/decision/contracts.py`
 - `backend/api.py`
 - `backend/application.py` only for thin prepared-source adaptation if needed
 - `tests/api/test_analysis.py`
 - `tests/api/test_product_completion_acceptance.py`
 
-API mode sends source snapshot identity plus local seller inputs/settings. `analysis_as_of` is taken from `source_snapshot.source_as_of`.
+Import neutral `SourceMode` from `backend.domain.contracts` and extend the immutable `AnalysisSnapshot` contract with:
 
-If a legacy request contains `as_of`, exact mismatch is a stable 400; prefer no mutable API-mode `as_of` in target contract.
+```python
+analysis_as_of: date
+source_mode: SourceMode
+source_snapshot_id: str | None
+```
+
+Canonical provenance:
+
+```text
+API mode:
+  analysis_as_of = source_snapshot.source_as_of
+  source_mode = SourceMode.API
+  source_snapshot_id = source_snapshot.source_snapshot_id
+
+FILES mode:
+  analysis_as_of = existing historically consistent FILES as_of
+  source_mode = SourceMode.FILES
+  source_snapshot_id = None
+```
+
+API mode sends source snapshot identity plus local seller inputs/settings. If a legacy request contains `as_of`, exact mismatch is a stable 400; prefer no mutable API-mode `as_of` in target contract.
 
 Reject mixed-source requests:
 - API snapshot + orders file;
 - API snapshot + availability/restrictions file;
 - missing/stale source snapshot ID.
 
-Acceptance fixture must prove semantically equivalent API/FILES inputs produce equal DemandEstimate, FBO/inbound Need, Flow and seller-stock resolution.
+Downstream code must read provenance from the resulting parent `AnalysisSnapshot`; it must not reconstruct `analysis_as_of` or source identity from a later shipment request.
+
+Acceptance fixture must prove semantically equivalent API/FILES inputs produce equal DemandEstimate, FBO/inbound Need, Flow and seller-stock resolution while preserving different source provenance.
 
 Exact Ozon recommendation absent → Calculated Plan remains available, Safe/Ozon comparison explicit incomplete.
 
@@ -407,8 +441,9 @@ Acceptance:
 
 ```text
 routine orders/availability/restrictions uploads not required in API mode
-FILES fallback explicit and non-mixing
+FILES fallback explicit, analytical-only and non-mixing
 source_as_of deterministic/server-owned without tzdata dependency
+AnalysisSnapshot provenance explicit, immutable and domain-neutral
 order history sufficient by backend policy without per-SKU infinite backfill
 FBS stock uses v2 endpoint
 seller warehouses available in source snapshot

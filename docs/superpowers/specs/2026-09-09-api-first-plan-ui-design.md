@@ -68,7 +68,7 @@ Ozon API connection/session
 → explicit FILES fallback
 ```
 
-API is primary. FILES is a reserve workflow, not a peer auto-toggle.
+API is primary. FILES is a reserve analytical workflow, not a peer auto-toggle or a hybrid live-validation mode.
 
 ## 3. Canonical product identity
 
@@ -266,6 +266,10 @@ On entry, disclose:
 Данные API и файлов в одном расчёте не смешиваются.
 ```
 
+FILES remains an analytical fallback: Plan/Flow may be calculated from manual files where evidence is complete, but live handoff search, temporary Ozon drafts and timeslot validation are unavailable in this mode. Do not silently supplement FILES analysis with current API operational data.
+
+When the user opens `Отгрузки` from FILES-backed analysis, keep local analytical/whole-pack evidence inspectable where available but disable `Найти варианты в Ozon` with a correction-oriented action to return to `Данные`, switch to API mode, unlock and sync.
+
 The mode change is explicit user action. API errors never toggle it automatically.
 
 ## 8. Shipment intent
@@ -297,6 +301,14 @@ Target controls:
 [Найти варианты в Ozon]
 ```
 
+Control ownership is intentionally minimal:
+
+- shipment `date_from` / `date_to` use native `input[type="date"]` while platform-owned calendar behavior is acceptable for this desktop tool;
+- when multiple active seller warehouses require a choice, use native `<select>`; one active warehouse is fixed resolved context, not a selector;
+- `HandoffPointSelector` is the one authored async selection control: accessible remote combobox/listbox with owned search/results behavior.
+
+Do not introduce a custom date picker or custom generic Select solely for visual styling. A later approved UX requirement may change ownership if native behavior becomes insufficient.
+
 Editing any field changes shipment draft state only. It does not recalculate analysis, refetch source data or call Ozon.
 
 ### 8.1 Cluster initialization
@@ -313,7 +325,7 @@ Seller warehouses come from the current API source snapshot.
 Rules:
 
 - if exactly one active seller warehouse exists, show it as fixed resolved context and backend may auto-use it for cross-dock;
-- if multiple active seller warehouses exist and cross-dock is selected, require explicit `Склад отправления` selection;
+- if multiple active seller warehouses exist and cross-dock is selected, require explicit `Склад отправления` selection using native `<select>`;
 - DIRECT does not require this cross-dock field;
 - stale/inactive IDs surface a blocking correction message;
 - do not expose seller-warehouse contacts/courier comments.
@@ -331,8 +343,9 @@ Interaction:
 >=4 → ~300 ms debounced localhost search
 ```
 
-Required:
+Required authored-combobox behavior:
 
+- semantic input + listbox/options with keyboard operation and accessible name/state;
 - IME/composition-safe input;
 - stale-response/run-sequence protection;
 - clear button cancels/invalidates pending work and restores focus;
@@ -353,9 +366,9 @@ Near `Найти варианты в Ozon` show persistent explanatory copy:
 Реальные заявки на поставку не создаются.
 ```
 
-The button is the only user action that starts candidate → temporary draft → timeslot validation.
+The button is the only user action that starts candidate → temporary draft → timeslot validation, and it is available only for API-backed analysis with an unlocked current Ozon source context.
 
-If vault is locked, direct the user to `Данные` to unlock. Do not embed an ad-hoc secret/password prompt in Plan.
+If vault is locked, direct the user to `Данные` to unlock. If the current analysis is FILES-backed, direct the user to API mode and sync. Do not embed an ad-hoc secret/password prompt in Plan.
 
 ## 11. Candidate and validation states
 
@@ -502,13 +515,13 @@ SourceModePanel
 ArticlePlanSelector
 PlanProductWorkspace
 ShipmentIntentForm
-SellerWarehouseSelector
-HandoffPointSelector
+SellerWarehouseSelector      # business wrapper may render native <select>
+HandoffPointSelector         # authored async combobox/listbox
 ShipmentManifest
 OzonValidationStatus
 ```
 
-Native semantic buttons/labels/checkboxes/tables are preferred when sufficient. No browser `alert`, `confirm` or `prompt` for product flows.
+Native semantic buttons/labels/checkboxes/tables/date inputs/selects are preferred when sufficient. No browser `alert`, `confirm` or `prompt` for product flows.
 
 All enabled interactive controls need default/hover/focus-visible/active/disabled/busy/error behavior. Busy state keeps stable geometry.
 
@@ -520,7 +533,9 @@ PR-E must make runtime, `DESIGN.md` and `UX-CONTRACT.md` agree on:
 API-first Data hierarchy
 article-first SKU-backed Plan
 seller warehouse resolution
-remote HandoffPointSelector
+native shipment dates / native seller-warehouse select
+remote authored HandoffPointSelector
+FILES analytical fallback without hybrid live validation
 shipment intent / candidate / validation lifecycle
 candidate-total PVZ wording
 zone composition/manual packing note
