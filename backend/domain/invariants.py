@@ -41,12 +41,14 @@ def assert_non_empty(value: str) -> str:
 
 
 def validate_order(order: OrderRecord) -> OrderRecord:
-    for field in ("origin_cluster", "destination_cluster"):
-        value = getattr(order, field)
-        if not isinstance(value, str) or not value.strip():
-            raise DomainValidationError(
-                "NON_EMPTY_REQUIRED", f"{field} must not be empty", field,
-            )
+    if not isinstance(order.origin_cluster, str):
+        raise DomainValidationError(
+            "INVALID_TYPE", "origin_cluster must be a string", "origin_cluster",
+        )
+    if not isinstance(order.destination_cluster, str) or not order.destination_cluster.strip():
+        raise DomainValidationError(
+            "NON_EMPTY_REQUIRED", "destination_cluster must not be empty", "destination_cluster",
+        )
     if not order.sku.strip():
         raise DomainValidationError("NON_EMPTY_REQUIRED", "sku must not be empty", "sku")
     if isinstance(order.quantity, bool) or not isinstance(order.quantity, int) or order.quantity < 0:
@@ -61,4 +63,4 @@ def is_net_demand(order: OrderRecord) -> bool:
 
 
 def is_fulfilled_route(order: OrderRecord) -> bool:
-    return order.lifecycle is OrderLifecycle.FULFILLED
+    return order.lifecycle is OrderLifecycle.FULFILLED and bool(order.origin_cluster.strip())

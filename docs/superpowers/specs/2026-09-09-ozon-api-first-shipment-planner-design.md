@@ -61,6 +61,10 @@ Future `PR-F — Ozon Supply Execution` requires a separate approved design.
 ### 3.1 Destination owns demand
 
 `destination_cluster` is customer-demand geography. Fulfillment origin never creates destination demand.
+An order with a known destination and blank or unresolved origin still contributes
+to destination demand, but it does not contribute to fulfillment-route or Flow
+evidence. The origin remains blank; adapters and analytics must never invent an
+origin from destination, region, city, or a synthetic placeholder.
 
 ### 3.2 Need
 
@@ -241,6 +245,10 @@ FBO and FBS use endpoint-specific normalizers: both take origin/destination only
 from `financial_data.cluster_from/cluster_to`; FBO requests analytics and
 financial blocks, while v4 FBS maps `product_id`, `product_offer_id`,
 `product_name`, and `status_alias`. Region/city are never destination substitutes.
+History date boundaries and retained posting event timestamps use the fixed
+UTC+03:00 business calendar. Business-day boundaries are converted to their UTC
+instants for Ozon requests; offset-aware response instants are represented in
+UTC+03:00 before downstream daily/ISO-week analytics.
 
 ### 5.2 Current FBO stock
 

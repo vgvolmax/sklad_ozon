@@ -135,3 +135,37 @@ def test_product_list_failure_makes_fbo_stock_incomplete(monkeypatch):
     source = sync_ozon_source(object())
     assert capability_matrix(source)["need_fbo"]["complete"] is False
     assert not any(item.name == "fbo_stock" and item.complete for item in source.endpoint_evidence)
+
+
+def test_product_list_failure_skips_dependent_stock_and_placement(monkeypatch):
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        _orders(end, 8) if path == FBO_POSTINGS_PATH else (), ()))
+    _patch_non_history(monkeypatch)
+    dependent_calls = []
+    monkeypatch.setattr(module, "fetch_product_skus", lambda _client: (_ for _ in ()).throw(RuntimeError("products")))
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: dependent_calls.append("fbo"))
+    monkeypatch.setattr(module, "fetch_placement_zones", lambda *_args: dependent_calls.append("zones"))
+
+    source = sync_ozon_source(object())
+
+    assert dependent_calls == []
+    assert capability_matrix(source)["need_fbo"]["complete"] is False
+    assert capability_matrix(source)["shipment_compatibility"]["complete"] is False
+
+
+def test_known_empty_product_universe_allows_complete_empty_dependencies(monkeypatch):
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        _orders(end, 8) if path == FBO_POSTINGS_PATH else (), ()))
+    _patch_non_history(monkeypatch)
+    calls = []
+    monkeypatch.setattr(module, "fetch_product_skus", lambda _client: ())
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client, skus: (calls.append(("fbo", skus)) or (), ()))
+    monkeypatch.setattr(module, "fetch_placement_zones", lambda _client, skus: (calls.append(("zones", skus)) or (), ()))
+
+    source = sync_ozon_source(object())
+
+    assert calls == [("fbo", ()), ("zones", ())]
+    assert capability_matrix(source)["need_fbo"]["complete"] is True
+    assert capability_matrix(source)["shipment_compatibility"]["complete"] is True

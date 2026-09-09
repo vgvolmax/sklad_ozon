@@ -103,7 +103,16 @@ def sync_ozon_source(client, *, progress_callback=None) -> OzonSourceSnapshot:
             evidence.append(EndpointEvidence("fbo_stock", datetime.now(timezone.utc).isoformat(), 0, False, (diagnostic,)))
     seller_stock = run("seller_stock", lambda: fetch_seller_stock(client), ())
     inbound = run("inbound", lambda: fetch_inbound(client, cluster_by_id, warehouse_to_macrolocal), ())
-    zones = run("placement_zones", lambda: fetch_placement_zones(client, product_skus), ())
+    if product_evidence.complete:
+        zones = run("placement_zones", lambda: fetch_placement_zones(client, product_skus), ())
+    else:
+        zones = ()
+        diagnostic = ImportDiagnostic(
+            "error", "OZON_PLACEMENT_ZONES_FAILED",
+            "Placement-zone evidence unavailable because SKU universe is incomplete.")
+        diagnostics.append(diagnostic)
+        evidence.append(EndpointEvidence(
+            "placement_zones", datetime.now(timezone.utc).isoformat(), 0, False, (diagnostic,)))
 
     inbound_by_key = {(row.sku, row.cluster): row.inbound_quantity for row in inbound}
     availability = tuple(replace(row, inbound_quantity=inbound_by_key.get((row.sku, row.cluster))) for row in fbo)

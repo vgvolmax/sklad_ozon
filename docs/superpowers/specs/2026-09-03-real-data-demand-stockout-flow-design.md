@@ -42,6 +42,13 @@ Planning for `SKU × cluster` is based exclusively on destination demand.
 
 Physical dispatch volume from an origin may be much larger than that origin's own customer demand because the origin covers neighboring stockouts.
 
+Known destination evidence remains demand evidence when fulfillment origin is
+blank or unresolved. Such an order is excluded from fulfillment-route and Flow
+observations, and its origin must remain blank rather than being inferred from
+destination, region, city, or any synthetic placeholder. API posting dates and
+event timestamps are normalized on the fixed UTC+03:00 business calendar before
+daily and ISO-week grouping.
+
 Example:
 
 ```text

@@ -9,6 +9,7 @@ from datetime import date, datetime, time, timezone
 from backend.domain.contracts import ImportDiagnostic, OrderLifecycle, OrderRecord
 from backend.ozon.client import OzonClient, OzonRequestPolicy
 from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_POSTINGS_PATH
+from backend.ozon.source_contracts import MOSCOW_BUSINESS_TZ
 
 READ = OzonRequestPolicy(retry_safe=True)
 PAGE_SIZE = 1000
@@ -37,6 +38,23 @@ def _text(value: object) -> str:
     return str(value).strip() if value is not None else ""
 
 
+def _business_timestamp(value: object, field: str, diagnostics: list[ImportDiagnostic]) -> str:
+    raw = _text(value)
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("timestamp has no offset")
+    except ValueError:
+        diagnostics.append(ImportDiagnostic(
+            "error", "INVALID_ORDER_TIMESTAMP",
+            f"Invalid Ozon posting timestamp for {field}.", field=field,
+        ))
+        return ""
+    return parsed.astimezone(MOSCOW_BUSINESS_TZ).isoformat()
+
+
 def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[tuple[OrderRecord, ...], tuple[ImportDiagnostic, ...]]:
     """Normalize only documented endpoint fields and discard all PII."""
     status = _text(posting.get("status_alias" if fbs else "status"))
@@ -49,9 +67,14 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[tuple[OrderRecord, 
     origin_cluster = _text(financial.get("cluster_from"))
     destination = _text(financial.get("cluster_to"))
     origin_warehouse = _text(analytics.get("warehouse_name")) or None
-    accepted = _text(posting.get("in_process_at") or posting.get("created_at"))
     lifecycle = _lifecycle(status)
     diagnostics: list[ImportDiagnostic] = []
+    accepted = _business_timestamp(
+        posting.get("in_process_at") or posting.get("created_at"), "accepted_at", diagnostics)
+    planned_ship = _business_timestamp(posting.get("shipment_date"), "planned_ship_at", diagnostics)
+    handed_to_delivery = _business_timestamp(
+        posting.get("delivering_date"), "handed_to_delivery_at", diagnostics)
+    delivered = _business_timestamp(posting.get("delivered_at"), "delivered_at", diagnostics)
     posting_number = _text(posting.get("posting_number"))
     if not destination:
         diagnostics.append(ImportDiagnostic(
@@ -78,9 +101,9 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[tuple[OrderRecord, 
         records.append(OrderRecord(
             sku=sku, quantity=int(quantity), origin_cluster=origin_cluster,
             destination_cluster=destination, lifecycle=lifecycle, accepted_at=accepted,
-            planned_ship_at=_text(posting.get("shipment_date")) or None,
-            handed_to_delivery_at=_text(posting.get("delivering_date")) or None,
-            delivered_at=_text(posting.get("delivered_at")) or None,
+            planned_ship_at=planned_ship or None,
+            handed_to_delivery_at=handed_to_delivery or None,
+            delivered_at=delivered or None,
             raw_status=status, article=_text(product.get("product_offer_id" if fbs else "offer_id")),
             product_name=_text(product.get("product_name" if fbs else "name")), origin_warehouse=origin_warehouse,
             seller_price=float(product.get("price") or 0),
@@ -104,8 +127,8 @@ def _result(response: dict) -> dict:
 
 
 def fetch_postings(client: OzonClient, path: str, history_from: date, history_to: date):
-    since = datetime.combine(history_from, time.min, timezone.utc).isoformat().replace("+00:00", "Z")
-    until = datetime.combine(history_to, time.max, timezone.utc).isoformat().replace("+00:00", "Z")
+    since = datetime.combine(history_from, time.min, MOSCOW_BUSINESS_TZ).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    until = datetime.combine(history_to, time.max, MOSCOW_BUSINESS_TZ).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     records: list[OrderRecord] = []
     diagnostics: list[ImportDiagnostic] = []
     cursor = ""
