@@ -1,6 +1,111 @@
-from backend.ozon.endpoints import FBS_STOCK_PATH,HANDOFF_SEARCH_PATH
-from backend.ozon.sync import capability_matrix
+from datetime import date, timedelta
+
+from backend.domain.contracts import OrderLifecycle, OrderRecord
+from backend.ingestion.availability import AvailabilityRecord
+from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_STOCK_PATH
+from backend.ozon.source_contracts import Cluster, SellerWarehouse
+from backend.ozon.sync import capability_matrix, sync_ozon_source
 from tests.ozon.test_source_store import snap
+
+
+def _orders(as_of: date, weeks: int, *, include_new=False):
+    week_start = as_of - timedelta(days=as_of.weekday())
+    result = [OrderRecord("OLD", 1, "Москва", "Москва", OrderLifecycle.FULFILLED,
+                          (week_start - timedelta(weeks=index)).isoformat())
+              for index in range(1, weeks + 1)]
+    if include_new:
+        result.append(OrderRecord("NEW", 1, "Москва", "Москва", OrderLifecycle.FULFILLED,
+                                  (week_start - timedelta(weeks=1)).isoformat()))
+    return tuple(result)
+
+
+def _patch_non_history(monkeypatch, *, fbo_failure=False, cluster_failure=False):
+    import backend.ozon.sync as module
+
+    def clusters(_client):
+        if cluster_failure:
+            raise RuntimeError("cluster unavailable")
+        return (Cluster(10, "Москва"),), ()
+
+    monkeypatch.setattr(module, "fetch_clusters", clusters)
+    monkeypatch.setattr(module, "fetch_seller_warehouses", lambda _client: (
+        (SellerWarehouse(1, "Seller", None, True, False),), ()))
+    if fbo_failure:
+        monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client: (_ for _ in ()).throw(RuntimeError("fbo")))
+    else:
+        monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client: ((), ()))
+    monkeypatch.setattr(module, "fetch_seller_stock", lambda _client: (
+        (AvailabilityRecord("OLD", "Seller", "", 3, fbs_quantity=3),), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda _client, _clusters: ((), ()))
+    monkeypatch.setattr(module, "fetch_placement_zones", lambda _client, _skus: ((), ()))
+
+
 def test_registry_and_capability_matrix_excludes_handoff():
- assert FBS_STOCK_PATH.startswith('/v2/')
- matrix=capability_matrix(snap('x')); assert 'handoff' not in matrix and matrix['ozon_comparison']['complete'] is False
+    assert FBS_STOCK_PATH.startswith("/v2/")
+    matrix = capability_matrix(snap("x"))
+    assert "handoff" not in matrix and matrix["ozon_comparison"]["complete"] is False
+
+
+def test_initial_twelve_window_with_eight_usable_weeks_fetches_once(monkeypatch):
+    import backend.ozon.sync as module
+    calls = []
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        calls.append((path, start)) or (_orders(end, 8) if path == FBO_POSTINGS_PATH else ()), ()))
+    _patch_non_history(monkeypatch)
+    sync_ozon_source(object())
+    assert len(calls) == 2
+
+
+def test_source_wide_six_weeks_backfills_four_then_stops_at_eight(monkeypatch):
+    import backend.ozon.sync as module
+    windows = []
+    def postings(_client, path, start, end):
+        if start not in windows:
+            windows.append(start)
+        weeks = 6 if len(windows) == 1 else 8
+        return (_orders(end, weeks) if path == FBO_POSTINGS_PATH else ()), ()
+    monkeypatch.setattr(module, "fetch_postings", postings)
+    _patch_non_history(monkeypatch)
+    source = sync_ozon_source(object())
+    assert len(windows) == 2
+    assert (source.history_to - source.history_from).days >= 16 * 7
+
+
+def test_backfill_never_exceeds_fifty_two_weeks(monkeypatch):
+    import backend.ozon.sync as module
+    calls = []
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (calls.append(start) or (), ()))
+    _patch_non_history(monkeypatch)
+    source = sync_ozon_source(object())
+    assert (source.history_to - source.history_from).days <= 53 * 7
+    assert len(set(calls)) == 11
+
+
+def test_one_new_sku_does_not_trigger_per_sku_backfill(monkeypatch):
+    import backend.ozon.sync as module
+    calls = []
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        calls.append(path) or (_orders(end, 8, include_new=True) if path == FBO_POSTINGS_PATH else ()), ()))
+    _patch_non_history(monkeypatch)
+    sync_ozon_source(object())
+    assert len(calls) == 2
+
+
+def test_fbo_and_seller_stock_failures_are_isolated(monkeypatch):
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        _orders(end, 8) if path == FBO_POSTINGS_PATH else (), ()))
+    _patch_non_history(monkeypatch, fbo_failure=True)
+    matrix = capability_matrix(sync_ozon_source(object()))
+    assert matrix["need_fbo"]["complete"] is False
+    assert matrix["operational_allocation"]["complete"] is True
+
+
+def test_cluster_and_seller_warehouse_failures_are_isolated(monkeypatch):
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        _orders(end, 8) if path == FBO_POSTINGS_PATH else (), ()))
+    _patch_non_history(monkeypatch, cluster_failure=True)
+    matrix = capability_matrix(sync_ozon_source(object()))
+    assert matrix["cluster_identity"]["complete"] is False
+    assert matrix["seller_warehouse_selection"]["complete"] is True

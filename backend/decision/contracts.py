@@ -1,6 +1,7 @@
 """Immutable contracts for independent demand-need decisions."""
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from enum import Enum
 
@@ -338,6 +339,6 @@ class AnalysisSnapshot:
     stockout_impact: StockoutImpactPresentation
     data_quality: DataQualityPresentation
     diagnostics: tuple[DiagnosticView, ...]
-    analysis_as_of: object | None = None
+    analysis_as_of: date
     source_mode: SourceMode = SourceMode.FILES
     source_snapshot_id: str | None = None

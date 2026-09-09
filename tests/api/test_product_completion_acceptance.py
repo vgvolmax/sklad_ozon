@@ -191,6 +191,32 @@ def test_new_sku_one_week_of_demand_produces_nonzero_56_day_need():
     assert decision["need"]["calculated_need_qty"] == 80
 
 
+def test_api_files_parity_acceptance_preserves_demand_flow_need_and_seller_conflict():
+    """Cross-layer acceptance: source transport changes provenance, not math."""
+    import backend.api as api_module
+    from tests.api.test_analysis import (CLIENT, _analysis_data, _api_parity_fixture,
+                                         _parity_files, _post_analysis)
+
+    files = _parity_files()
+    files_payload = _post_analysis(files=files, data=_analysis_data()).json()
+    source = _api_parity_fixture()
+    api_module.OZON_SOURCE_STORE.put(source)
+    api_payload = CLIENT.post("/api/analysis", files={
+        key: files[key] for key in ("tariffs_file", "product_economics_file")},
+        data=_analysis_data(source_mode="api", source_snapshot_id=source.source_snapshot_id),
+    ).json()
+
+    files_snapshot = files_payload["snapshot"]
+    api_snapshot = api_payload["snapshot"]
+    for key in ("demand_estimates", "observed_routes", "clean_routes", "decision_rows",
+                "safe_allocations", "calculated_allocations"):
+        assert api_snapshot[key] == files_snapshot[key]
+    assert {item["code"] for item in api_payload["diagnostics"]} >= {"CONFLICTING_FBS_AVAILABLE_STOCK"}
+    assert {item["code"] for item in files_payload["diagnostics"]} >= {"CONFLICTING_FBS_AVAILABLE_STOCK"}
+    assert (api_snapshot["source_mode"], api_snapshot["source_snapshot_id"]) == ("api", "parity-api")
+    assert (files_snapshot["source_mode"], files_snapshot["source_snapshot_id"]) == ("files", None)
+
+
 def test_product_completion_cleaning_changes_fulfillment_not_demand(product_completion_payload):
     snapshot = product_completion_payload["snapshot"]
     observed = _view(snapshot, "observed_views", "destination", "Москва")

@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, getcontext
 from enum import Enum
 import json
@@ -16,7 +16,10 @@ import backend.api as api_module
 import backend.application as application_module
 from backend.application import AnalysisSummary, build_analysis_summary
 from backend.api import MAX_UPLOAD_BYTES, wire
+from backend.domain.contracts import OrderLifecycle, OrderRecord
+from backend.ingestion.availability import AvailabilityRecord
 from backend.main import app
+from backend.ozon.source_contracts import OzonSourceSnapshot
 from tests.helpers.xlsx_fixtures import make_multisheet_xlsx, make_real_unitka, make_xlsx
 
 
@@ -108,6 +111,45 @@ def _allocation(payload, cluster):
 
 def _placement(payload, cluster):
     return next(item for item in payload["placements"] if item["cluster_id"] == cluster)
+
+
+def _api_parity_fixture():
+    availability = (
+        AvailabilityRecord("SKU-1", "W1", "Москва", 5, None, "ART-1", 5, None, "Product", inbound_quantity=2),
+        AvailabilityRecord("SKU-1", "W2", "Москва", 0, None, "ART-1", 0, None, "Product", inbound_quantity=0),
+    )
+    seller = (
+        AvailabilityRecord("SKU-1", "Seller-A", "", 3, None, "ART-1", None, 3, "Product"),
+        AvailabilityRecord("SKU-1", "Seller-B", "", 4, None, "ART-1", None, 4, "Product"),
+    )
+    orders = tuple(OrderRecord(
+        "SKU-1", quantity, "Москва", "Москва", OrderLifecycle.FULFILLED,
+        f"2026-{day}T10:00:00", article="ART-1", product_name="Product", seller_price=1000)
+        for day, quantity in (("07-06", 5), ("07-13", 6), ("07-20", 7), ("07-27", 8)))
+    return OzonSourceSnapshot(
+        "parity-api", "2026-08-25T00:00:00+00:00", date(2026, 8, 25), "UTC+03:00",
+        date(2026, 6, 1), date(2026, 8, 25), orders, availability, seller,
+        (), (), (), (), ())
+
+
+def _parity_files():
+    rows = [
+        ["SKU-1", "W1", "Москва", 5, "", 5, 2, "ART-1", "Product", 3],
+        ["SKU-1", "W2", "Москва", 0, "", 0, 0, "ART-1", "Product", 4],
+    ]
+    headers = ["SKU", "Склад", "Кластер", "Доступно", "Рекомендуемая поставка",
+               "Остаток FBO, шт", "Товары в пути на склад озон, шт",
+               "Артикул", "Название товара", "Остаток FBS, шт"]
+    order_lines = ["SKU;Артикул;Количество;Цена продавца;Кластер отгрузки;Кластер доставки;Статус;Принят в обработку"]
+    order_lines += [f"{row.sku};{row.article};{row.quantity};1000;Москва;Москва;Доставлен;{row.accepted_at}"
+                    for row in _api_parity_fixture().orders]
+    return {
+        "availability_file": ("availability.xlsx", make_xlsx(headers=headers, rows=rows)),
+        "restrictions_file": ("restrictions.csv", b"SKU;Warehouse;Status;Reason\n"),
+        "orders_file": ("orders.csv", ("\n".join(order_lines) + "\n").encode()),
+        "tariffs_file": ("tariffs.xlsx", make_xlsx(headers=TARIFF_HEADERS, rows=[["Москва", "Москва", 0, "", "", "", 50]])),
+        "product_economics_file": ("products.xlsx", make_xlsx(headers=PRODUCT_HEADERS, rows=[["SKU-1", "ART-1", 100, 99, 1000, "10%", 1]])),
+    }
 
 
 def _without_import_timestamps(payload):
@@ -544,6 +586,57 @@ def test_pii_is_discarded_from_entire_analysis_response():
     serialized = json.dumps(payload, ensure_ascii=False).casefold()
     assert not any(marker.casefold() in serialized for marker in PII_MARKERS)
     assert not any(field in serialized for field in ('"buyer_name"', '"phone"', '"email"', '"address"', '"raw_row"'))
+
+
+def test_api_and_files_typed_sources_are_business_equivalent_without_fabricated_restrictions():
+    files = _parity_files()
+    files_response = _post_analysis(files=files, data=_analysis_data())
+    assert files_response.status_code == 200, files_response.text
+
+    snapshot = _api_parity_fixture()
+    api_module.OZON_SOURCE_STORE.put(snapshot)
+    api_files = {name: files[name] for name in ("tariffs_file", "product_economics_file")}
+    api_response = CLIENT.post("/api/analysis", files=api_files, data=_analysis_data(
+        source_mode="api", source_snapshot_id=snapshot.source_snapshot_id))
+    assert api_response.status_code == 200, api_response.text
+
+    files_payload, api_payload = files_response.json(), api_response.json()
+    for key in ("demand", "observed_routes", "clean_routes", "placements", "allocations", "safe_allocations"):
+        assert api_payload[key] == files_payload[key]
+    assert "CONFLICTING_FBS_AVAILABLE_STOCK" in {item["code"] for item in api_payload["diagnostics"]}
+    assert "CONFLICTING_FBS_AVAILABLE_STOCK" in {item["code"] for item in files_payload["diagnostics"]}
+    assert api_payload["snapshot"]["source_mode"] == "api"
+    assert api_payload["snapshot"]["source_snapshot_id"] == "parity-api"
+    assert api_payload["snapshot"]["analysis_as_of"] == "2026-08-25"
+    assert files_payload["snapshot"]["source_mode"] == "files"
+    assert files_payload["snapshot"]["source_snapshot_id"] is None
+    assert "Разрешено" not in repr(api_module._api_prepared_inputs(snapshot))
+
+
+@pytest.mark.parametrize("field", ["orders_file", "availability_file", "restrictions_file"])
+def test_api_mode_rejects_each_mixed_report_field(field):
+    snapshot = _api_parity_fixture()
+    api_module.OZON_SOURCE_STORE.put(snapshot)
+    files = _parity_files()
+    response = CLIENT.post("/api/analysis", files={
+        field: files[field], "tariffs_file": files["tariffs_file"],
+        "product_economics_file": files["product_economics_file"]}, data=_analysis_data(
+            source_mode="api", source_snapshot_id=snapshot.source_snapshot_id))
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "MIXED_SOURCE_MODE"
+
+
+def test_api_snapshot_not_found_and_as_of_mismatch_are_rejected():
+    files = _parity_files()
+    economics = {name: files[name] for name in ("tariffs_file", "product_economics_file")}
+    missing = CLIENT.post("/api/analysis", files=economics, data=_analysis_data(
+        source_mode="api", source_snapshot_id="missing"))
+    assert missing.status_code == 400 and missing.json()["error"]["code"] == "OZON_SOURCE_SNAPSHOT_NOT_FOUND"
+    snapshot = _api_parity_fixture()
+    api_module.OZON_SOURCE_STORE.put(snapshot)
+    mismatch = CLIENT.post("/api/analysis", files=economics, data=_analysis_data(
+        source_mode="api", source_snapshot_id=snapshot.source_snapshot_id, as_of="2026-08-24"))
+    assert mismatch.status_code == 400 and mismatch.json()["error"]["code"] == "API_AS_OF_MISMATCH"
 
 
 def test_real_availability_import_endpoint():

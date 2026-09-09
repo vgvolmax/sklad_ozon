@@ -1,4 +1,4 @@
-"""Inbound FBO supply normalization with one fail-closed state classifier."""
+"""Inbound FBO supply-order wire adapter."""
 
 from enum import Enum
 
@@ -8,6 +8,8 @@ from backend.ozon.client import OzonClient, OzonRequestPolicy
 from backend.ozon.endpoints import SUPPLY_ORDER_BUNDLE_PATH, SUPPLY_ORDER_GET_PATH, SUPPLY_ORDER_LIST_PATH
 
 READ = OzonRequestPolicy(retry_safe=True)
+PAGE_SIZE = 100
+DETAIL_BATCH_SIZE = 100
 
 
 class SupplyState(str, Enum):
@@ -16,59 +18,146 @@ class SupplyState(str, Enum):
     UNKNOWN = "unknown"
 
 
-_ACTIVE = {"created", "confirmed", "ready_to_ship", "in_transit", "accepted_at_supply_warehouse", "awaiting"}
-_FINAL = {"completed", "cancelled", "canceled", "rejected", "closed", "finished"}
+_INBOUND = {
+    "DATA_FILLING", "READY_TO_SUPPLY", "ACCEPTED_AT_SUPPLY_WAREHOUSE",
+    "IN_TRANSIT", "ACCEPTANCE_AT_STORAGE_WAREHOUSE", "REPORTS_CONFIRMATION_AWAITING",
+}
+_FINAL = {"COMPLETED", "CANCELLED", "REJECTED_AT_SUPPLY_WAREHOUSE", "OVERDUE"}
 
 
-def classify_supply_state(value: str) -> SupplyState:
-    normalized = str(value).strip().casefold()
-    if normalized in _ACTIVE:
+def classify_supply_state(value: object) -> SupplyState:
+    normalized = str(value).strip().upper()
+    if normalized in _INBOUND:
         return SupplyState.INBOUND
     if normalized in _FINAL:
         return SupplyState.FINAL
     return SupplyState.UNKNOWN
 
 
-def normalize_inbound_bundles(supplies: list[dict], bundles: dict[int, list[dict]], cluster_by_warehouse: dict[int, str]):
+def _items(response: dict, key: str) -> list:
+    value = response.get(key)
+    if isinstance(value, list):
+        return value
+    result = response.get("result")
+    if isinstance(result, dict) and isinstance(result.get(key), list):
+        return result[key]
+    return []
+
+
+def _order_id(raw: dict) -> int:
+    return int(raw.get("order_id", 0))
+
+
+def normalize_inbound(details: list[dict], bundle_items: dict[int, list[dict]], clusters: dict[int, str]):
     totals: dict[tuple[str, str], int] = {}
-    diagnostics = []
-    for supply in supplies:
-        supply_id = int(supply.get("supply_order_id", supply.get("order_id", supply.get("id", 0))))
-        state = classify_supply_state(supply.get("state", supply.get("status", "")))
-        if state is SupplyState.FINAL:
-            continue
-        if state is SupplyState.UNKNOWN:
-            diagnostics.append(ImportDiagnostic("error", "UNKNOWN_SUPPLY_STATE", f"Unknown supply state for supply {supply_id}"))
-            continue
-        warehouse_id = int(supply.get("warehouse_id", supply.get("destination_warehouse_id", 0)))
-        cluster = cluster_by_warehouse.get(warehouse_id, str(supply.get("cluster_name", "")).strip())
-        if not cluster:
-            diagnostics.append(ImportDiagnostic("error", "UNRESOLVED_SUPPLY_CLUSTER", f"Supply {supply_id} has no canonical cluster"))
-            continue
-        for item in bundles.get(supply_id, ()):
-            sku = str(item.get("sku", item.get("product_id", ""))).strip()
-            quantity = item.get("quantity", item.get("items_count", 0))
-            if sku and isinstance(quantity, (int, float)) and not isinstance(quantity, bool) and quantity >= 0 and int(quantity) == quantity:
+    diagnostics: list[ImportDiagnostic] = []
+    for order in details:
+        order_id = _order_id(order)
+        supplies = order.get("supplies")
+        for supply in supplies if isinstance(supplies, list) else ():
+            if not isinstance(supply, dict):
+                continue
+            state = classify_supply_state(supply.get("state"))
+            if state is SupplyState.FINAL:
+                continue
+            if state is SupplyState.UNKNOWN:
+                diagnostics.append(ImportDiagnostic("error", "UNKNOWN_SUPPLY_STATE",
+                                                    f"Unknown state for supply order {order_id}."))
+                continue
+            cluster_id = supply.get("macrolocal_cluster_id", order.get("macrolocal_cluster_id"))
+            try:
+                cluster = clusters[int(cluster_id)]
+            except (KeyError, TypeError, ValueError):
+                diagnostics.append(ImportDiagnostic("error", "UNRESOLVED_SUPPLY_CLUSTER",
+                                                    f"Supply order {order_id} has unknown macrolocal cluster ID."))
+                continue
+            try:
+                bundle_id = int(supply["bundle_id"])
+            except (KeyError, TypeError, ValueError):
+                diagnostics.append(ImportDiagnostic("error", "MISSING_SUPPLY_BUNDLE_ID",
+                                                    f"Supply order {order_id} has no bundle ID."))
+                continue
+            for item in bundle_items.get(bundle_id, ()):
+                sku = str(item.get("sku", "")).strip()
+                quantity = item.get("quantity")
+                if (not sku or isinstance(quantity, bool) or not isinstance(quantity, (int, float))
+                        or quantity < 0 or int(quantity) != quantity):
+                    diagnostics.append(ImportDiagnostic("error", "INVALID_SUPPLY_BUNDLE_ITEM",
+                                                        f"Bundle {bundle_id} contains invalid product evidence."))
+                    continue
                 totals[(sku, cluster)] = totals.get((sku, cluster), 0) + int(quantity)
-    records = tuple(AvailabilityRecord(sku, cluster, cluster, 0.0, None, fbo_quantity=None,
-                                       inbound_quantity=quantity)
-                    for (sku, cluster), quantity in totals.items())
+    records = tuple(AvailabilityRecord(
+        sku, cluster, cluster, 0.0, None, fbo_quantity=None, inbound_quantity=quantity)
+        for (sku, cluster), quantity in sorted(totals.items()))
     return records, tuple(diagnostics)
 
 
-def fetch_inbound(client: OzonClient, cluster_by_warehouse: dict[int, str] | None = None):
-    cluster_by_warehouse = cluster_by_warehouse or {}
-    response = client.post_json(SUPPLY_ORDER_LIST_PATH, {"filter":{},"limit":100,"offset":0}, policy=READ)
-    result = response.get("result", response)
-    supplies = result.get("orders", result.get("items", [])) if isinstance(result, dict) else []
-    bundles = {}
-    for summary in supplies:
-        supply_id = int(summary.get("supply_order_id", summary.get("order_id", summary.get("id", 0))))
-        detail = client.post_json(SUPPLY_ORDER_GET_PATH, {"order_id":supply_id}, policy=READ)
-        detailed = detail.get("result", detail)
-        if isinstance(detailed, dict):
-            summary.update({k:v for k,v in detailed.items() if k in {"state","status","warehouse_id","destination_warehouse_id","cluster_name"}})
-        bundle = client.post_json(SUPPLY_ORDER_BUNDLE_PATH, {"supply_order_id":supply_id,"limit":1000}, policy=READ)
-        value = bundle.get("result", bundle)
-        bundles[supply_id] = value.get("items", value.get("bundles", [])) if isinstance(value, dict) else []
-    return normalize_inbound_bundles(supplies, bundles, cluster_by_warehouse)
+def _fetch_order_ids(client: OzonClient) -> list[int]:
+    order_ids: list[int] = []
+    last_id = ""
+    seen = {last_id}
+    while True:
+        payload = {"filter": {}, "limit": PAGE_SIZE, "sort_by": "ORDER_CREATION"}
+        if last_id:
+            payload["last_id"] = last_id
+        response = client.post_json(SUPPLY_ORDER_LIST_PATH, payload, policy=READ)
+        page = _items(response, "order_ids")
+        order_ids.extend(int(value) for value in page)
+        next_id = str(response.get("last_id") or (response.get("result") or {}).get("last_id") or "")
+        if not next_id:
+            break
+        if next_id in seen:
+            raise ValueError("non-progressing supply-order cursor")
+        seen.add(next_id)
+        last_id = next_id
+    return order_ids
+
+
+def _fetch_details(client: OzonClient, order_ids: list[int]) -> list[dict]:
+    details: list[dict] = []
+    for start in range(0, len(order_ids), DETAIL_BATCH_SIZE):
+        response = client.post_json(SUPPLY_ORDER_GET_PATH,
+                                    {"order_ids": order_ids[start:start + DETAIL_BATCH_SIZE]}, policy=READ)
+        details.extend(item for item in _items(response, "orders") if isinstance(item, dict))
+    return details
+
+
+def _fetch_bundles(client: OzonClient, bundle_ids: list[int]) -> dict[int, list[dict]]:
+    result: dict[int, list[dict]] = {bundle_id: [] for bundle_id in bundle_ids}
+    last_id = ""
+    seen = {last_id}
+    while bundle_ids:
+        payload = {"bundle_ids": bundle_ids, "limit": 1000}
+        if last_id:
+            payload["last_id"] = last_id
+        response = client.post_json(SUPPLY_ORDER_BUNDLE_PATH, payload, policy=READ)
+        bundles = _items(response, "bundles")
+        for bundle in bundles:
+            if isinstance(bundle, dict):
+                try:
+                    bundle_id = int(bundle["bundle_id"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                items = bundle.get("items")
+                if isinstance(items, list):
+                    result.setdefault(bundle_id, []).extend(item for item in items if isinstance(item, dict))
+        root = response.get("result") if isinstance(response.get("result"), dict) else response
+        next_id = str(root.get("last_id") or "")
+        has_next = bool(root.get("has_next"))
+        if not has_next:
+            break
+        if not next_id or next_id in seen:
+            raise ValueError("non-progressing supply bundle cursor")
+        seen.add(next_id)
+        last_id = next_id
+    return result
+
+
+def fetch_inbound(client: OzonClient, cluster_by_id: dict[int, str] | None = None):
+    order_ids = _fetch_order_ids(client)
+    details = _fetch_details(client, order_ids)
+    bundle_ids = sorted({int(supply["bundle_id"]) for order in details
+                         for supply in order.get("supplies", ()) if isinstance(supply, dict)
+                         and supply.get("bundle_id") is not None})
+    bundles = _fetch_bundles(client, bundle_ids)
+    return normalize_inbound(details, bundles, cluster_by_id or {})

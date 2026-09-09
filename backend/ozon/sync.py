@@ -1,33 +1,37 @@
-"""Canonical orchestration for one immutable API source snapshot."""
+"""Causal orchestration for one immutable API source snapshot."""
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from backend.domain.contracts import ImportDiagnostic
-from backend.ozon.adapters.catalog import fetch_catalogs
+from backend.domain.contracts import ImportDiagnostic, OrderLifecycle
+from backend.ozon.adapters.catalog import fetch_clusters, fetch_seller_warehouses
 from backend.ozon.adapters.inbound import fetch_inbound
-from backend.ozon.adapters.orders import fetch_orders
+from backend.ozon.adapters.orders import fetch_postings
 from backend.ozon.adapters.placement_zones import fetch_placement_zones
-from backend.ozon.adapters.stocks import fetch_stocks
-from backend.ozon.history import history_window
-from backend.ozon.source_contracts import (EndpointEvidence, OzonSourceSnapshot,
-    SOURCE_TIMEZONE, source_business_date)
-from dataclasses import replace
+from backend.ozon.adapters.stocks import fetch_fbo_stock, fetch_seller_stock
+from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_POSTINGS_PATH
+from backend.ozon.history import history_window, next_backfill, usable_completed_weeks
+from backend.ozon.source_contracts import EndpointEvidence, OzonSourceSnapshot, SOURCE_TIMEZONE, source_business_date
 
 
 def capability_matrix(snapshot: OzonSourceSnapshot, *, include_inbound: bool = True) -> dict[str, dict[str, object]]:
-    evidence = {item.name:item for item in snapshot.endpoint_evidence}
-    def cap(name, affected, required=True):
-        item=evidence.get(name); complete=bool(item and item.complete)
-        return {"complete":complete or not required,"required":required,"affects":affected}
+    evidence = {item.name: item for item in snapshot.endpoint_evidence}
+
+    def cap(names, affected, required=True):
+        names = (names,) if isinstance(names, str) else names
+        complete = all(bool(evidence.get(name) and evidence[name].complete) for name in names)
+        return {"complete": complete or not required, "required": required, "affects": affected}
+
     return {
-        "demand_flow":cap("orders","demand_flow"),
-        "cluster_identity":cap("catalogs","affected_evidence"),
-        "need_fbo":cap("fbo_stock","need"),
-        "need_inbound":cap("inbound","need",include_inbound),
-        "operational_allocation":cap("seller_stock","operational_allocation"),
-        "ozon_comparison":{"complete":False,"required":False,"affects":"safe_comparison"},
-        "shipment_compatibility":cap("placement_zones","shipment_compatibility"),
+        "demand_flow": cap(("orders_fbo", "orders_fbs"), "demand_flow"),
+        "cluster_identity": cap("clusters", "affected_evidence"),
+        "seller_warehouse_selection": cap("seller_warehouses", "crossdock_selection", False),
+        "need_fbo": cap("fbo_stock", "need"),
+        "need_inbound": cap("inbound", "need", include_inbound),
+        "operational_allocation": cap("seller_stock", "operational_allocation"),
+        "ozon_comparison": {"complete": False, "required": False, "affects": "safe_comparison"},
+        "shipment_compatibility": cap("placement_zones", "shipment_compatibility"),
     }
 
 
@@ -35,41 +39,64 @@ def sync_ozon_source(client, *, progress_callback=None) -> OzonSourceSnapshot:
     now = datetime.now(timezone.utc)
     as_of = source_business_date(now)
     window = history_window(as_of)
-    evidence=[]; diagnostics=[]
+    evidence: list[EndpointEvidence] = []
+    diagnostics: list[ImportDiagnostic] = []
+
     def progress(stage):
-        if progress_callback: progress_callback(stage)
+        if progress_callback:
+            progress_callback(stage)
+
     def run(name, function, default):
         progress(name)
-        started=datetime.now(timezone.utc).isoformat()
+        started = datetime.now(timezone.utc).isoformat()
         try:
-            value=function()
-            count=sum(len(part) for part in value if isinstance(part,tuple)) if isinstance(value,tuple) else len(value)
-            evidence.append(EndpointEvidence(name,started,count,True,()))
-            return value
+            value = function()
+            records, item_diagnostics = value
+            diagnostics.extend(item_diagnostics)
+            complete = not any(item.severity == "error" for item in item_diagnostics)
+            evidence.append(EndpointEvidence(name, started, len(records), complete, item_diagnostics))
+            return records
         except Exception as exc:
-            diagnostic=ImportDiagnostic("error",f"OZON_{name.upper()}_FAILED",f"Ozon {name} evidence unavailable: {type(exc).__name__}")
-            diagnostics.append(diagnostic); evidence.append(EndpointEvidence(name,started,0,False,(diagnostic,)))
+            diagnostic = ImportDiagnostic(
+                "error", f"OZON_{name.upper()}_FAILED",
+                f"Ozon {name} evidence unavailable: {type(exc).__name__}")
+            diagnostics.append(diagnostic)
+            evidence.append(EndpointEvidence(name, started, 0, False, (diagnostic,)))
             return default
-    orders, order_diags = run("orders",lambda:fetch_orders(client,window.history_from,window.history_to),((),()))
-    diagnostics.extend(order_diags)
-    clusters,seller_warehouses,catalog_diags=run("catalogs",lambda:fetch_catalogs(client),((),(),()))
-    diagnostics.extend(catalog_diags)
-    fbo,seller_stock,stock_diags=run("stocks",lambda:fetch_stocks(client),((),(),()))
-    diagnostics.extend(stock_diags)
-    # Split stock capability evidence because its consequences are intentionally distinct.
-    stock_ev=evidence.pop(); evidence.extend((
-        EndpointEvidence("fbo_stock",stock_ev.fetched_at_utc,len(fbo),stock_ev.complete,stock_ev.diagnostics),
-        EndpointEvidence("seller_stock",stock_ev.fetched_at_utc,len(seller_stock),stock_ev.complete,stock_ev.diagnostics)))
-    inbound,inbound_diags=run("inbound",lambda:fetch_inbound(client),((),()))
-    diagnostics.extend(inbound_diags)
-    skus=tuple(dict.fromkeys([x.sku for x in orders]+[x.sku for x in fbo]+[x.sku for x in seller_stock]))
-    zones,zone_diags=run("placement_zones",lambda:fetch_placement_zones(client,skus),((),()))
-    diagnostics.extend(zone_diags)
-    inbound_by_key={(row.sku,row.cluster):row.inbound_quantity for row in inbound}
-    availability=tuple(replace(row,inbound_quantity=inbound_by_key.get((row.sku,row.cluster))) for row in fbo)
-    known={(row.sku,row.cluster) for row in availability}
-    availability += tuple(row for row in inbound if (row.sku,row.cluster) not in known)
+
+    def history_fetch(current_window):
+        fbo = run("orders_fbo", lambda: fetch_postings(
+            client, FBO_POSTINGS_PATH, current_window.history_from, current_window.history_to), ())
+        fbs = run("orders_fbs", lambda: fetch_postings(
+            client, FBS_POSTINGS_PATH, current_window.history_from, current_window.history_to), ())
+        return tuple(fbo) + tuple(fbs)
+
+    orders = history_fetch(window)
+    while (all(item.complete for item in evidence[-2:]) and
+           len(usable_completed_weeks(orders, as_of)) < 8):
+        expanded = next_backfill(window)
+        if expanded is None:
+            break
+        window = expanded
+        # The full expanded window replaces, rather than merges, prior evidence.
+        evidence[:] = [item for item in evidence if item.name not in {"orders_fbo", "orders_fbs"}]
+        orders = history_fetch(window)
+
+    clusters = run("clusters", lambda: fetch_clusters(client), ())
+    seller_warehouses = run("seller_warehouses", lambda: fetch_seller_warehouses(client), ())
+    cluster_by_id = {cluster.cluster_id: cluster.name for cluster in clusters}
+    fbo = run("fbo_stock", lambda: fetch_fbo_stock(client), ())
+    seller_stock = run("seller_stock", lambda: fetch_seller_stock(client), ())
+    inbound = run("inbound", lambda: fetch_inbound(client, cluster_by_id), ())
+    skus = tuple(dict.fromkeys(row.sku for row in (*orders, *fbo, *seller_stock)))
+    zones = run("placement_zones", lambda: fetch_placement_zones(client, skus), ())
+
+    inbound_by_key = {(row.sku, row.cluster): row.inbound_quantity for row in inbound}
+    availability = tuple(replace(row, inbound_quantity=inbound_by_key.get((row.sku, row.cluster))) for row in fbo)
+    known = {(row.sku, row.cluster) for row in availability}
+    availability += tuple(row for row in inbound if (row.sku, row.cluster) not in known)
     progress("complete")
-    return OzonSourceSnapshot(uuid4().hex,now.isoformat(),as_of,SOURCE_TIMEZONE,
-        window.history_from,window.history_to,orders,availability,seller_stock,
-        clusters,seller_warehouses,zones,tuple(evidence),tuple(diagnostics))
+    return OzonSourceSnapshot(
+        uuid4().hex, now.isoformat(), as_of, SOURCE_TIMEZONE, window.history_from,
+        window.history_to, orders, availability, seller_stock, clusters,
+        seller_warehouses, zones, tuple(evidence), tuple(diagnostics))
