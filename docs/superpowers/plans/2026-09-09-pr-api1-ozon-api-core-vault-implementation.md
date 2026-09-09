@@ -6,7 +6,7 @@
 
 **Architecture:** `data/ozon-credentials.json` stores only versioned AES-256-GCM ciphertext and scrypt metadata. Unlock decrypts Client-Id/API-Key into backend memory for the current process session. A synchronous fixed-host stdlib HTTP client owns headers, timeouts, redaction, pagination/retry primitives and normalized errors; frontend only calls localhost FastAPI credential/connection endpoints.
 
-**Tech Stack:** Python 3.13.14, FastAPI, `hashlib.scrypt`, `cryptography` AESGCM, stdlib `urllib.request`, pytest; no frontend framework and no external secret store.
+**Tech Stack:** Python 3.13.14, FastAPI, `hashlib.scrypt`, `cryptography==50.0.1` AESGCM, stdlib `urllib.request`, pytest; no frontend framework and no external secret store.
 
 **Spec:** `docs/superpowers/specs/2026-09-09-ozon-api-first-shipment-planner-design.md`
 
@@ -18,7 +18,7 @@
 - Fixed Ozon host is `https://api-seller.ozon.ru`; reject arbitrary hosts.
 - Draft-creation retry semantics are not implemented in this PR, but the client API must allow later call policies to disable retries.
 - Existing analysis/file workflows stay regression-identical.
-- One new pinned runtime dependency is allowed: `cryptography`, verified for the committed portable Python 3.13.14 runtime and Windows smoke.
+- The only new runtime dependency in this roadmap is exactly `cryptography==50.0.1`, verified on PyPI to support Python 3.13 and provide a Windows CPython 3.11+ abi3 wheel; Windows portable smoke remains the repository-level acceptance proof.
 
 ---
 
@@ -32,9 +32,7 @@
 **Interfaces:**
 - Produces: importable `cryptography.hazmat.primitives.ciphers.aead.AESGCM` in project-local runtime.
 
-- [ ] **Step 1: Select a concrete `cryptography` release that publishes a CPython 3.13 Windows wheel and pin it exactly in `requirements.txt`.**
-
-Do not leave a range. Verify the wheel exists before committing the version.
+- [ ] **Step 1: Add exactly `cryptography==50.0.1` to `requirements.txt`; do not use a version range.**
 
 - [ ] **Step 2: Run the local dependency/bootstrap test path available in the repo and add an explicit `from cryptography.hazmat.primitives.ciphers.aead import AESGCM` smoke assertion if current tests would not catch a missing wheel.**
 
@@ -260,7 +258,7 @@ python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_ac
 python -m pytest -q
 ```
 
-- [ ] **Step 4: Run/inspect authoritative Windows portable smoke and verify the pinned crypto wheel installs in project-local Python 3.13.14.**
+- [ ] **Step 4: Run/inspect authoritative Windows portable smoke and verify `cryptography==50.0.1` installs/imports in project-local Python 3.13.14.**
 
 - [ ] **Step 5: Search repository/test artifacts for fixture secrets and verify no new production secret logging or frontend credential serialization exists.**
 
