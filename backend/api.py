@@ -34,10 +34,16 @@ from backend.ingestion.unitka import import_unitka_bundle
 from backend.project import (EconomicsSettings, OptimizerThresholds, Project,
                              ProjectValidationError, load_project_if_exists,
                              save_project_atomic)
+from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
+from backend.ozon.contracts import OzonCredentials, OzonErrorCode
+from backend.ozon.endpoints import CONNECTION_TEST_PATH
+from backend.ozon.vault import CredentialVault, OzonVaultError
 MAX_UPLOAD_BYTES=64*1024*1024
 router=APIRouter()
 logger=logging.getLogger(__name__)
 PROJECT_PATH=Path(__file__).resolve().parents[1]/"data"/"project.json"
+OZON_VAULT=CredentialVault(Path(__file__).resolve().parents[1]/"data"/"ozon-credentials.json")
+OZON_CLIENT=OzonClient(OZON_VAULT)
 DECIMAL_NAMES=['acquiring_rate','advertising_rate','buyout_rate','fixed_fbo_fee','income_tax_rate','vat_rate','co_invest_rate','min_profit_per_unit','min_margin_rate','min_roi']
 STAGES={
     "preparing":(1,"Подготовка файлов"), "reports":(2,"Чтение отчётов"),
@@ -73,6 +79,61 @@ async def read(upload,field,request_id="http"):
     return data
 
 def response(kind,result): return {"api_version":1,"kind":kind,**wire(result)}
+
+def vault_response(status): return wire(status)
+
+async def json_object(request:Request):
+    try:
+        value=await request.json()
+    except (json.JSONDecodeError,UnicodeDecodeError):
+        return None
+    return value if isinstance(value,dict) else None
+
+@router.get('/api/ozon/credentials/status')
+def ozon_credentials_status():
+    return vault_response(OZON_VAULT.status())
+
+@router.post('/api/ozon/credentials/setup')
+async def ozon_credentials_setup(request:Request):
+    body=await json_object(request)
+    if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
+    required=('client_id','api_key','password','password_confirmation')
+    if any(not isinstance(body.get(name),str) or not body[name] for name in required):
+        return error(400,'MISSING_FIELD','Required credential field is missing.',None)
+    if body['password']!=body['password_confirmation']:
+        return error(400,'PASSWORD_CONFIRMATION_MISMATCH','Password confirmation does not match.','password_confirmation')
+    try:
+        credentials=OzonCredentials(body['client_id'],body['api_key'])
+        return vault_response(OZON_VAULT.setup(credentials,body['password']))
+    except ValueError:
+        return error(400,'INVALID_CREDENTIALS','Credentials and password must be nonblank.',None)
+    except OSError:
+        return error(500,'OZON_VAULT_WRITE_FAILED','Could not save the encrypted credential vault.',None)
+
+@router.post('/api/ozon/credentials/unlock')
+async def ozon_credentials_unlock(request:Request):
+    body=await json_object(request)
+    if body is None or not isinstance(body.get('password'),str) or not body['password']:
+        return error(400,'MISSING_FIELD','Vault password is required.','password')
+    try:return vault_response(OZON_VAULT.unlock(body['password']))
+    except OzonVaultError as exc:return error(401,exc.code.value,'Vault password or encrypted data is invalid.',None)
+
+@router.post('/api/ozon/credentials/lock')
+def ozon_credentials_lock():
+    return vault_response(OZON_VAULT.lock())
+
+@router.post('/api/ozon/connection/test')
+def ozon_connection_test():
+    try:
+        OZON_VAULT.require_credentials()
+        OZON_CLIENT.post_json(CONNECTION_TEST_PATH,{},policy=OzonRequestPolicy(retry_safe=True))
+    except OzonVaultError as exc:
+        return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
+    except OzonClientError as exc:
+        statuses={OzonErrorCode.AUTH_FAILED:401,OzonErrorCode.RATE_LIMITED:429,
+                  OzonErrorCode.UNAVAILABLE:503,OzonErrorCode.INVALID_RESPONSE:502}
+        return error(statuses.get(exc.code,502),exc.code.value,str(exc),None)
+    return vault_response(OZON_VAULT.record_connection_check())
 
 def input_status(*results):
     return {
