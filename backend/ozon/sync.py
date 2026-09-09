@@ -9,6 +9,7 @@ from backend.ozon.adapters.catalog import fetch_clusters, fetch_seller_warehouse
 from backend.ozon.adapters.inbound import fetch_inbound
 from backend.ozon.adapters.orders import fetch_postings
 from backend.ozon.adapters.placement_zones import fetch_placement_zones
+from backend.ozon.adapters.products import fetch_product_skus
 from backend.ozon.adapters.stocks import fetch_fbo_stock, fetch_seller_stock
 from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_POSTINGS_PATH
 from backend.ozon.history import history_window, next_backfill, usable_completed_weeks
@@ -21,7 +22,7 @@ def capability_matrix(snapshot: OzonSourceSnapshot, *, include_inbound: bool = T
     def cap(names, affected, required=True):
         names = (names,) if isinstance(names, str) else names
         complete = all(bool(evidence.get(name) and evidence[name].complete) for name in names)
-        return {"complete": complete or not required, "required": required, "affects": affected}
+        return {"complete": complete, "required": required, "affects": affected}
 
     return {
         "demand_flow": cap(("orders_fbo", "orders_fbs"), "demand_flow"),
@@ -31,7 +32,7 @@ def capability_matrix(snapshot: OzonSourceSnapshot, *, include_inbound: bool = T
         "need_inbound": cap("inbound", "need", include_inbound),
         "operational_allocation": cap("seller_stock", "operational_allocation"),
         "ozon_comparison": {"complete": False, "required": False, "affects": "safe_comparison"},
-        "shipment_compatibility": cap("placement_zones", "shipment_compatibility"),
+        "shipment_compatibility": cap("placement_zones", "shipment_compatibility", False),
     }
 
 
@@ -51,11 +52,14 @@ def sync_ozon_source(client, *, progress_callback=None) -> OzonSourceSnapshot:
         started = datetime.now(timezone.utc).isoformat()
         try:
             value = function()
-            records, item_diagnostics = value
+            if name == "clusters":
+                records, item_diagnostics = value.clusters, value.diagnostics
+            else:
+                records, item_diagnostics = value
             diagnostics.extend(item_diagnostics)
             complete = not any(item.severity == "error" for item in item_diagnostics)
             evidence.append(EndpointEvidence(name, started, len(records), complete, item_diagnostics))
-            return records
+            return value if name == "clusters" else records
         except Exception as exc:
             diagnostic = ImportDiagnostic(
                 "error", f"OZON_{name.upper()}_FAILED",
@@ -82,14 +86,24 @@ def sync_ozon_source(client, *, progress_callback=None) -> OzonSourceSnapshot:
         evidence[:] = [item for item in evidence if item.name not in {"orders_fbo", "orders_fbs"}]
         orders = history_fetch(window)
 
-    clusters = run("clusters", lambda: fetch_clusters(client), ())
+    clusters_result = run("clusters", lambda: fetch_clusters(client), None)
+    clusters = clusters_result.clusters if clusters_result is not None else ()
+    warehouse_to_macrolocal = clusters_result.warehouse_to_macrolocal if clusters_result is not None else {}
     seller_warehouses = run("seller_warehouses", lambda: fetch_seller_warehouses(client), ())
     cluster_by_id = {cluster.cluster_id: cluster.name for cluster in clusters}
-    fbo = run("fbo_stock", lambda: fetch_fbo_stock(client), ())
+    product_skus = run("products", lambda: (fetch_product_skus(client), ()), ())
+    product_evidence = next(item for item in evidence if item.name == "products")
+    if product_evidence.complete:
+        fbo = run("fbo_stock", lambda: fetch_fbo_stock(client, product_skus), ())
+    else:
+        fbo = ()
+        if not product_evidence.complete:
+            diagnostic = ImportDiagnostic("error", "OZON_FBO_STOCK_FAILED", "FBO stock unavailable without complete SKU universe.")
+            diagnostics.append(diagnostic)
+            evidence.append(EndpointEvidence("fbo_stock", datetime.now(timezone.utc).isoformat(), 0, False, (diagnostic,)))
     seller_stock = run("seller_stock", lambda: fetch_seller_stock(client), ())
-    inbound = run("inbound", lambda: fetch_inbound(client, cluster_by_id), ())
-    skus = tuple(dict.fromkeys(row.sku for row in (*orders, *fbo, *seller_stock)))
-    zones = run("placement_zones", lambda: fetch_placement_zones(client, skus), ())
+    inbound = run("inbound", lambda: fetch_inbound(client, cluster_by_id, warehouse_to_macrolocal), ())
+    zones = run("placement_zones", lambda: fetch_placement_zones(client, product_skus), ())
 
     inbound_by_key = {(row.sku, row.cluster): row.inbound_quantity for row in inbound}
     availability = tuple(replace(row, inbound_quantity=inbound_by_key.get((row.sku, row.cluster))) for row in fbo)

@@ -16,10 +16,10 @@ import backend.api as api_module
 import backend.application as application_module
 from backend.application import AnalysisSummary, build_analysis_summary
 from backend.api import MAX_UPLOAD_BYTES, wire
-from backend.domain.contracts import OrderLifecycle, OrderRecord
+from backend.domain.contracts import ImportDiagnostic, OrderLifecycle, OrderRecord
 from backend.ingestion.availability import AvailabilityRecord
 from backend.main import app
-from backend.ozon.source_contracts import OzonSourceSnapshot
+from backend.ozon.source_contracts import EndpointEvidence, OzonSourceSnapshot
 from tests.helpers.xlsx_fixtures import make_multisheet_xlsx, make_real_unitka, make_xlsx
 
 
@@ -611,6 +611,25 @@ def test_api_and_files_typed_sources_are_business_equivalent_without_fabricated_
     assert files_payload["snapshot"]["source_mode"] == "files"
     assert files_payload["snapshot"]["source_snapshot_id"] is None
     assert "Разрешено" not in repr(api_module._api_prepared_inputs(snapshot))
+
+
+def test_api_prepared_inputs_route_diagnostics_by_analytical_domain():
+    snapshot = _api_parity_fixture()
+    order_error = ImportDiagnostic("error", "ORDER_FAILED", "orders")
+    inbound_error = ImportDiagnostic("error", "INBOUND_FAILED", "inbound")
+    shipment_error = ImportDiagnostic("error", "PLACEMENT_FAILED", "placement")
+    snapshot = replace(snapshot, endpoint_evidence=(
+        EndpointEvidence("orders_fbo", "x", 0, False, (order_error,)),
+        EndpointEvidence("fbo_stock", "x", 0, True, ()),
+        EndpointEvidence("inbound", "x", 0, False, (inbound_error,)),
+        EndpointEvidence("placement_zones", "x", 0, False, (shipment_error,)),
+    ), diagnostics=(order_error, inbound_error, shipment_error))
+    with_inbound = api_module._api_prepared_inputs(snapshot, include_inbound=True)
+    without_inbound = api_module._api_prepared_inputs(snapshot, include_inbound=False)
+    assert with_inbound.orders.diagnostics == (order_error,)
+    assert with_inbound.availability.diagnostics == (inbound_error,)
+    assert without_inbound.availability.diagnostics == ()
+    assert shipment_error not in with_inbound.orders.diagnostics + with_inbound.availability.diagnostics
 
 
 @pytest.mark.parametrize("field", ["orders_file", "availability_file", "restrictions_file"])

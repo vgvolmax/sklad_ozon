@@ -37,14 +37,17 @@ def _text(value: object) -> str:
     return str(value).strip() if value is not None else ""
 
 
-def normalize_posting(posting: dict) -> tuple[tuple[OrderRecord, ...], tuple[ImportDiagnostic, ...]]:
-    """Discard all non-domain fields, including customer/address PII."""
-    status = _text(posting.get("status"))
+def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[tuple[OrderRecord, ...], tuple[ImportDiagnostic, ...]]:
+    """Normalize only documented endpoint fields and discard all PII."""
+    status = _text(posting.get("status_alias" if fbs else "status"))
     analytics = posting.get("analytics_data")
     if not isinstance(analytics, dict):
         analytics = {}
-    origin_cluster = _text(analytics.get("cluster_from"))
-    destination = _text(analytics.get("cluster_to"))
+    financial = posting.get("financial_data")
+    if not isinstance(financial, dict):
+        financial = {}
+    origin_cluster = _text(financial.get("cluster_from"))
+    destination = _text(financial.get("cluster_to"))
     origin_warehouse = _text(analytics.get("warehouse_name")) or None
     accepted = _text(posting.get("in_process_at") or posting.get("created_at"))
     lifecycle = _lifecycle(status)
@@ -66,7 +69,7 @@ def normalize_posting(posting: dict) -> tuple[tuple[OrderRecord, ...], tuple[Imp
     for product in products if isinstance(products, list) else ():
         if not isinstance(product, dict):
             continue
-        sku = _text(product.get("sku"))
+        sku = _text(product.get("product_id" if fbs else "sku"))
         quantity = product.get("quantity")
         if (not sku or isinstance(quantity, bool) or
                 not isinstance(quantity, (int, float)) or quantity <= 0 or int(quantity) != quantity):
@@ -78,11 +81,19 @@ def normalize_posting(posting: dict) -> tuple[tuple[OrderRecord, ...], tuple[Imp
             planned_ship_at=_text(posting.get("shipment_date")) or None,
             handed_to_delivery_at=_text(posting.get("delivering_date")) or None,
             delivered_at=_text(posting.get("delivered_at")) or None,
-            raw_status=status, article=_text(product.get("offer_id")),
-            product_name=_text(product.get("name")), origin_warehouse=origin_warehouse,
+            raw_status=status, article=_text(product.get("product_offer_id" if fbs else "offer_id")),
+            product_name=_text(product.get("product_name" if fbs else "name")), origin_warehouse=origin_warehouse,
             seller_price=float(product.get("price") or 0),
         ))
     return tuple(records), tuple(diagnostics)
+
+
+def normalize_fbo_posting(posting: dict):
+    return _normalize_posting(posting, fbs=False)
+
+
+def normalize_fbs_posting(posting: dict):
+    return _normalize_posting(posting, fbs=True)
 
 
 def _result(response: dict) -> dict:
@@ -104,7 +115,7 @@ def fetch_postings(client: OzonClient, path: str, history_from: date, history_to
             "filter": {"since": since, "to": until},
             "limit": PAGE_SIZE,
             "sort_dir": "ASC",
-            "with": {"analytics_data": True, "financial_data": False},
+            "with": {"analytics_data": True, "financial_data": True},
         }
         if cursor:
             payload["cursor"] = cursor
@@ -112,7 +123,8 @@ def fetch_postings(client: OzonClient, path: str, history_from: date, history_to
         postings = result.get("postings", [])
         for posting in postings:
             if isinstance(posting, dict):
-                normalized, page_diagnostics = normalize_posting(posting)
+                normalizer = normalize_fbs_posting if path == FBS_POSTINGS_PATH else normalize_fbo_posting
+                normalized, page_diagnostics = normalizer(posting)
                 records.extend(normalized)
                 diagnostics.extend(page_diagnostics)
         next_cursor = _text(result.get("cursor"))

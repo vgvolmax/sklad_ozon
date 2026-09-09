@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from backend.domain.contracts import OrderLifecycle, OrderRecord
 from backend.ingestion.availability import AvailabilityRecord
 from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_STOCK_PATH
+from backend.ozon.adapters.catalog import ClusterCatalogResult
 from backend.ozon.source_contracts import Cluster, SellerWarehouse
 from backend.ozon.sync import capability_matrix, sync_ozon_source
 from tests.ozon.test_source_store import snap
@@ -25,18 +26,19 @@ def _patch_non_history(monkeypatch, *, fbo_failure=False, cluster_failure=False)
     def clusters(_client):
         if cluster_failure:
             raise RuntimeError("cluster unavailable")
-        return (Cluster(10, "Москва"),), ()
+        return ClusterCatalogResult((Cluster(10, "Москва"),), {501: 10}, ())
 
     monkeypatch.setattr(module, "fetch_clusters", clusters)
     monkeypatch.setattr(module, "fetch_seller_warehouses", lambda _client: (
         (SellerWarehouse(1, "Seller", None, True, False),), ()))
     if fbo_failure:
-        monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client: (_ for _ in ()).throw(RuntimeError("fbo")))
+        monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client, _skus: (_ for _ in ()).throw(RuntimeError("fbo")))
     else:
-        monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client: ((), ()))
+        monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client, _skus: ((), ()))
+    monkeypatch.setattr(module, "fetch_product_skus", lambda _client: ("OLD",))
     monkeypatch.setattr(module, "fetch_seller_stock", lambda _client: (
         (AvailabilityRecord("OLD", "Seller", "", 3, fbs_quantity=3),), ()))
-    monkeypatch.setattr(module, "fetch_inbound", lambda _client, _clusters: ((), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda _client, _clusters, _mapping: ((), ()))
     monkeypatch.setattr(module, "fetch_placement_zones", lambda _client, _skus: ((), ()))
 
 
@@ -109,3 +111,27 @@ def test_cluster_and_seller_warehouse_failures_are_isolated(monkeypatch):
     matrix = capability_matrix(sync_ozon_source(object()))
     assert matrix["cluster_identity"]["complete"] is False
     assert matrix["seller_warehouse_selection"]["complete"] is True
+
+
+def test_optional_capability_failure_is_not_reported_complete():
+    source = snap("x")
+    source = source.__class__(
+        source.source_snapshot_id, source.synced_at_utc, source.source_as_of, source.source_timezone,
+        source.history_from, source.history_to, source.orders, source.availability,
+        source.operational_seller_stock, source.clusters, source.seller_warehouses,
+        source.placement_zones,
+        tuple(item for item in source.endpoint_evidence if item.name != "seller_warehouses"),
+        source.diagnostics)
+    capability = capability_matrix(source)["seller_warehouse_selection"]
+    assert capability == {"complete": False, "required": False, "affects": "crossdock_selection"}
+
+
+def test_product_list_failure_makes_fbo_stock_incomplete(monkeypatch):
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        _orders(end, 8) if path == FBO_POSTINGS_PATH else (), ()))
+    _patch_non_history(monkeypatch)
+    monkeypatch.setattr(module, "fetch_product_skus", lambda _client: (_ for _ in ()).throw(RuntimeError("products")))
+    source = sync_ozon_source(object())
+    assert capability_matrix(source)["need_fbo"]["complete"] is False
+    assert not any(item.name == "fbo_stock" and item.complete for item in source.endpoint_evidence)
