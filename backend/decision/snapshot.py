@@ -1,7 +1,7 @@
 """Pure assembly of the immutable Product Completion business snapshot."""
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
 from uuid import uuid4
 
@@ -285,7 +285,9 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
                       source_mode=None, source_snapshot_id=None):
     from backend.domain.contracts import SourceMode
     source_mode = source_mode or SourceMode.FILES
-    if source_mode is SourceMode.API and (analysis_as_of is None or not source_snapshot_id):
+    if not isinstance(analysis_as_of, date):
+        raise ValueError("Successful analysis snapshot requires analysis_as_of date")
+    if source_mode is SourceMode.API and not source_snapshot_id:
         raise ValueError("API analysis provenance requires source snapshot identity and date")
     if source_mode is SourceMode.FILES and source_snapshot_id is not None:
         raise ValueError("FILES analysis cannot reference an API source snapshot")

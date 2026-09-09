@@ -55,9 +55,46 @@ def normalize_fbs_stock(response: dict):
     return tuple(records), tuple(diagnostics)
 
 
-def fetch_stocks(client: OzonClient):
-    fbo = client.post_json(FBO_STOCK_PATH, {"limit":1000,"offset":0,"filters":[]}, policy=READ)
-    fbs = client.post_json(FBS_STOCK_PATH, {"limit":1000,"offset":0}, policy=READ)
-    fbo_records, d1 = normalize_fbo_stock(fbo)
-    fbs_records, d2 = normalize_fbs_stock(fbs)
-    return fbo_records, fbs_records, d1 + d2
+def fetch_fbo_stock(client: OzonClient, cluster_by_warehouse: dict[str, str] | None = None):
+    records = []
+    diagnostics = []
+    offset = 0
+    while True:
+        response = client.post_json(
+            FBO_STOCK_PATH, {"limit": 1000, "offset": offset, "filters": []}, policy=READ)
+        page, page_diagnostics = normalize_fbo_stock(response, cluster_by_warehouse)
+        records.extend(page)
+        diagnostics.extend(page_diagnostics)
+        raw_items = _result_items(response)
+        if len(raw_items) < 1000:
+            break
+        next_offset = offset + len(raw_items)
+        if next_offset == offset:
+            raise ValueError("non-progressing FBO stock pagination")
+        offset = next_offset
+    return tuple(records), tuple(diagnostics)
+
+
+def fetch_seller_stock(client: OzonClient):
+    records = []
+    diagnostics = []
+    cursor = ""
+    seen = {cursor}
+    while True:
+        payload = {"limit": 1000}
+        if cursor:
+            payload["cursor"] = cursor
+        response = client.post_json(FBS_STOCK_PATH, payload, policy=READ)
+        page, page_diagnostics = normalize_fbs_stock(response)
+        records.extend(page)
+        diagnostics.extend(page_diagnostics)
+        root = response.get("result") if isinstance(response.get("result"), dict) else response
+        next_cursor = str(root.get("cursor") or "")
+        has_next = bool(root.get("has_next"))
+        if not has_next:
+            break
+        if not next_cursor or next_cursor in seen:
+            raise ValueError("non-progressing seller-stock cursor")
+        seen.add(next_cursor)
+        cursor = next_cursor
+    return tuple(records), tuple(diagnostics)

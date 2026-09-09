@@ -28,3 +28,22 @@ def next_backfill(window: HistoryWindow) -> HistoryWindow | None:
     if weeks == window.completed_weeks:
         return None
     return HistoryWindow(window.history_from - timedelta(weeks=weeks-window.completed_weeks), window.history_to, weeks)
+
+
+def usable_completed_weeks(records, source_as_of: date) -> frozenset[tuple[int, int]]:
+    """Return source-wide completed ISO weeks with usable fulfilled demand."""
+    current_week = tuple(source_as_of.isocalendar()[:2])
+    weeks = set()
+    for record in records:
+        lifecycle = getattr(record, "lifecycle", None)
+        if getattr(lifecycle, "value", None) != "fulfilled":
+            continue
+        raw = str(getattr(record, "accepted_at", ""))[:10]
+        try:
+            day = date.fromisoformat(raw)
+        except ValueError:
+            continue
+        week = tuple(day.isocalendar()[:2])
+        if week != current_week and day < source_as_of:
+            weeks.add(week)
+    return frozenset(weeks)

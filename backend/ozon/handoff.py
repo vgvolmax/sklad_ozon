@@ -35,11 +35,13 @@ class HandoffPointStore:
 def search_handoff_points(client: OzonClient, query: str, supply_types: tuple[str, ...]) -> tuple[HandoffPoint, ...]:
     query = query.strip()
     if len(query) < 4:
-        raise ValueError("query must contain at least 4 trimmed characters")
-    response = client.post_json(HANDOFF_SEARCH_PATH, {"search":query,"supply_types":list(supply_types)},
+        return ()
+    response = client.post_json(HANDOFF_SEARCH_PATH, {
+        "filter_by_supply_type": list(supply_types), "search": query},
                                 policy=OzonRequestPolicy(retry_safe=True))
-    result = response.get("result", response)
-    items = result.get("warehouses", result.get("items", [])) if isinstance(result, dict) else []
+    items = response.get("search", [])
+    if not isinstance(items, list):
+        raise ValueError("invalid handoff search response")
     points = []
     for raw in items:
         try:
@@ -48,7 +50,8 @@ def search_handoff_points(client: OzonClient, query: str, supply_types: tuple[st
                 str(raw.get("name")).strip() if raw.get("name") is not None else None,
                 str(raw.get("address")).strip() if raw.get("address") is not None else None,
                 str(raw.get("warehouse_type")).strip() if raw.get("warehouse_type") is not None else None,
-                str(raw.get("point_type")).strip() if raw.get("point_type") is not None else None,
+                str(raw.get("point_type", raw.get("supply_type"))).strip()
+                if raw.get("point_type", raw.get("supply_type")) is not None else None,
             )
         except (TypeError, ValueError):
             continue

@@ -1,11 +1,9 @@
 """Stateless multipart HTTP boundary."""
-from dataclasses import asdict, is_dataclass, replace
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 import asyncio
-import csv
-import io
 import json
 import logging
 from pathlib import Path, PurePath
@@ -13,7 +11,6 @@ from queue import Queue
 from threading import Event, Thread
 from time import perf_counter
 from uuid import uuid4
-from types import SimpleNamespace
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from backend.application import analyze
@@ -27,7 +24,7 @@ from backend.decision import (DataQualityFact, DiagnosticView, InputStatusView,
 from backend.decision.snapshot import first_nonblank
 from backend.supply import AllocationObjective
 from backend.ingestion.cluster_resolution import resolve_analysis_clusters
-from backend.domain.contracts import ReportMeta, ImportDiagnostic, SourceMode
+from backend.domain.contracts import ImportResult, ReportMeta, ImportDiagnostic, SourceMode
 from backend.ingestion.availability import import_availability
 from backend.ingestion.restrictions import import_restrictions
 from backend.ingestion.orders import import_orders
@@ -193,31 +190,30 @@ def input_status(*results):
         )),
     }
 
-def _csv_bytes(headers, rows):
-    stream=io.StringIO(newline=''); writer=csv.writer(stream,delimiter=';')
-    writer.writerow(headers); writer.writerows(rows)
-    return stream.getvalue().encode('utf-8')
+@dataclass(frozen=True, slots=True)
+class PreparedAnalysisInputs:
+    """Typed source boundary shared by FILES import results and API evidence."""
+    availability: ImportResult
+    restrictions: ImportResult
+    orders: ImportResult
+    operational_availability: tuple
 
-def _snapshot_report_bytes(snapshot):
-    """Adapt normalized API evidence into the existing import boundary."""
-    fbs_by_sku={}
-    for row in snapshot.operational_seller_stock:
-        fbs_by_sku.setdefault(row.sku,[]).append(row.fbs_quantity)
-    availability=[]
-    for row in snapshot.availability:
-        availability.append([row.sku,row.warehouse,row.cluster,row.available_quantity,"",row.article,
-                             "" if row.fbo_quantity is None else row.fbo_quantity,
-                             "" if not fbs_by_sku.get(row.sku) else fbs_by_sku[row.sku][0],
-                             row.product_name,"" if row.inbound_quantity is None else row.inbound_quantity])
-    restrictions=[[row.sku,row.warehouse,'Разрешено','',row.cluster] for row in snapshot.availability if row.cluster]
-    orders=[[row.sku,row.quantity,row.seller_price,row.origin_cluster,row.destination_cluster,row.raw_status,
-             row.accepted_at,row.article,row.product_name,row.origin_warehouse or ''] for row in snapshot.orders]
-    reports=(
-        ('ozon-api-availability.csv',_csv_bytes(['SKU','Склад','Кластер','Доступно','Рекомендуемая поставка','Артикул','Остаток FBO, шт','Остаток FBS, шт','Название товара','Товары в пути на склад озон, шт'],availability)),
-        ('ozon-api-restrictions.csv',_csv_bytes(['SKU','Склад','Статус','Причина','Кластер'],restrictions)),
-        ('ozon-api-orders.csv',_csv_bytes(['SKU','Количество','Цена продавца','Кластер отгрузки','Кластер доставки','Статус','Принят в обработку','Артикул','Название товара','Склад отгрузки'],orders)),
+
+def _api_prepared_inputs(snapshot) -> PreparedAnalysisInputs:
+    imported_at = snapshot.synced_at_utc
+    availability_meta = ReportMeta("ozon-api:availability", imported_at)
+    restrictions_meta = ReportMeta("ozon-api:restrictions-unavailable", imported_at)
+    orders_meta = ReportMeta(
+        "ozon-api:orders", imported_at, period_start=snapshot.history_from.isoformat(),
+        period_end=snapshot.history_to.isoformat())
+    # Restrictions are explicitly unavailable, never fabricated as "allowed".
+    restrictions = ImportResult((), (), restrictions_meta)
+    return PreparedAnalysisInputs(
+        ImportResult(tuple(snapshot.availability), tuple(snapshot.diagnostics), availability_meta),
+        restrictions,
+        ImportResult(tuple(snapshot.orders), (), orders_meta),
+        tuple(snapshot.availability) + tuple(snapshot.operational_seller_stock),
     )
-    return [(SimpleNamespace(filename=name),data) for name,data in reports]
 
 _IMPORTERS={"availability":import_availability,"restrictions":import_restrictions,"orders":import_orders,"tariffs":import_tariffs,"product-economics":import_product_economics}
 for _kind,_importer in _IMPORTERS.items():
@@ -290,9 +286,9 @@ async def prepare_analysis(request:Request, request_id="http"):
         if not accepted(values[name]):return error(400,'INVALID_SETTING','Value is outside the accepted domain.',name)
     tax=str(form.get('tax_system',''))
     if tax not in {'usn_income','usn_income_minus_expenses','osno','manual'}:return error(400,'INVALID_TAX_SYSTEM','Unsupported tax system.','tax_system')
-    raw=[]
+    raw=[]; source_inputs=None
     if source_mode is SourceMode.API:
-        raw.extend(_snapshot_report_bytes(snapshot))
+        source_inputs=_api_prepared_inputs(snapshot)
         economic_files=(['unitka_file'] if unitka is not None else ['tariffs_file','product_economics_file'])
         for field in economic_files:
             try: raw.append((form[field],await read(form[field],field,request_id)))
@@ -302,7 +298,7 @@ async def prepare_analysis(request:Request, request_id="http"):
             try: raw.append((form[field],await read(form[field],field,request_id)))
             except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.',field)
     provenance=(source_mode,snapshot.source_snapshot_id if snapshot else None)
-    return raw, unitka, files, values, tax, as_of, (explicit_horizon,raw_inbound=="true",objective), provenance
+    return raw, unitka, files, values, tax, as_of, (explicit_horizon,raw_inbound=="true",objective), provenance, source_inputs
 
 @router.post('/api/analysis')
 async def analysis(request:Request):
@@ -369,7 +365,7 @@ class AnalysisCancelled(Exception):
     """Internal cooperative cancellation at progress boundaries."""
 
 
-def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_request=(None,True,AllocationObjective.MAX_MARGIN), provenance=(SourceMode.FILES,None), *, progress_callback=None, request_id="http"):
+def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_request=(None,True,AllocationObjective.MAX_MARGIN), provenance=(SourceMode.FILES,None), source_inputs=None, *, progress_callback=None, request_id="http"):
     """Run imports, joins, domain analysis and serialization for both transports."""
     def progress(stage, current=None, total=None, detail=None):
         if progress_callback is not None:
@@ -383,21 +379,32 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     reports_started=perf_counter()
     logger.info("[analysis %s] reports started",request_id)
     progress("reports",1,4,"availability")
-    availability=timed("availability_import",import_availability,raw[0][1],meta(raw[0][0]))
-    progress("reports",2,4,"restrictions")
-    restrictions=timed("restrictions_import",import_restrictions,raw[1][1],meta(raw[1][0]))
-    progress("reports",3,4,"orders")
-    orders=timed("orders_import",import_orders,raw[2][1],meta(raw[2][0]))
+    if source_inputs is None:
+        availability=timed("availability_import",import_availability,raw[0][1],meta(raw[0][0]))
+        progress("reports",2,4,"restrictions")
+        restrictions=timed("restrictions_import",import_restrictions,raw[1][1],meta(raw[1][0]))
+        progress("reports",3,4,"orders")
+        orders=timed("orders_import",import_orders,raw[2][1],meta(raw[2][0]))
+        economics_offset=3
+        operational_availability=availability.records
+    else:
+        availability=source_inputs.availability
+        progress("reports",2,4,"restrictions")
+        restrictions=source_inputs.restrictions
+        progress("reports",3,4,"orders")
+        orders=source_inputs.orders
+        economics_offset=0
+        operational_availability=source_inputs.operational_availability
     progress("reports",4,4,"unitka" if unitka is not None else "economics")
 
     if unitka is not None:
         def unitka_timing(name, duration, rows):
             suffix="" if rows is None else f" rows={rows}"
             logger.info("[analysis %s] %s done %.3fs%s",request_id,name,duration,suffix)
-        bundle=import_unitka_bundle(raw[3][1],meta(raw[3][0]),timing=unitka_timing)
+        bundle=import_unitka_bundle(raw[economics_offset][1],meta(raw[economics_offset][0]),timing=unitka_timing)
         tariffs,products=bundle.tariffs,bundle.product_economics
     else:
-        tariffs=timed("tariffs_import",import_tariffs,raw[3][1],meta(raw[3][0])); products=timed("product_economics_import",import_product_economics,raw[4][1],meta(raw[4][0]))
+        tariffs=timed("tariffs_import",import_tariffs,raw[economics_offset][1],meta(raw[economics_offset][0])); products=timed("product_economics_import",import_product_economics,raw[economics_offset+1][1],meta(raw[economics_offset+1][0]))
     project=load_project_if_exists(PROJECT_PATH)
     resolution = resolve_analysis_clusters(
         availability.records, restrictions.records, orders.records, tariffs.records,
@@ -445,7 +452,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     settings=EconomicsSettings(*(values[n] for n in DECIMAL_NAMES[:4]),tax,*(values[n] for n in DECIMAL_NAMES[4:7])); thresholds=OptimizerThresholds(*(values[n] for n in DECIMAL_NAMES[7:]))
     explicit_horizon,include_inbound,objective=scenario_request
     scenario=ScenarioSettings(explicit_horizon or availability.meta.recommendation_horizon_days or 56,include_inbound,objective)
-    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=availability.records,ozon_horizon_days=availability.meta.recommendation_horizon_days,progress_callback=progress_callback,scenario_settings=scenario)
+    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=operational_availability,ozon_horizon_days=availability.meta.recommendation_horizon_days,progress_callback=progress_callback,scenario_settings=scenario)
     progress("serialization")
     coverage={key:0 for key in ('complete','partial','none','no_profile')}
     for item in result.logistics:coverage[item.coverage_status.value]+=1
