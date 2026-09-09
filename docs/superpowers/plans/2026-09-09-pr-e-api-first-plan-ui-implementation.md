@@ -10,12 +10,14 @@
 
 - Top-level routes remain `План | Потоки спроса | Экономика | Данные`.
 - API and FILES are explicit non-mixing modes.
+- FILES is analytical fallback only; live handoff/draft/timeslot validation requires API-backed analysis/current source context.
 - Frontend never receives saved API key/password.
 - SKU is selector/state identity; article is primary display label.
 - Shipment edits are local draft state only; no automatic external calls.
 - Cross-dock requires resolved seller warehouse + resolved remote-search handoff point.
 - `Найти варианты в Ozon` may create temporary drafts but never real supply requests.
 - Frontend never calculates demand, whole-pack allocation, candidate grouping, Ozon acceptance, ranking or XLSX.
+- Frontend never calculates shipment urgency/stockout dates.
 - Preserve previous successful result during refresh/failure.
 - WCAG 2.2 AA; 200% zoom operable.
 - Same PR updates runtime + root `DESIGN.md` + root `UX-CONTRACT.md` to final post-migration truth.
@@ -96,6 +98,8 @@ Show source basis (`sourceAsOf`) read-only in API mode. Do not expose everyday c
 Keep seller-local Unitka/pack inputs separate.
 
 Manual files are hidden/secondary until user explicitly chooses `Использовать ручной импорт`, with disclosure that API/file data are not mixed.
+
+FILES mode remains analytical fallback only. It may calculate existing Plan/Flow from file evidence, but it must not expose live handoff search, temporary draft validation or timeslot checks. Show a clear action to return to API mode, unlock and sync instead of constructing a hybrid FILES+API workflow.
 
 Failed refresh preserves prior source snapshot and never silently switches mode.
 
@@ -184,6 +188,8 @@ shipmentView: {
 
 First complete ShippablePlan selects all positive complete clusters. After user explicitly edits scope, preserve surviving IDs and leave newly appearing clusters unselected.
 
+Shipment dates use native `input[type="date"]`; do not add a custom calendar in this PR.
+
 Field edits mark shipment dirty only and make no request.
 
 ---
@@ -197,9 +203,11 @@ Behavior:
 ```text
 0 active + crossdock selected → blocking unavailable state
 1 active → show fixed resolved warehouse; no unnecessary chooser
->1 active + crossdock selected → require explicit Склад отправления
+>1 active + crossdock selected → require explicit Склад отправления via native <select>
 DIRECT-only → seller warehouse crossdock field not required
 ```
+
+Do not build a custom generic Select solely for styling. `SellerWarehouseSelector` is the business owner/wrapper; when a choice is needed its control is native `<select>`.
 
 Persisted ID is only preference; backend validates current active identity.
 
@@ -213,6 +221,8 @@ Changing seller warehouse marks shipment dirty only.
 
 Do not use a preloaded API catalog.
 
+This is the authored selection control because it owns asynchronous search/results behavior. Implement as an accessible input + listbox/options combobox pattern rather than a native `<select>`.
+
 Interaction:
 
 ```text
@@ -221,6 +231,7 @@ Interaction:
 ```
 
 Required:
+- keyboard-operable input/listbox/options with accessible names/states;
 - IME-safe input;
 - stale-response protection/cancel semantics;
 - explicit clear;
@@ -242,6 +253,8 @@ Only `Найти варианты в Ozon` starts external flow:
 → /api/shipment/validate
 → /api/shipment/plan
 ```
+
+This action is enabled only for API-backed analysis with current source provenance and an unlocked vault. FILES-backed analysis shows a correction-oriented action to return to `Данные` and use API mode; it must not silently sync/live-validate behind the user's back.
 
 Near action, persistent disclosure:
 
@@ -297,6 +310,7 @@ Ozon ограничил частоту проверок
 Не подходит по локальному ограничению
 Склад отправления недоступен/не выбран
 Точка отгрузки устарела/не разрешена
+Для проверки в Ozon переключитесь на API-режим и обновите данные
 ```
 
 PVZ before live validation uses `Предварительно подходит`; candidate-total ≤1000 L never becomes a packed-cargo guarantee.
@@ -325,8 +339,10 @@ Required final durable ownership includes:
 API-first Data hierarchy
 SKU-backed article-first Plan
 OzonConnectionPanel/CredentialVaultDialog
-SellerWarehouseSelector
-remote HandoffPointSelector
+SellerWarehouseSelector backed by native <select> when a choice is required
+native shipment date inputs
+remote authored HandoffPointSelector
+FILES analytical fallback without hybrid live validation
 ShipmentIntentForm
 candidate/validation lifecycle
 ShipmentManifest/OzonValidationStatus
@@ -356,4 +372,4 @@ python -m pytest -q
 
 Run project Premium/static design audit if configured, plus real browser review at normal desktop and 200% zoom/narrow width. Preserve existing real-scale Flow acceptance because shared shell/layout changes may affect it.
 
-Acceptance: API is primary Data workflow, Plan is SKU-backed article-first, shipment intent resolves seller/handoff identities, live validation is explicit/honest, manifests/export remain backend-owned, and runtime + root durable contracts finish aligned.
+Acceptance: API is primary Data workflow, Plan is SKU-backed article-first, FILES remains analytical fallback without hybrid live validation, shipment intent uses minimal native date/seller controls plus one authored remote handoff combobox, live validation is explicit/honest, manifests/export remain backend-owned, and runtime + root durable contracts finish aligned.

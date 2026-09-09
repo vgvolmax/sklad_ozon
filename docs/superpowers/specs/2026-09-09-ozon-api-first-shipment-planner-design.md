@@ -42,6 +42,8 @@ Active PRs MUST NOT:
 - change Safe/Calculated Plan meaning;
 - create a second seller-stock resolver;
 - merge API and FILES evidence inside one analysis run;
+- create a hybrid FILES-analysis + live-API-validation source mode;
+- invent a new urgency/stockout-date model in shipment code;
 - use `RouteCostIndex` / `DirectRouteQuote` as seller→Ozon inbound-cost evidence;
 - brute-force all cluster subsets with Ozon drafts;
 - call Ozon Seller API from frontend JavaScript;
@@ -101,6 +103,8 @@ FILES
 ```
 
 No row/domain/SKU/cluster merge is allowed between modes. API failure never silently switches to FILES.
+
+FILES is intentionally a reserve **analytical** workflow. It preserves the existing historical/manual analysis path when Ozon API cannot be used. In the active milestone, live handoff search, temporary draft validation and timeslot discovery require an unlocked Ozon API session and API-backed source context. Do not create a third hybrid mode where analysis comes from FILES while operational catalogs/validation come live from API.
 
 ### 4.1 Immutable API source snapshot
 
@@ -191,6 +195,34 @@ Do not collapse source completeness into one global boolean:
 - unit volume/multiplicity are operational prerequisites, not demand prerequisites.
 
 A failed refresh preserves the previous valid snapshot and exposes causal endpoint diagnostics.
+
+### 4.5 Analysis provenance
+
+Every successful analysis snapshot must carry its immutable source/date provenance because downstream shipment plans must be tied to the exact analysis that produced them.
+
+Required fields:
+
+```text
+AnalysisSnapshot.analysis_as_of
+AnalysisSnapshot.source_mode       # api | files
+AnalysisSnapshot.source_snapshot_id
+```
+
+Canonical values:
+
+```text
+API:
+  analysis_as_of = OzonSourceSnapshot.source_as_of
+  source_mode = api
+  source_snapshot_id = OzonSourceSnapshot.source_snapshot_id
+
+FILES:
+  analysis_as_of = existing historically consistent file-workflow as_of
+  source_mode = files
+  source_snapshot_id = None
+```
+
+Downstream ShippablePlan/shipment code consumes these parent fields. It must not infer/reconstruct provenance from mutable browser request fields.
 
 ## 5. Reviewed Ozon endpoint registry
 
@@ -488,13 +520,13 @@ Goals:
 
 1. preserve exact existing shippable quantities;
 2. filter selected clusters only;
-3. group urgent/compatible clusters deterministically;
+3. group compatible clusters deterministically using already-approved upstream priority/order evidence when available;
 4. respect hard/user cluster limits;
 5. apply local method/zone rules;
 6. minimize needless fragmentation;
 7. emit only a small set worth checking externally.
 
-No subset brute force.
+No subset brute force. The shipment layer must not derive a new `urgency_date`/stockout date from weekly rate, FBO, inbound or other analytical fields.
 
 ### 11.1 PVZ volume rule
 
@@ -511,7 +543,7 @@ Placement zones survive to candidate and manifest. Multiple zones may trigger ma
 
 ## 12. Bounded live validation
 
-`Найти варианты в Ozon` is explicit user action.
+`Найти варианты в Ozon` is explicit user action available only for API-backed analysis context with an unlocked vault.
 
 Default external budget:
 
@@ -557,15 +589,17 @@ Timeslot availability is observed evidence, not a booking.
 
 ## 13. Operational ranking
 
-Ranking optimizes operational/service-level usefulness only:
+Ranking optimizes operational/service-level usefulness only.
+
+Default active ranking keys, in order:
 
 1. accepted by Ozon;
 2. has timeslot in requested range;
-3. protects earliest known urgency;
-4. latest still-on-time opportunity among equivalents;
-5. lower fragmentation / more covered assignment volume;
-6. user seller-warehouse/handoff preference where applicable;
-7. stable candidate ID.
+3. lower fragmentation / more useful covered assignment volume;
+4. user seller-warehouse/handoff preference where applicable;
+5. stable candidate ID.
+
+Do **not** derive `urgency_date`, stockout date, days-late or latest-still-on-time math inside shipment code. If a later approved upstream analytical contract already exposes an immutable canonical urgency field, a later design may insert urgency keys into ranking explicitly. Until then urgency is absent, not inferred.
 
 Do not claim cheapest/economically optimal inbound supply without a separate seller→FBO tariff contract.
 
@@ -615,6 +649,10 @@ Inside `План`:
 - `Товары`: bounded article-first/SKU-backed selector and selected-product workspace.
 - `Отгрузки`: date/method/cluster intent, seller warehouse when needed, remote handoff search, explicit external validation and logistics manifests.
 - `Данные`: Ozon connection/sync primary; FILES manual import secondary and explicit.
+- In FILES mode, analytical Plan/Flow remains usable where evidence is complete, but live Ozon shipment validation is unavailable until the user returns to API mode and syncs current API evidence.
+- Shipment dates use native `input[type="date"]` unless a future approved UX requirement needs an authored calendar.
+- Multiple seller warehouses use native `<select>` unless a future approved UX requirement needs an authored select.
+- Hand-off search remains an authored accessible remote combobox/listbox because asynchronous Ozon search/results require owned behavior.
 
 Distinguish:
 
@@ -647,6 +685,7 @@ A context-free implementation must be able to answer:
 
 ```text
 Who owns API analysis date?             backend source snapshot, fixed UTC+03:00 business date
+Where is analysis provenance stored?    immutable AnalysisSnapshot fields
 Can browser relabel current stock?      no
 Default order-history coverage?         12 completed weeks, bounded backfill to max 52 when source-wide gaps require it
 What if an SKU has only 4 weeks?        existing short-history demand fallback
@@ -654,11 +693,13 @@ Canonical FBS stock endpoint?           /v2/product/info/stocks-by-warehouse/fbs
 Are handoff points bulk-synced?         no, remote search >=4 chars
 Where do seller warehouses come from?   /v1/warehouse/fbo/seller/list in source sync
 Crossdock seller warehouse required?    yes; auto only when exactly one active
+Can FILES analysis use live validation? no, return to API mode/current API source
 Can selected clusters reallocate stock? no, filter-only
 Is PVZ 1000 L per line?                 no, candidate total
 Do placement zones survive?             yes, to manifest
 What is selector identity?              SKU
 Can conflicting same article merge?     no, fail closed
+May shipment code invent urgency date?  no
 What type is draft_id?                  int/int64
 Does temporary validation create supply? no
 Does active roadmap call /v2/draft/supply/create? no

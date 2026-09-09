@@ -7,6 +7,7 @@
 ## Global invariants
 
 - Temporary draft creation is allowed; real `/v2/draft/supply/create` is forbidden.
+- Live validation is available only for API-backed analysis context with a current `source_snapshot_id` and unlocked vault; FILES analysis is analytical fallback only and cannot be combined with live API validation in this milestone.
 - Use only current method-specific draft endpoints plus `/v2/draft/create/info` and `/v2/draft/timeslot/info`.
 - `draft_id` is integer/int64 identity.
 - Draft-create requests are not blindly retried after ambiguous transport failure.
@@ -216,11 +217,15 @@ POST /api/shipment/validate
 Request references backend-produced candidate IDs/fingerprints and immutable parent source/analysis/ShippablePlan identity. Do not accept arbitrary client-crafted quantities as authoritative candidates.
 
 Validate:
-- source/analysis identity still matches;
+- parent `AnalysisSnapshot.source_mode == API`;
+- parent `AnalysisSnapshot.source_snapshot_id` is present and still resolves to current backend source evidence;
+- `analysis_as_of`/source/analysis/ShippablePlan identity still matches;
 - seller warehouse remains active in parent snapshot for cross-dock;
 - handoff point remains resolved in backend HandoffPointStore;
 - vault unlocked;
 - scenario fingerprint unchanged.
+
+A FILES-backed parent is rejected with a stable capability error such as `LIVE_VALIDATION_REQUIRES_API_SOURCE`; it is never silently supplemented with current API operational data.
 
 Response contains `ValidatedShipmentOption[]` with temporary-draft evidence only.
 
@@ -231,6 +236,8 @@ No real-supply success fields/copy.
 ## Task 8 — regression and safety gate
 
 Tests must cover:
+- FILES-backed analysis rejected before external draft create;
+- missing/stale API source provenance rejected before external draft create;
 - `draft_id` int contract and bool/string rejection;
 - DIRECT payload;
 - crossdock payload with both `seller_warehouse_id` and `drop_off_warehouse`;
@@ -255,4 +262,4 @@ python -m pytest tests/shipment tests/api/test_shipment_candidates.py -q
 python -m pytest -q
 ```
 
-Acceptance: bounded temporary draft validation uses exact resolved seller/handoff identities, current v2 info/timeslot flow, integer draft IDs and never creates a real Ozon supply request.
+Acceptance: bounded temporary draft validation uses exact resolved seller/handoff identities, current v2 info/timeslot flow, integer draft IDs, requires API-backed source provenance, and never creates a real Ozon supply request.

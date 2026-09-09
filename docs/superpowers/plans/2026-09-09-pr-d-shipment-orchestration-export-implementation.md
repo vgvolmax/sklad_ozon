@@ -7,7 +7,8 @@
 ## Global invariants
 
 - Ranking never recalculates demand, Need, seller stock or whole-pack quantities.
-- Ranking uses Ozon validation/timeslots + immutable analytical urgency only.
+- Ranking uses Ozon validation/timeslots plus existing immutable plan/candidate evidence only.
+- Shipment code does not invent `urgency_date`, stockout date, days-late or latest-still-on-time math.
 - `RouteCostIndex` / `DirectRouteQuote` are not seller→FBO supply-cost evidence and must not influence rank.
 - Rejected/unscheduled quantities never disappear.
 - Export is backend-only and fail-closed on identity/pack conflicts.
@@ -26,8 +27,6 @@ class RankedShipmentOption:
     option_id: str
     validated_option: ValidatedShipmentOption
     selected_timeslot: OzonTimeslot | None
-    urgency_date: date | None
-    days_late: int | None
     rank_reasons: tuple[str, ...]
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +44,8 @@ class ShipmentPlan:
 
 All parent identities are immutable/backend-owned.
 
+Do not add urgency/date-to-stockout fields merely because the ranking service could calculate them. Such a field may enter this contract only after a later approved upstream analytical design owns it.
+
 ---
 
 ## Task 2 — operational ranking
@@ -54,20 +55,20 @@ Canonical keys, in order:
 ```text
 1 accepted by Ozon
 2 has timeslot inside requested range
-3 protects earliest known urgency
-4 latest still-on-time slot among equivalent choices
-5 lower fragmentation / more useful covered assignment volume
-6 user seller-warehouse/handoff preference where applicable
-7 stable candidate ID
+3 lower fragmentation / more useful covered assignment volume
+4 user seller-warehouse/handoff preference where applicable
+5 stable candidate ID
 ```
 
 Tests:
 - accepted+slot outranks accepted+no-slot and rejected;
-- later but still-on-time slot wins among equivalent options;
-- late-only option exposes days late, never labelled safe;
+- among equivalent accepted+slot options, lower fragmentation/more covered assignment volume wins;
 - seller warehouse/handoff user priority only breaks otherwise equivalent choices;
 - stable candidate ID final tie-break;
-- source guard proves no route-cost imports.
+- source guard proves no route-cost imports;
+- source guard proves no shipment-layer urgency/stockout-date calculation.
+
+If a future approved upstream contract exposes a canonical immutable urgency field, ranking changes require a separate design update; do not opportunistically infer one from `current_weekly_rate`, FBO, inbound or Need.
 
 ---
 
@@ -165,9 +166,10 @@ No endpoint calls Ozon real supply creation.
 
 Tests must cover:
 - accepted/no-slot/rejected ordering;
+- fragmentation/covered-volume ordering;
 - residual quantity conservation;
-- late-only explanation;
 - seller warehouse/handoff tie-break;
+- no shipment-layer urgency/stockout-date calculation;
 - exact workbook headers;
 - same article+cluster duplicate with same SKU/pack aggregates correctly;
 - same article+cluster conflicting SKU blocks export;
@@ -185,4 +187,4 @@ python -m pytest tests/api/test_analysis.py tests/api/test_product_completion_ac
 python -m pytest -q
 ```
 
-Acceptance: validated options are ranked operationally and explainably, every input quantity has a causal outcome, export is exact/fail-closed, and no real Ozon supply is created.
+Acceptance: validated options are ranked operationally and explainably without inventing urgency math, every input quantity has a causal outcome, export is exact/fail-closed, and no real Ozon supply is created.
