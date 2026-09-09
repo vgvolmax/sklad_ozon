@@ -1,421 +1,456 @@
 # UX Contract
 
+## Status and precedence
+
+This root contract is a **transitional durable UX contract** for the current repository while the API-first roadmap is implemented.
+
+Read active product behavior in this order:
+
+1. `docs/superpowers/specs/2026-09-09-api-first-roadmap-corrections.md`;
+2. `docs/superpowers/specs/2026-09-09-api-first-plan-ui-design.md` for target `План` / `Данные` behavior;
+3. `docs/superpowers/specs/2026-09-09-ozon-api-first-shipment-planner-design.md` for business/operational ownership;
+4. this file for durable cross-screen UX behavior and the currently shipped visual interaction baseline;
+5. `DESIGN.md` for visual tokens/identity.
+
+The superseded selected-network / PlanningSnapshot workflow is **not** an active requirement. Do not reconstruct or reintroduce `SupplyNetworkSelector`, network-only replan, selected-network coverage planning or old `План размещения` behavior from Git history/archive.
+
+PR-E must update this file in the same changeset as the final API-first runtime UI so no transitional wording remains.
+
 ## Product context
 
-- **Audience:** владелец/менеджер Ozon FBO, принимающий решения по размещению ограниченного товарного остатка.
-- **Primary jobs:** сравнить Ozon с собственной оценкой спроса; понять реальную географию спроса и исполнения; выбрать операционную сеть кластеров поставки; увидеть стоимость origin→destination связок; проверить юнит-экономику; получить объяснимый физический план поставки.
+- **Audience:** владелец/менеджер Ozon FBO, принимающий решения по потребности, размещению и операционной поставке.
+- **Primary jobs:** сравнить внешний сигнал Ozon с собственной моделью; понять географию спроса/исполнения; получить рассчитанный план; превратить его в физически поставляемые полные упаковки; подобрать реальный способ/точку/окно через Ozon; скачать точный шаблон для ручного выполнения.
 - **Target market:** русскоязычная работа с Ozon FBO.
-- **Active locale:** `ru-RU`.
-- **Language/content register:** плотный рабочий интерфейс без маркетинговой лексики; пользовательские объяснения на русском, технические codes только в диагностике.
-- **Timezone/calendar policy:** локальные даты отчётов отображаются как date-only без преобразования часового пояса; время импорта отображается в локальном времени приложения. ISO week используется только в аналитическом слое.
-- **Accessibility target:** WCAG 2.2 AA.
+- **Locale:** `ru-RU`.
+- **Register:** плотный рабочий интерфейс без маркетинговой лексики; технические codes только в диагностике.
+- **Accessibility:** WCAG 2.2 AA; 200% zoom remains operable.
 
 ## Business-context sources
 
-| Domain / scope | Authoritative source | Source type | Reviewed date |
-|---|---|---|---|
-| Demand geography, fulfillment semantics, stockout/distortion, economics | `docs/superpowers/specs/2026-08-19-ozon-fbo-unit-economics-optimizer-design.md` | Historical business design; remains authoritative where not superseded | 2026-09-08 |
-| Runtime/backend/frontend boundary | `docs/superpowers/specs/2026-08-20-scoz-lite-portable-architecture-design.md` | Canonical technical architecture | 2026-09-08 |
-| Product Completion, own demand estimate, Safe/Calculated plans, route economics | `docs/superpowers/specs/2026-09-02-ozon-fbo-product-completion-design.md` | Canonical Product Completion design where later designs are not more specific | 2026-09-08 |
-| Real-data demand/routing separation, stockout impact, bounded Flow | `docs/superpowers/specs/2026-09-03-real-data-demand-stockout-flow-design.md` | Canonical real-data roadmap | 2026-09-08 |
-| Selected supply network, destination→origin coverage, replan semantics | `docs/superpowers/specs/2026-09-08-selected-supply-network-coverage-planner-design.md` | Canonical planning extension | 2026-09-08 |
+| Domain / scope | Authoritative source |
+|---|---|
+| API-first shipment/data architecture and operational rules | `docs/superpowers/specs/2026-09-09-ozon-api-first-shipment-planner-design.md` + correction patch |
+| Target Plan/Data frontend behavior | `docs/superpowers/specs/2026-09-09-api-first-plan-ui-design.md` + correction patch |
+| Demand/stockout/Flow semantics | `docs/superpowers/specs/2026-09-03-real-data-demand-stockout-flow-design.md` |
+| Product Completion semantics not superseded later | `docs/superpowers/specs/2026-09-02-ozon-fbo-product-completion-design.md` |
+| Runtime/backend/frontend boundary | `docs/superpowers/specs/2026-08-20-scoz-lite-portable-architecture-design.md` |
 
-This contract records frontend consequences only. Business formulas live in the canonical design documents and backend domain/application layer, not in frontend code.
+Archived documents have no active UX precedence.
 
 ## Visual contract
 
-- **Project `DESIGN.md`:** `/DESIGN.md`.
-- **Token ownership:** `frontend/assets/css/app.css` owns runtime semantic tokens after Product Completion migration; `DESIGN.md` mirrors accepted durable values. Screen-local duplicate tokens are forbidden.
-- **Runtime design-system source:** plain CSS custom properties + shared vanilla JS/HTML primitives.
-- **Supported themes:** light theme only for MVP; forced-colors/high-contrast must remain operable.
-- **Design-context review policy:** any durable palette, typography, radius, density, visualization or interaction change updates `DESIGN.md`/this contract in the same change.
-- Selected-network planning introduces no new visual identity; it extends the established dense logistics-console language.
+- `DESIGN.md` defines the approved visual identity and semantic tokens.
+- Runtime implementation remains committed vanilla HTML/CSS/JavaScript.
+- No gradients, glassmorphism, dark-dashboard language, decorative KPI mosaics or Ozon-brand imitation.
+- Use the existing light engineering-console register, compact spacing, data density, semantic color roles and stable layout geometry.
+- `Ozon → Наша потребность → План` remains the decision-line signature.
+- Color is never the only carrier of status.
+- Existing shared primitives are reused rather than duplicated screen-locally.
 
-## Canonical UI Map
+## Canonical navigation
 
-The frontend must create each behavioral owner once and reuse it. Equivalent screen-local implementations are prohibited.
-
-| Capability | Canonical owner | Source of truth | Allowed variants | Verification |
-|---|---|---|---|---|
-| Dataset table | `SkladOzon.DataTable` | this contract | plan / economics / diagnostics | unit + browser + keyboard |
-| Search | `SkladOzon.SearchField` | this contract | local dataset / selector search | keyboard + clear behavior |
-| Select | native `<select>` wrapped by shared field styling | this contract + DESIGN | native only while OS popup is accepted | keyboard + popup |
-| Date | native `input[type=date]` in Data section | this contract | native | locale + keyboard |
-| Form state | `SkladOzon.FormState` | this contract | import / scenario / dirty-applied state | validation + duplicate-submit |
-| Supply network selector | `SkladOzon.SupplyNetworkSelector` | 2026-09-08 design + this contract | draft / applied | keyboard + dirty-state + failure recovery |
-| Scrollbar | global application stylesheet | `DESIGN.md` | geometry exceptions only | computed style/browser |
-| Toast/status | `SkladOzon.Notice` | this contract | success / warning / info / error | live region |
-| Detail drawer | `SkladOzon.DetailDrawer` | this contract | SKU / route / coverage detail | focus + narrow viewport |
-| Flow visualization | `SkladOzon.FlowView` | canonical product designs + DESIGN | historical destination/origin/SKU; planned coverage context | keyboard + text parity |
-| Ranked bar breakdown | `SkladOzon.RankedBars` | canonical product designs + DESIGN | units / share / margin pp / profit rub | text parity + keyboard |
-| Progress | `SkladOzon.ProgressPanel` | this contract | import / full analysis / network replan | async/failure browser test |
-
-Table row multi-selection and CRUD destructive actions are not part of this product scope and therefore have no canonical owner yet.
-
-## Component behavior
-
-| Component | Default | Hover | Focus | Active/selected | Disabled | Busy | Error |
-|---|---|---|---|---|---|---|---|
-| Button | semantic label, stable size | deliberate surface change | visible focus ring | pressed state | non-interactive appearance + reason when non-obvious | same geometry + progress state | nearby persistent message |
-| Search | value + clear button when non-empty | controls visible | focus ring | n/a | n/a | local search has no busy state | n/a |
-| Input/select | label + current value | border emphasis | focus ring | n/a | visually distinct, no handler | form submit owns pending | inline text + `aria-invalid` |
-| Supply network selector | applied summary + `Изменить` | clear action affordance | focus ring on trigger/checkbox/search | checkboxes represent draft only until successful recalc | unavailable cluster has explicit reason | selector stays editable until request starts; request locks apply action | previous applied network remains authoritative; draft preserved |
-| Data table | stable columns/row height | row affordance only when interactive | focused controls visible | selected row/context distinct from hover | n/a | table frame remains stable | partial error does not destroy prior successful result |
-| Cluster card | demand + local/external share + economics | indicates selectable | focus ring | clear selected border/marker | unavailable only with explanation | n/a | incomplete data shown as incomplete, not zero |
-| Flow link/node | exact value always available in text | highlight relationship | keyboard target focus | selected path emphasized | non-computable link remains inspectable with incomplete badge | n/a | missing tariff/economics shown explicitly |
-| Drawer | contextual read-only detail | n/a | focus begins at heading/first action | open state | n/a | sub-section pending preserves drawer | inline failure + retry |
-
-## Dataset navigation
-
-### Plan and economics tables
-
-- Default local pagination: **50 rows/page**; choices **25 / 50 / 100**.
-- The Plan view is rendered from one active immutable `AnalysisSnapshot` plus one active immutable `PlanningSnapshot` referencing that analysis. Pagination/filtering/sorting remain client-side over bounded presentation rows unless a future API contract changes ownership.
-- Plan quantities come from the active `PlanningSnapshot`; upstream demand/need evidence comes from its referenced `AnalysisSnapshot`.
-- Single-column sort by default; Shift+click may add secondary sort only if implemented consistently by the shared table owner.
-- 8+ visible columns require a `Колонки` chooser. User choice is stored locally.
-- Search is local and immediate; no debounce is required while no network request is issued. Clear button clears immediately and restores focus.
-- URL/search state preserves active section, committed search, filters, sort, page and page size where values are shareable. File paths/names and sensitive local values are never put in URL.
-- Filter or search change resets page to 1. Page is clamped after dataset changes.
-- Empty dataset differs from no-results state. No-results offers `Очистить фильтры`.
-- Table body owns scrolling; toolbar/header/pagination remain in the table frame.
-
-### Plan filters
-
-Canonical fast filters:
-
-- `Все`
-- `Есть расхождение`
-- `Вероятный дефицит`
-- `Дорогая логистика`
-- `Неполная экономика`
-- `Заблокировано`
-
-`Есть расхождение` is the primary analytical view but the application remembers the user's last selected filter rather than forcing it on every return.
-
-## Navigation and route state
-
-Top-level routes/sections:
-
-1. `План`
-2. `Потоки спроса`
-3. `Экономика`
-4. `Данные`
-
-Implementation may use hash routing in the vanilla frontend. Route state must support Back/Forward and preserve section-specific filter state during the session.
-
-Document titles:
-
-- `План — Sklad Ozon`
-- `Потоки спроса — Sklad Ozon`
-- `Экономика — Sklad Ozon`
-- `Данные — Sklad Ozon`
-
-A SKU/route drawer does not change the document title unless a future decision makes it a bookmarkable route.
-
-## Main decision workflow
-
-1. User imports/validates data in `Данные`.
-2. User opens `План`.
-3. User sets horizon, inbound flag and the global supply network. `MAX_MARGIN` remains fixed and is not a control.
-4. Network checkbox edits are **draft only** and issue no request.
-5. Any changed upstream input or network selection marks the visible result `Требуется пересчёт`; the previous applied result remains visible and must not be silently mixed with draft inputs.
-6. User activates the single action `Пересчитать план`.
-7. If only the network is dirty, the application performs downstream replan against the active AnalysisSnapshot. If any upstream analysis input is dirty, it performs full analysis and includes the current draft network.
-8. Stable progress/busy state blocks duplicate submit without moving controls.
-9. Full-analysis success atomically installs a new AnalysisSnapshot plus its initial PlanningSnapshot. Network-only success atomically installs a new PlanningSnapshot referencing the unchanged active AnalysisSnapshot.
-10. Only after success does the draft network become applied/persisted. Failure preserves the previous applied analysis/planning result and keeps draft inputs for retry.
-11. User reviews destination decisions and the physical origin supply roll-up; detail drawers provide evidence when needed.
-
-## Decision-line contract
-
-The canonical comparison sequence is always:
-
-`Ozon → Наша потребность → План`
-
-For a destination row, `План` means **final covered quantity of that destination target**, not physical inbound quantity into that destination cluster.
-
-Where useful, show beneath it:
-
-- `Δ шт.` and `Δ %` to Ozon;
-- Ozon horizon and our selected horizon;
-- warning `Горизонты различаются` when they are not directly comparable;
-- expected profit and route-economic opportunity;
-- explicit uncovered cause when coverage is incomplete.
-
-Ozon values use the Ozon semantic visual role; our estimate and plan use the model role. Neither is labelled as an error merely because values differ.
-
-## Physical supply roll-up
-
-The Plan screen exposes an origin-oriented roll-up derived only from final coverage legs:
+Top-level routes remain exactly:
 
 ```text
-Москва — поставить 600
-  свой спрос        500
-  другие кластеры   100
-    Казань            50
-    Тверь             30
-    Ярославль         20
+План
+Потоки спроса
+Экономика
+Данные
 ```
 
-- Calculated Plan is the default roll-up and canonical `Наш план`.
-- Safe Plan is a separately labelled conservative comparison and is never summed with Calculated Plan.
-- Roll-up values are backend-owned; frontend only groups/renders presentation aggregates already supplied by the backend.
-- A user can drill from origin total to destination composition without losing origin/destination identity.
+Route changes preserve section-local state during the session and remain compatible with browser Back/Forward when routing is hash-based.
 
-## Uncovered-state vocabulary
+Document titles remain route-specific and user-readable.
 
-The UI must keep three causes distinct:
+## Current-runtime versus active target
 
-- **Не покрыто выбранной сетью** — no selected physically feasible/tariff-complete origin or capacity.
-- **Заблокировано правилами расчёта** — desired placement existed but economics/threshold eligibility failed.
-- **Не хватило доступного товара** — placement was eligible but seller stock was exhausted.
+Before PR-E, some committed Plan/Data screens still represent the previously shipped UI. That runtime is compatibility evidence, not permission to extend superseded selected-network behavior.
 
-Do not collapse these into one generic deficit state.
+For any new API-first work:
 
-## SKU detail drawer
+```text
+09.09 API-first UI spec + correction patch
+wins over old Plan/Data runtime patterns
+```
 
-Drawer order is causal and fixed:
+Historical `Потоки спроса` and existing visual identity are explicitly preserved unless a later approved design changes them.
 
-1. `Решение`
-2. `Динамика спроса`
-3. `Как исполняется спрос`
-4. `Ozon vs наша модель`
-5. `Экономика`
-6. `Доказательства и диагностика`
+## Shared behavior owners
 
-The `Решение` area may include `Где лежит запас` coverage breakdown for the current destination.
+Recurring behavior has one canonical owner. Equivalent screen-local copies are prohibited.
 
-The drawer is non-modal. Background content remains available; no focus trap or inert background. On open, focus moves to the drawer heading or first relevant control. On close, focus returns to the originating row/control.
+Existing/shared owners include:
 
-Raw backend status/explanation codes may appear only in the final diagnostic disclosure. Main copy is localized human-readable reasoning.
+```text
+SearchField
+Notice/status
+ProgressPanel
+DataTable/table framing
+FormState
+FlowView / Flow primitives
+RankedBars where already used
+```
+
+API-first roadmap adds canonical owners in PR-E:
+
+```text
+OzonConnectionPanel
+CredentialVaultDialog
+SourceModePanel
+ArticlePlanSelector
+PlanProductWorkspace
+ShipmentIntentForm
+HandoffPointSelector
+ShipmentManifest
+OzonValidationStatus
+```
+
+The old `SupplyNetworkSelector` is not an active future owner.
+
+## Component behavior baseline
+
+All interactive controls must have stable:
+
+```text
+default
+hover
+focus-visible
+active/selected
+disabled
+busy
+error
+```
+
+Busy state does not change control geometry. Validation errors are persistent and correction-oriented; toasts may acknowledge but never contain the only error detail.
+
+Use native semantic buttons, labels, inputs, checkboxes and tables where appropriate. No browser `alert`, `confirm` or `prompt` for normal product flows.
+
+## Async ownership and stale-response safety
+
+External/source/analysis/shipment actions remain explicit user actions.
+
+Required behavior:
+
+- duplicate submit prevention;
+- request/run identity so stale responses cannot replace newer state;
+- previous successful result remains visible during refresh and on recoverable failure;
+- edited draft inputs remain available for correction/retry;
+- source refresh, analysis recalculation and shipment validation have separate freshness ownership;
+- an Ozon/API failure never silently switches to FILES mode.
+
+## Data-source UX
+
+API is the primary operational source. FILES is an explicit reserve workflow, not an automatic or casual peer toggle.
+
+Canonical hierarchy in target `Данные`:
+
+```text
+Ozon connection/session state
+→ source freshness by business domain
+→ seller-local Unitka / multiplicity inputs
+→ explicit manual-import fallback
+```
+
+The UI must say that API and file source domains are not mixed inside one analysis run.
+
+Secrets never appear in long-lived frontend state, URL, Project JSON, logs or source snapshots.
+
+Three freshness concepts remain separate when relevant:
+
+```text
+Данные Ozon обновлены
+План рассчитан
+Варианты Ozon проверены
+```
+
+## HandoffPointSelector contract
+
+Hand-off points are **remote Ozon search results**, not a bulk preloaded source catalog.
+
+Target interaction:
+
+```text
+user types query
+<4 trimmed chars → no request
+>=4 chars → ~300 ms debounced localhost search
+→ Ozon-backed results
+→ select concrete warehouse_id
+```
+
+Rules:
+
+- IME/composition-safe input;
+- stale-response/run-sequence protection;
+- previous selected points remain visible during search failure;
+- show returned point name, address and point type;
+- no free-form warehouse-ID field;
+- persisted preferred IDs are only preferences until resolved again after restart;
+- cross-dock action remains blocked until required selected IDs are resolved by backend evidence.
+
+## `План → Товары` target contract
+
+The target primary Plan view is article-first master/detail, not a giant global `SKU × cluster` table.
+
+Canonical identity rule:
+
+```text
+SKU = stable selector/state identity
+article = primary seller-facing display/business label
+```
+
+If one article maps to multiple Ozon SKUs, do not collapse them silently. Render separate SKU-backed items and expose identity diagnostics.
+
+### Left selector
+
+Each item is one SKU-backed product context and shows compact business-identifying information such as:
+
+```text
+article · short name
+SKU secondary
+К поставке N · M кластеров
+```
+
+Search is local/immediate across article/SKU/name and has an explicit clear action.
+
+### Selected product header
+
+Show product identity once:
+
+```text
+article / full name / SKU
+pack multiple
+resolved seller stock
+whole-pack available
+unit volume
+placement-zone evidence/quality
+source freshness
+```
+
+Unknown values display `Не рассчитано`, never frontend zero fallback.
+
+### Decision line
+
+Keep:
+
+```text
+Ozon → Наша потребность → План
+```
+
+When no exact comparable Ozon API recommendation exists, say so explicitly. Never substitute another metric to fill the first value.
+
+### Selected-SKU cluster table
+
+Default target columns:
+
+```text
+Кластер
+FBO
+В пути
+Ozon
+Потребность
+Аналитический план
+Кратность
+К поставке
+Объём
+Зона
+Статус
+```
+
+The table belongs only to the selected SKU and owns its local overflow/pagination.
+
+Pack rounding is explicit (`17 → 18`, `кратность 6`) and is not a warning unless a real constraint exists.
+
+## `План → Отгрузки` target contract
+
+Shipment configuration is user intent, not fake availability.
+
+Target controls:
+
+```text
+date range
+allowed methods
+remote hand-off point selection
+selected destination clusters
+preferred clusters/shipment
+max clusters/shipment
+explicit action: Найти варианты в Ozon
+```
+
+Changing a field marks shipment results dirty/stale only. It makes no Ozon call automatically.
+
+Initial cluster behavior:
+
+- first successful complete ShippablePlan: select all positive complete destination clusters;
+- after explicit user selection: preserve surviving selected IDs on later analysis; newly appearing clusters default unselected.
+
+Selected cluster scope is filter-only over the existing all-cluster ShippablePlan. It never reallocates seller stock.
+
+## Shipment candidate/validation lifecycle
+
+Keep three concepts distinct:
+
+```text
+Кандидат
+Проверено Ozon
+реальная заявка на поставку
+```
+
+The active milestone implements only the first two. It may create temporary drafts for checking; it does not create the real supply request.
+
+Near `Найти варианты в Ozon`, state that temporary drafts may be created and real supply requests are not created.
+
+Forbidden success copy before future PR-F:
+
+```text
+Поставка создана
+Забронировано
+Заявка подтверждена
+```
+
+Observed temporary-draft timeslot wording may say `Окно доступно при проверке`, not booked/confirmed.
+
+## Shipment manifests
+
+A validated option is rendered as a restrained logistics worksheet, not a decorative KPI card.
+
+Show when available:
+
+```text
+date / method / concrete hand-off point
+clusters
+accepted quantity / estimated item volume / SKU count
+Ozon acceptance state
+timeslot evidence
+optional travel-time evidence
+checked timestamp
+zone composition / packing note when relevant
+```
+
+Rejected/partial items stay in context with affected article/SKU/cluster/qty and human-readable Ozon cause.
+
+Stable causal states remain distinct:
+
+```text
+Ozon отклонил состав
+Нет доступных окон в выбранный период
+Ozon временно ограничил частоту проверок
+Не удалось связаться с Ozon
+Результат создания временного черновика неизвестен
+Не подходит по локальному ограничению
+```
+
+Network/service failure must not be rendered as product rejection.
+
+## PVZ wording and local pre-check
+
+PVZ 1000 L is a **candidate-total estimated item-volume** pre-check.
+
+Before live validation:
+
+```text
+Предварительно подходит для ПВЗ
+```
+
+Passing the local estimate does not prove actual packed cargo volume, box count, per-box weight or exact selected-point acceptance.
+
+After successful temporary-draft/timeslot validation, wording may say:
+
+```text
+Состав принят Ozon · окно найдено
+```
+
+Keep manual note where relevant:
+
+```text
+Перед фактической отгрузкой проверьте упаковку, число/вес коробов
+и требования выбранной точки в Ozon.
+```
+
+## Placement-zone presentation
+
+Normalized zone evidence survives from backend operational lines into candidate/validated manifest presentation.
+
+If one option contains multiple zones:
+
+- show zone composition;
+- keep the option together if the selected Ozon method permits it;
+- show manual packing guidance (`При упаковке разделите грузоместа по зонам размещения`);
+- do not fabricate cargo boxes/pallets or claim packing validation.
+
+Frontend does not recompute placement-zone business logic.
+
+## Manual export UX
+
+Only backend-validated exportable options expose:
+
+```text
+Скачать шаблоны Ozon
+```
+
+One cluster → XLSX. Multiple clusters → ZIP with per-cluster XLSX.
+
+Browser never generates or repairs export quantities.
+
+Backend aggregation is fail-closed: same `article + cluster` rows with conflicting SKU or pack multiple cannot be silently merged/exported.
+
+Export failure stays local to the chosen manifest; the validated option remains visible.
 
 ## `Потоки спроса` contract
 
-### Purpose
+Historical Flow remains a first-class analytical mode and is not a shipment scheduler.
 
-This is a first-class analytical mode for a human to inspect demand→fulfillment relationships visually. It is not hidden behind the stockout model and is not a debug screen.
-
-### Top-level view separation
-
-The Flow section separates evidence from decision:
+Core modes remain bounded/focused:
 
 ```text
-История | План размещения
+по кластеру спроса
+по кластеру отгрузки
+по артикулу/SKU
 ```
 
-`История` contains observed/clean historical fulfillment. `План размещения` contains planned coverage from the active PlanningSnapshot. Planned coverage is never represented as a third historical evidence source.
+The primary visualization remains selected-context hub-and-spoke / bounded flow, not a global all-cluster Sankey/chord canvas.
 
-`План размещения` defaults to Calculated Plan. Safe Plan may be shown as an explicitly labelled comparison.
+Every visual relationship has a text equivalent with exact values. Thickness/color cannot be the only information carrier.
 
-### Historical modes
+Historical origin is fulfillment evidence, not future demand ownership or automatic shipment weight.
 
-- **По кластеру спроса:** select destination; inspect which origins fulfilled it.
-- **По кластеру отгрузки:** select origin; inspect which destinations it fulfilled.
-- **По артикулу:** select SKU/article; inspect its geographic demand and fulfillment pattern.
+Do not reintroduce the superseded selected-network planned-coverage view as an active target unless a later approved design explicitly does so.
 
-### Metric selector
+## Economics contract
 
-The same visual structure can encode:
+`Экономика` continues to expose existing unit/route economics and diagnostics without changing mathematical ownership.
 
-- `Штуки`
-- `Доля спроса, %`
-- `Потери маржи, п.п.`
-- `Потери прибыли, ₽`
+Shipment ranking in the active roadmap is operational/service-level. Customer-delivery `RouteCostIndex` / `DirectRouteQuote` is not seller→Ozon inbound cost evidence and must not be surfaced as if it selected the cheapest supply method.
 
-Changing metric changes the quantitative encoding, not the selected cluster/SKU context.
+## Responsive / zoom behavior
 
-### Overview
+Desktop/laptop remains the primary work scene, but narrow windows and 200% zoom must keep all functionality reachable.
 
-Historical cluster cards show:
+Target Plan at narrow width stacks:
 
-- total destination demand;
-- local fulfillment share;
-- external fulfillment share;
-- donor count;
-- current non-local route cost effect;
-- local-placement opportunity in ₽ where computable.
+```text
+article selector
+↓
+selected article detail
+```
 
-Cards are comparison controls, not decorative KPIs.
+rather than squeezing two unusable columns.
 
-### Focused historical flow view
+Tables own their horizontal overflow; root page must not use `overflow:hidden` to fake fit.
 
-For destination mode the selected destination is the central hub. Incoming origin connections show exactly who fulfilled the demand. For origin mode the selected origin is central and connections show destinations. For SKU mode, the view focuses on the SKU and its relevant clusters without attempting a global all-SKU network.
+Shipment controls stack logically and manifest actions remain reachable.
 
-The global all-cluster Sankey/chord diagram is prohibited as the primary view.
+## PR-E migration acceptance
 
-Every link has a text equivalent including origin, destination, quantity, share and active metric. Link thickness/color cannot be the only source of information.
+PR-E finishes this transition by ensuring runtime, `DESIGN.md` and this contract agree on:
 
-### Planned placement view
+```text
+API-first Data hierarchy
+article-first SKU-backed Plan
+remote HandoffPointSelector
+shipment intent / candidate / Ozon-validation lifecycle
+zone composition
+manual export
+no selected-network future workflow
+```
 
-The planned view reuses the same bounded selected-context grammar but renders only PlanningSnapshot coverage aggregates. It must visually state that it is a recommendation/plan, not historical fulfillment.
-
-For a selected origin it can show destinations whose demand is planned to be served there; for a selected destination it can show origins holding its planned serving stock.
-
-No route-count-dependent unbounded canvas is allowed.
-
-### Route selection
-
-Selecting a historical route such as `Казань → Москва` opens route context without losing the main diagram. Historical route context shows:
-
-- units on route;
-- share of Moscow demand;
-- route logistics cost ₽ and `% of realization`;
-- current net margin;
-- local Moscow→Moscow counterfactual margin if feasible/complete;
-- margin delta in percentage points;
-- profit opportunity in ₽;
-- evidence completeness/confidence.
-
-If local counterfactual is infeasible or economics/tariff coverage is incomplete, show `Не рассчитано` plus reason. Never coerce missing values to zero.
-
-A selected planned coverage leg instead shows planned quantity, coverage type, direct tariff/economics, source of physical feasibility, and uncovered/eligibility reason where relevant.
-
-### SKU breakdown inside a route
-
-A selected historical route exposes ranked horizontal bars by SKU/article. Every bar shows exact text values:
-
-- quantity;
-- share of selected route;
-- share of destination demand;
-- route cost effect;
-- margin/profit opportunity where available.
-
-Bars are sortable through the metric selector and keyboard accessible. A compact accessible table/text list exposes the same values for assistive technology and precise inspection.
-
-### Historical vs cleaned evidence
-
-Inside `История`, the user can switch between `Наблюдаемое` and `Очищенное` evidence or view both side-by-side in the detail area. The UI always discloses which evidence source is driving a historical conclusion.
-
-Historical shares remain informational and never become planned placement weights.
-
-## Economics workflow
-
-The main Plan table shows only decision-level economics: margin, profit/unit, expected plan profit, route-cost opportunity.
-
-Detailed economics lives in the drawer and `Экономика` section. It exposes line items from realization through commissions, acquiring, FBO/logistics, advertising/services, taxes, cost, profit, margin and ROI.
-
-For historical route analysis the user can compare `Фактическое исполнение` vs `Локальное размещение`. Both use the same non-route assumptions; only route/placement-dependent costs change according to backend contracts.
-
-For planned coverage, economics comes from direct `origin → destination` planning contracts. The frontend never recomputes unit economics.
-
-## Scenario controls
-
-Canonical user inputs:
-
-- horizon in days;
-- `Учитывать поставки в пути` boolean flag;
-- global `Сеть поставки` cluster selection.
-
-The optimization strategy is fixed to margin priority and is not a user control.
-
-### Supply network defaults and persistence
-
-- First use with no persisted network: all current candidate clusters with at least one explicitly allowed SKU are selected.
-- After successful calculation, the applied network persists in Project JSON.
-- New clusters appearing in later restrictions data default unselected; the app never silently expands a persisted network.
-- Missing/unresolved previously selected clusters are surfaced as a reconciliation warning.
-- Checkbox edits remain draft until successful `Пересчитать план`.
-
-No automatic safety-stock/buffer control exists. Users who want extra coverage increase the horizon.
-
-Scenario/network edits never mutate imported data or an existing immutable snapshot.
-
-## Upload/recalculation flow
-
-| Operation | Trigger | Pending | Success destination | Success feedback | Failure recovery | Focus outcome |
-|---|---|---|---|---|---|---|
-| Full import + analysis | `Рассчитать` / `Пересчитать план` with upstream dirty state | stable progress panel; trigger busy/disabled | current section with new AnalysisSnapshot + initial PlanningSnapshot | persistent inline success state | preserve prior applied result + draft inputs; retry | result heading on first success; error summary on failure |
-| Network-only replan | `Пересчитать план` with only network dirty | compact/stable recalculation progress; trigger busy/disabled | same Plan route with new PlanningSnapshot | applied-network summary updates after success | keep prior PlanningSnapshot applied; preserve draft network | plan heading / initiating control according to canonical focus behavior |
-| Open SKU detail | row/link activation | none or local loading region | same route + drawer | none | inline drawer error if detail unavailable | drawer heading |
-| Close SKU detail | Close/Escape | n/a | same table state | none | n/a | originating row/control |
-| Change flow node/route | cluster/link activation | no full-page loading | same Flow route | selected context updates | missing detail shown inline | selected node/context heading |
-| Search/filter | input/control | local synchronous update | same section | result count | no-results offers clear | remains in control |
-
-## Forms and validation
-
-- Product forms use `novalidate` and app-owned validation.
-- Errors are inline text and associated through `aria-invalid`/`aria-describedby`.
-- On submit failure, focus/scroll to first invalid field; long forms may include a concise error summary.
-- Numeric scenario fields reject negative values and invalid numbers; units are visible in label/suffix.
-- Supply-network search has an explicit clear button when non-empty.
-- Network checkbox labels are real activation targets; keyboard and pointer behavior are equivalent.
-- Duplicate analysis/replan submit is impossible while a run is active.
-- File selections, draft network and other non-sensitive settings survive server/analysis errors.
-- The current native date picker remains acceptable for the Data section; date-only values must not shift through timezone conversion.
-
-## Feedback and diagnostics
-
-- Routine success uses persistent inline state or shared notice; do not spam toasts after local filter/selection.
-- Critical import/analysis/replan errors remain visible until corrected/retried.
-- Raw stack traces/backend payloads never appear in product UI.
-- Diagnostic codes are available in an expandable technical section with human-readable messages.
-- Report freshness warnings remain visible near the data context and in Data section; stale/mismatched reports cannot silently appear current.
-- Applied network, draft network and active analysis/planning IDs must never be visually conflated.
-
-## Async and resilience
-
-- Recalculation is pessimistic: previous successful applied result stays visible until the entire replacement succeeds.
-- A network-only replan never mutates the active AnalysisSnapshot; it returns a new PlanningSnapshot referencing that analysis.
-- A PlanningSnapshot response for an `analysis_snapshot_id` that is no longer active is stale and is discarded.
-- Older/stale async completion must never overwrite newer applied state.
-- Cancel/abort may be added when backend supports it; until then duplicate runs are blocked.
-- A network/server failure does not clear imported file labels, scenario inputs, draft network or previous applied result.
-- Loading/error regions reserve stable geometry.
-- No browser `alert()`, `confirm()` or `prompt()`.
-
-## Responsive/accessibility behavior
-
-- Desktop is primary, but every function remains reachable at narrow width and 200% zoom.
-- Real comparison tables use horizontal scrolling rather than silently becoming cards.
-- The supply-network selection surface remains searchable and usable at narrow width without hiding selected state.
-- Flow visualization may stack overview → visualization → context vertically on narrow windows; exact text data remains available even if the diagram is simplified.
-- Visible keyboard focus is mandatory on navigation, filters, network trigger/search/checkboxes, cluster cards, flow nodes/links, bars, drawer actions and table controls.
-- Tooltip is never the sole carrier of a value.
-- `prefers-reduced-motion` removes nonessential transitions.
-
-## Migration status
-
-Product Completion and real-scale Flow are already being migrated into the canonical multi-section product. Selected-network planning extends that architecture rather than restoring legacy single-screen behavior.
-
-Migration priorities for this feature:
-
-1. preserve current demand/stockout/Flow owners;
-2. add immutable PlanningSnapshot ownership without mutating AnalysisSnapshot;
-3. create/reuse shared supply-network selection state;
-4. add physical origin supply roll-up;
-5. extend Flow with `История | План размещения` without changing historical evidence contracts;
-6. keep formulas backend-owned and remove/deprecate any stale plan fields read from base analysis after replan.
-
-Do not perform unrelated backend/frontend refactors as part of this migration.
-
-## Verification
-
-Before selected-network UI implementation is considered complete:
-
-- run repository formatter/syntax/tests/CI commands actually configured by the repo;
-- run Frontend Design Premium static project audit in strict mode when the skill runtime is available;
-- lint/reconcile `DESIGN.md` when visual tokens/components change and verify runtime token mapping;
-- browser-test success, loading, failure, empty/no-results and stale-report states;
-- verify checkbox changes alone issue no recalculation request;
-- verify the single `Пересчитать план` chooses full analysis vs network-only replan correctly;
-- verify failed replan preserves previous applied plan and draft network;
-- verify stale PlanningSnapshot responses cannot attach to a newer AnalysisSnapshot;
-- keyboard-test navigation, network selector/search/checkboxes, search clear, table sorting/pagination, drawer open/close, flow node/link selection and metric selector;
-- test one normal desktop width, one narrow width and 200% zoom;
-- verify reduced motion and forced-colors/high-contrast operability;
-- verify no raw backend code replaces user-facing explanation;
-- verify historical `Потоки спроса` diagram/text totals still agree exactly;
-- verify planned coverage totals agree with PlanningSnapshot conservation invariants.
-
-## PR5 — Real-scale historical Flow contract
-
-- Historical Flow is selected-context-first in destination, origin, and SKU modes; the selector is searchable, internally scrollable, and renders at most 100 rows.
-- Historical overview contains at most eight exact backend-ranked routes and one non-interactive `Прочие` presentation row. `Прочие` is never a route or economics entity.
-- The complete historical route list is searchable, paged at 100 exact rows, and selects only backend `route_key` values.
-- `Собственный спрос` is always destination-owned demand. Origin context separately labels own destination demand, physical dispatch, same-cluster fulfillment, and other-cluster demand.
-- `Динамика локальности` remains the signature fixed-height historical visual and consumes only backend destination daily series and episode intervals. Unknown local share creates a line gap, never a false zero.
-- Daily values are paged at 50, episodes at 20, exact route SKU values at 100, and ranked SKU bars at 12.
-- Missing economics is `Не рассчитано`; signed negative economics says that local placement is worse/has lower margin. A matching data-quality blocker provides a concise reason and `Открыть в «Данные»` action.
-- Evidence changes routing interpretation, never own destination demand or factual timeline geography. No route-count-dependent SVG/canvas is permitted.
-- Planned placement lives beside this contract under `История | План размещения`; it does not alter historical evidence-source semantics.
+After PR-E, root contracts become the durable post-migration source and transitional wording must be removed or updated accordingly.
