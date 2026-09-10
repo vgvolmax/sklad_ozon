@@ -275,7 +275,8 @@ async def shipment_validate(request:Request):
     # Upstream order, rather than client order, owns deterministic draft budgeting.
     selected=tuple(candidate for candidate in result.candidates if candidate.candidate_id in set(candidate_ids))
     options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,selected,scenario,
-                                    provenance=f'{analysis_id}:{plan_id}:{source_id}')
+                                    provenance=f'{analysis_id}:{plan_id}:{source_id}',
+                                    source_clusters=source.clusters)
     return {'api_version':1,'analysis_snapshot_id':analysis_id,
             'shippable_plan_id':plan_id,'options':wire(options)}
 
