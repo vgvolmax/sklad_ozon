@@ -22,6 +22,9 @@ from .rules import method_cluster_limit, placement_reason
 from .seller_warehouse import resolve_seller_warehouse
 
 
+DEFAULT_MAX_CANDIDATES = 12
+
+
 class ShipmentScopeError(ValueError):
     def __init__(self, code: str):
         self.code = code
@@ -123,7 +126,7 @@ def _candidate_id(plan, scenario, method, seller_id, handoff_id, clusters, assig
 
 def build_candidate_result(
     *, plan: ShippablePlan, scenario: ShipmentScenario, seller_warehouses,
-    handoff_store: HandoffPointStore, max_candidates: int = 12,
+    handoff_store: HandoffPointStore, max_candidates: int = DEFAULT_MAX_CANDIDATES,
 ) -> CandidateBuildResult:
     if not isinstance(plan, ShippablePlan) or not isinstance(scenario, ShipmentScenario):
         raise TypeError("plan and scenario must use shipment contracts")
@@ -137,7 +140,7 @@ def build_candidate_result(
         return CandidateBuildResult((), (ShipmentDiagnostic(exc.code),))
 
     diagnostics: list[ShipmentDiagnostic] = []
-    candidates: list[CandidateShipment] = []
+    candidates_by_method: list[list[CandidateShipment]] = []
     seller_warehouses = tuple(seller_warehouses)
     lines_by_cluster = {
         cluster: tuple(line for line in scope if line.destination_cluster_id == cluster)
@@ -145,8 +148,6 @@ def build_candidate_result(
     }
     clusters = tuple(lines_by_cluster)
     for method in scenario.allowed_methods:
-        if len(candidates) >= max_candidates:
-            break
         rule = METHOD_RULES[method]
         warehouse = resolve_seller_warehouse(
             seller_warehouses, scenario.seller_warehouse_id,
@@ -170,16 +171,20 @@ def build_candidate_result(
                                    for code in sorted(reasons))
             else:
                 valid_clusters.append(cluster)
-        size = min(scenario.preferred_clusters_per_shipment,
-                   method_cluster_limit(method, scenario.max_clusters_per_shipment))
-        groups, blocked = _groups(tuple(valid_clusters), lines_by_cluster, size,
+        hard_cluster_limit = method_cluster_limit(
+            method, scenario.max_clusters_per_shipment)
+        target_group_size = min(
+            scenario.preferred_clusters_per_shipment, hard_cluster_limit)
+        groups, blocked = _groups(tuple(valid_clusters), lines_by_cluster, target_group_size,
                                   rule.preliminary_max_shipment_item_volume_l)
         diagnostics.extend(ShipmentDiagnostic(
             "PVZ_PRELIMINARY_VOLUME_LIMIT", method, cluster) for cluster in blocked)
         destinations = handoffs.points if rule.requires_handoff_point else (None,)
+        method_candidates: list[CandidateShipment] = []
         for point in destinations:
             for group in groups:
-                if len(candidates) >= max_candidates:
+                # No method needs more potential entries than the global output cap.
+                if len(method_candidates) >= max_candidates:
                     break
                 assignments = tuple(sorted(
                     (_assignment(line) for cluster in group for line in lines_by_cluster[cluster]),
@@ -190,10 +195,23 @@ def build_candidate_result(
                              warehouse.warehouse.seller_warehouse_id)
                 point_id = None if point is None else point.warehouse_id
                 point_type = None if point is None else point.warehouse_type
-                candidates.append(CandidateShipment(
+                method_candidates.append(CandidateShipment(
                     _candidate_id(plan, scenario, method, seller_id, point_id,
                                   group, assignments), method, seller_id, point_id,
                     point_type, group, assignments, total_qty, total_volume, ()))
+            if len(method_candidates) >= max_candidates:
+                break
+        if method_candidates:
+            candidates_by_method.append(method_candidates)
+
+    # Reserve one slot per locally viable method in the user's explicit order,
+    # then let earlier methods consume the remaining deterministic budget.
+    candidates = [items[0] for items in candidates_by_method[:max_candidates]]
+    for items in candidates_by_method:
+        if len(candidates) >= max_candidates:
+            break
+        remaining = max_candidates - len(candidates)
+        candidates.extend(items[1:1 + remaining])
     # Preserve causal discovery order while suppressing repeated equivalent diagnostics.
     return CandidateBuildResult(tuple(candidates), tuple(dict.fromkeys(diagnostics)))
 

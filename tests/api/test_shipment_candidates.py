@@ -72,3 +72,28 @@ def test_candidate_endpoint_rejects_foreign_plan_identity():
     })
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "SHIPPABLE_PLAN_IDENTITY_MISMATCH"
+
+
+def test_candidate_endpoint_rejects_client_candidate_limit():
+    snapshot = _analyze_api_plan()
+    plan = snapshot["shippable_plan"]
+
+    response = CLIENT.post("/api/shipment/candidates", json={
+        "analysis_snapshot_id": snapshot["snapshot_id"],
+        "shippable_plan_id": plan["shippable_plan_id"],
+        "max_candidates": 100_000,
+        "scenario": {
+            "selected_cluster_ids": ["Москва"],
+            "date_from": "2026-09-11", "date_to": "2026-09-12",
+            "allowed_methods": ["direct"],
+            "preferred_clusters_per_shipment": 1,
+            "max_clusters_per_shipment": 1,
+        },
+    })
+
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "code": "UNSUPPORTED_FIELD",
+        "message": "Request field is not supported.",
+        "field": "max_candidates",
+    }

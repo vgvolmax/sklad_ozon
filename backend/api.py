@@ -43,7 +43,7 @@ from backend.ozon.vault import CredentialVault, OzonVaultError
 from backend.ozon.handoff import HandoffPointStore, search_handoff_points
 from backend.ozon.source_store import OzonSourceSnapshotStore
 from backend.ozon.sync import capability_matrix, sync_ozon_source
-from backend.shipment import build_candidate_result
+from backend.shipment import DEFAULT_MAX_CANDIDATES, build_candidate_result
 from backend.shipment.store import AnalysisSnapshotStore
 from backend.shipment.wire import parse_shipment_scenario
 MAX_UPLOAD_BYTES=64*1024*1024
@@ -185,6 +185,11 @@ def ozon_source_status(source_snapshot_id:str):
 async def shipment_candidates(request:Request):
     body=await json_object(request)
     if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
+    supported_fields={'analysis_snapshot_id','shippable_plan_id','scenario'}
+    unsupported_fields=set(body)-supported_fields
+    if unsupported_fields:
+        field=sorted(unsupported_fields)[0]
+        return error(400,'UNSUPPORTED_FIELD','Request field is not supported.',field)
     analysis_id=body.get('analysis_snapshot_id')
     plan_id=body.get('shippable_plan_id')
     if not isinstance(analysis_id,str) or not analysis_id.strip():
@@ -199,9 +204,6 @@ async def shipment_candidates(request:Request):
         return error(409,'SHIPPABLE_PLAN_IDENTITY_MISMATCH','Shippable Plan does not belong to this analysis.','shippable_plan_id')
     try:
         scenario=parse_shipment_scenario(body.get('scenario'))
-        max_candidates=body.get('max_candidates',12)
-        if isinstance(max_candidates,bool) or not isinstance(max_candidates,int) or max_candidates<=0:
-            raise ValueError('invalid max_candidates')
     except ValueError:
         return error(400,'INVALID_SHIPMENT_SCENARIO','Shipment scenario is invalid.','scenario')
     seller_warehouses=()
@@ -214,7 +216,7 @@ async def shipment_candidates(request:Request):
         seller_warehouses=source.seller_warehouses
     result=build_candidate_result(plan=plan,scenario=scenario,
         seller_warehouses=seller_warehouses,handoff_store=HANDOFF_STORE,
-        max_candidates=max_candidates)
+        max_candidates=DEFAULT_MAX_CANDIDATES)
     return {'api_version':1,'analysis_snapshot_id':analysis_id,
             'shippable_plan_id':plan_id,'candidates':wire(result.candidates),
             'diagnostics':wire(result.diagnostics)}
