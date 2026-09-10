@@ -12,7 +12,7 @@ from backend.analytics.routes import RouteProfile
 from backend.domain.contracts import ReportMeta, SourceMode
 from backend.domain.signals import RecommendationDistortionSignal, SignalConfidence, StockoutSignal
 from backend.economics import RouteOpportunity, UnitEconomicsResult
-from backend.supply.contracts import OptimizationResult
+from backend.supply.contracts import OptimizationResult, ShippablePlan
 
 
 class HorizonComparability(str, Enum):
@@ -342,3 +342,4 @@ class AnalysisSnapshot:
     analysis_as_of: date
     source_mode: SourceMode = SourceMode.FILES
     source_snapshot_id: str | None = None
+    shippable_plan: ShippablePlan | None = None
