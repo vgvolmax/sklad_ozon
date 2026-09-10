@@ -71,5 +71,80 @@ def test_realistic_generation_is_linear_bounded_stable_and_handoff_ordered(line_
     first = build_candidate_shipments(**kwargs)
     assert first == build_candidate_shipments(**kwargs)
     assert len(first) == 12
+    direct = [item for item in first if item.method is ShipmentMethod.DIRECT]
     crossdock = [item for item in first if item.method is ShipmentMethod.SC_CROSSDOCK]
+    assert direct
+    assert crossdock
+    assert all(len(item.cluster_ids) == 1 for item in direct)
     assert all(item.handoff_point_id == 2 for item in crossdock)  # bound reached before fan-out
+
+
+def test_crossdock_hard_max_splits_twenty_one_clusters(line_factory, plan_factory):
+    clusters = tuple(f"cluster-{index:02}" for index in range(21))
+    plan = plan_factory(tuple(
+        line_factory(f"sku-{index}", cluster, 1, rank=1)
+        for index, cluster in enumerate(clusters)
+    ))
+    store = HandoffPointStore()
+    store.put_all((HandoffPoint(7, None, None, "SC", None),))
+
+    candidates = build_candidate_shipments(
+        plan=plan,
+        scenario=scenario(
+            clusters, (ShipmentMethod.SC_CROSSDOCK,), preferred=20, maximum=20,
+            handoffs=(7,),
+        ),
+        seller_warehouses=(SellerWarehouse(9, None, None, True, None),),
+        handoff_store=store,
+    )
+
+    assert [len(candidate.cluster_ids) for candidate in candidates] == [20, 1]
+    assert all(len(candidate.cluster_ids) <= 20 for candidate in candidates)
+
+
+def test_crossdock_user_max_reduces_method_hard_max(line_factory, plan_factory):
+    clusters = tuple(f"cluster-{index:02}" for index in range(10))
+    plan = plan_factory(tuple(
+        line_factory(f"sku-{index}", cluster, 1, rank=1)
+        for index, cluster in enumerate(clusters)
+    ))
+    store = HandoffPointStore()
+    store.put_all((HandoffPoint(7, None, None, "SC", None),))
+
+    candidates = build_candidate_shipments(
+        plan=plan,
+        scenario=scenario(
+            clusters, (ShipmentMethod.SC_CROSSDOCK,), preferred=5, maximum=5,
+            handoffs=(7,),
+        ),
+        seller_warehouses=(SellerWarehouse(9, None, None, True, None),),
+        handoff_store=store,
+    )
+
+    assert [len(candidate.cluster_ids) for candidate in candidates] == [5, 5]
+    assert all(len(candidate.cluster_ids) <= 5 for candidate in candidates)
+
+
+def test_method_coverage_preserves_explicit_user_order(line_factory, plan_factory):
+    clusters = ("a", "b", "c")
+    plan = plan_factory(tuple(
+        line_factory(f"sku-{index}", cluster, 1, rank=1)
+        for index, cluster in enumerate(clusters)
+    ))
+    store = HandoffPointStore()
+    store.put_all((HandoffPoint(7, None, None, "SC", None),))
+
+    candidates = build_candidate_shipments(
+        plan=plan,
+        scenario=scenario(
+            clusters, (ShipmentMethod.SC_CROSSDOCK, ShipmentMethod.DIRECT),
+            preferred=1, maximum=20, handoffs=(7,),
+        ),
+        seller_warehouses=(SellerWarehouse(9, None, None, True, None),),
+        handoff_store=store,
+        max_candidates=2,
+    )
+
+    assert [candidate.method for candidate in candidates] == [
+        ShipmentMethod.SC_CROSSDOCK, ShipmentMethod.DIRECT,
+    ]

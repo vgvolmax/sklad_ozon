@@ -1,6 +1,7 @@
 """Pure local shipment candidate construction."""
 
-from .candidates import build_candidate_result, build_candidate_shipments, select_shipment_scope
+from .candidates import (DEFAULT_MAX_CANDIDATES, build_candidate_result,
+                         build_candidate_shipments, select_shipment_scope)
 from .contracts import (
     CandidateAssignment,
     CandidateBuildResult,
@@ -14,5 +15,5 @@ from .contracts import (
 __all__ = (
     "CandidateAssignment", "CandidateBuildResult", "CandidateShipment", "MethodRule",
     "ShipmentDiagnostic", "ShipmentMethod", "ShipmentScenario", "build_candidate_result",
-    "build_candidate_shipments", "select_shipment_scope",
+    "DEFAULT_MAX_CANDIDATES", "build_candidate_shipments", "select_shipment_scope",
 )
