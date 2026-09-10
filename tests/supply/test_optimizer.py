@@ -120,6 +120,30 @@ def test_objective_changes_priority_but_profit_remains_modeled_profit():
         (decision.expected_profit for decision in margin.decisions), Decimal("0"))
 
 
+def test_decisions_preserve_existing_allocation_priority_before_output_sort():
+    result = optimize_allocations([
+        candidate("A", recommendation=3, need=3, profit="20"),
+        candidate("Z", recommendation=17, need=17, profit="50"),
+        candidate("B", recommendation=2, need=2, profit="0"),
+    ], 20, thresholds(), plan_family=PlanFamily.CALCULATED)
+
+    assert tuple(decision.cluster_id for decision in result.decisions) == ("A", "B", "Z")
+    by_cluster = {decision.cluster_id: decision for decision in result.decisions}
+    assert by_cluster["Z"].allocation_priority_rank == 1
+    assert by_cluster["A"].allocation_priority_rank == 2
+    assert by_cluster["B"].allocation_priority_rank is None
+
+
+def test_eligible_stock_exhausted_decision_still_retains_priority_rank():
+    result = optimize_allocations([
+        candidate("A", recommendation=1, need=1, profit="50"),
+        candidate("B", recommendation=1, need=1, profit="40"),
+    ], 1, thresholds(), plan_family=PlanFamily.CALCULATED)
+    assert result.decisions[1].eligible is True
+    assert result.decisions[1].allocation_qty == 0
+    assert result.decisions[1].allocation_priority_rank == 2
+
+
 def test_calculated_need_is_only_a_tie_break_after_selected_objective():
     result = optimize_allocations([
         candidate("A", recommendation=5, need=5, profit="50"),

@@ -19,7 +19,8 @@ from backend.api import MAX_UPLOAD_BYTES, wire
 from backend.domain.contracts import ImportDiagnostic, OrderLifecycle, OrderRecord
 from backend.ingestion.availability import AvailabilityRecord
 from backend.main import app
-from backend.ozon.source_contracts import EndpointEvidence, OzonSourceSnapshot
+from backend.ozon.source_contracts import (EndpointEvidence, OzonSourceSnapshot,
+                                           PlacementZoneEvidence)
 from tests.helpers.xlsx_fixtures import make_multisheet_xlsx, make_real_unitka, make_xlsx
 
 
@@ -139,6 +140,8 @@ def test_restriction_56_day_reference_cannot_change_demand_need_or_plans():
         [row["calculated_need_qty"] for row in high["placements"]]
     assert low["allocations"] == high["allocations"]
     assert low["safe_allocations"] == high["safe_allocations"]
+    assert low["snapshot"]["shippable_plan"]["lines"] == high["snapshot"]["shippable_plan"]["lines"]
+    assert low["snapshot"]["shippable_plan"]["diagnostics"] == high["snapshot"]["shippable_plan"]["diagnostics"]
 
 
 def _placement(payload, cluster):
@@ -193,6 +196,9 @@ def _without_import_timestamps(payload):
     snapshot.pop("created_at", None)
     for metadata in snapshot.get("report_meta", {}).values():
         metadata.pop("imported_at", None)
+    shippable_plan = snapshot.get("shippable_plan", {})
+    shippable_plan.pop("analysis_snapshot_id", None)
+    shippable_plan.pop("shippable_plan_id", None)
     return normalized
 
 
@@ -264,6 +270,28 @@ def test_happy_path_exposes_calculated_and_safe_plan_families():
     assert _placement(payload, "Москва")["ozon_recommended_qty"] == 3
     assert _allocation(payload, "Москва") == 5
     assert payload["safe_allocations"][0]["decisions"][0]["allocation_qty"] == 3
+    plan = payload["snapshot"]["shippable_plan"]
+    assert plan is not None
+    assert plan["source_mode"] == "files"
+    assert plan["source_snapshot_id"] is None
+    assert plan["lines"][0]["analytical_qty"] == 5
+    assert plan["lines"][0]["shippable_qty"] is None
+    assert "MISSING_PACK_MULTIPLICITY" in plan["lines"][0]["reason_codes"]
+
+
+def test_unitka_pack_builds_known_whole_pack_without_changing_calculated_plan():
+    files = _real_four_files(include_second=False)
+    files["unitka_file"] = ("Юнитка OZON.xlsx", make_real_unitka(
+        product_rows=[["ART-A", "A", 100, 1000, "10%", 1]],
+        tariff_rows=[(0, "0-0,200 л", "Москва", "Москва", 18, 69)],
+        pack_rows=[["ART-A", "36/6"]], economics_scheme_fbo=True,
+    ))
+    payload = _post_analysis(files=files).json()
+    calculated = payload["snapshot"]["decision_rows"][0]["calculated_plan_qty"]
+    line = payload["snapshot"]["shippable_plan"]["lines"][0]
+    assert line["analytical_qty"] == calculated
+    assert line["rounded_target_qty"] % 6 == 0
+    assert line["shippable_qty"] % 6 == 0
 
 
 def test_missing_fbo_and_inbound_evidence_blocks_calculated_need():
@@ -643,6 +671,7 @@ def test_api_and_files_typed_sources_are_business_equivalent_without_fabricated_
     assert files_payload["snapshot"]["source_mode"] == "files"
     assert files_payload["snapshot"]["source_snapshot_id"] is None
     assert "Разрешено" not in repr(api_module._api_prepared_inputs(snapshot))
+    assert api_payload["snapshot"]["shippable_plan"]["source_snapshot_id"] == "parity-api"
 
 
 def test_api_prepared_inputs_route_diagnostics_by_analytical_domain():
@@ -662,6 +691,31 @@ def test_api_prepared_inputs_route_diagnostics_by_analytical_domain():
     assert with_inbound.availability.diagnostics == (inbound_error,)
     assert without_inbound.availability.diagnostics == ()
     assert shipment_error not in with_inbound.orders.diagnostics + with_inbound.availability.diagnostics
+    assert with_inbound.placement_zone_evidence == snapshot.placement_zones
+
+
+def test_api_shippable_plan_uses_exact_same_snapshot_placement_zones():
+    parity_snapshot = _api_parity_fixture()
+    snapshot = replace(
+        parity_snapshot,
+        operational_seller_stock=tuple(
+            replace(record, available_quantity=3, fbs_quantity=3)
+            for record in parity_snapshot.operational_seller_stock
+        ),
+        placement_zones=(PlacementZoneEvidence("SKU-1", ("ZONE-A", "ZONE-B")),),
+    )
+    api_module.OZON_SOURCE_STORE.put(snapshot)
+    files = _parity_files()
+    response = CLIENT.post("/api/analysis", files={
+        "tariffs_file": files["tariffs_file"],
+        "product_economics_file": files["product_economics_file"],
+    }, data=_analysis_data(source_mode="api", source_snapshot_id=snapshot.source_snapshot_id))
+    assert response.status_code == 200, response.text
+    plan = response.json()["snapshot"]["shippable_plan"]
+    assert plan["source_snapshot_id"] == snapshot.source_snapshot_id
+    assert len(plan["lines"]) == 1
+    assert plan["lines"][0]["placement_zone_kind"] == "multiple"
+    assert plan["lines"][0]["placement_zones"] == ["ZONE-A", "ZONE-B"]
 
 
 @pytest.mark.parametrize("field", ["orders_file", "availability_file", "restrictions_file"])

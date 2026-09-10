@@ -22,7 +22,9 @@ from backend.decision import (DataQualityFact, DiagnosticView, InputStatusView,
                               classify_product_economics_gap,
                               classify_tariff_gap, tariff_gap_user_detail)
 from backend.decision.snapshot import first_nonblank
-from backend.supply import AllocationObjective
+from backend.supply import (AllocationObjective, SupplyProductIdentity,
+                            build_shippable_plan)
+from backend.supply.facts import build_operational_supply_facts
 from backend.ingestion.cluster_resolution import resolve_analysis_clusters
 from backend.domain.contracts import ImportResult, ReportMeta, ImportDiagnostic, SourceMode
 from backend.ingestion.availability import import_availability
@@ -197,6 +199,7 @@ class PreparedAnalysisInputs:
     restrictions: ImportResult
     orders: ImportResult
     operational_availability: tuple
+    placement_zone_evidence: tuple = ()
 
 
 def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedAnalysisInputs:
@@ -219,6 +222,7 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
         restrictions,
         ImportResult(tuple(snapshot.orders), order_diagnostics, orders_meta),
         tuple(snapshot.availability) + tuple(snapshot.operational_seller_stock),
+        tuple(snapshot.placement_zones),
     )
 
 _IMPORTERS={"availability":import_availability,"restrictions":import_restrictions,"orders":import_orders,"tariffs":import_tariffs,"product-economics":import_product_economics}
@@ -412,8 +416,10 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
             logger.info("[analysis %s] %s done %.3fs%s",request_id,name,duration,suffix)
         bundle=import_unitka_bundle(raw[economics_offset][1],meta(raw[economics_offset][0]),timing=unitka_timing)
         tariffs,products=bundle.tariffs,bundle.product_economics
+        pack_evidence=bundle.pack_multiplicity.records
     else:
         tariffs=timed("tariffs_import",import_tariffs,raw[economics_offset][1],meta(raw[economics_offset][0])); products=timed("product_economics_import",import_product_economics,raw[economics_offset+1][1],meta(raw[economics_offset+1][0]))
+        pack_evidence=()
     project=load_project_if_exists(PROJECT_PATH)
     resolution = resolve_analysis_clusters(
         availability.records, restrictions.records, orders.records, tariffs.records,
@@ -567,6 +573,32 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         product_identities=product_identities, daily_locality=result.daily_locality,
         stockout_episode_impacts=result.stockout_episode_impacts,analysis_as_of=as_of,
         source_mode=provenance[0],source_snapshot_id=provenance[1])
+    cluster_ids=tuple(sorted({row.destination_cluster_id for row in snapshot.decision_rows}))
+    supply_facts=build_operational_supply_facts(
+        products=(SupplyProductIdentity(product.sku, product.article)
+                  for product in products.records),
+        cluster_ids=cluster_ids,
+        pack_evidence=pack_evidence,
+        source_mode=snapshot.source_mode,
+        placement_zone_evidence=(() if source_inputs is None
+                                 else source_inputs.placement_zone_evidence),
+        restrictions=(analysis_restrictions if snapshot.source_mode is SourceMode.FILES else ()),
+        restriction_report_date=None,
+    )
+    shippable_plan=build_shippable_plan(
+        analysis_snapshot_id=snapshot.snapshot_id,
+        source_mode=snapshot.source_mode,
+        source_snapshot_id=snapshot.source_snapshot_id,
+        analysis_as_of=snapshot.analysis_as_of,
+        horizon_days=snapshot.scenario.horizon_days,
+        include_inbound=snapshot.scenario.include_inbound,
+        objective=snapshot.scenario.objective,
+        calculated_allocations=snapshot.calculated_allocations,
+        products=products.records,
+        supply_facts=supply_facts,
+        blocked_decision_rows=snapshot.decision_rows,
+    )
+    snapshot=replace(snapshot,shippable_plan=shippable_plan)
     return {"api_version":1,"complete":complete,"snapshot":wire(snapshot),"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"safe_allocations":wire(result.safe_allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}
 
 

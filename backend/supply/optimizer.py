@@ -168,6 +168,9 @@ def optimize_allocations(
         eligible.sort(key=lambda item: item.economics.profit_per_unit, reverse=True)
     else:
         eligible.sort(key=lambda item: item.economics.margin_rate, reverse=True)
+    priority_by_cluster = {
+        item.cluster_id: rank for rank, item in enumerate(eligible, start=1)
+    }
 
     remaining = available_stock
     quantities: dict[str, int] = {}
@@ -195,6 +198,7 @@ def optimize_allocations(
             decisions.append(AllocationDecision(
                 sku, item.cluster_id, quantity, ceiling, profit_per_unit,
                 expected_profit, eligible_item, _ordered(reasons),
+                priority_by_cluster.get(item.cluster_id),
             ))
         eligible_capacity = sum(ceilings[item.cluster_id] for item in eligible)
         allocated = sum(decision.allocation_qty for decision in decisions)
