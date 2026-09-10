@@ -16,8 +16,11 @@ class FakeClient:
   if isinstance(value,Exception):raise value
   return value
 def service(client,clock=lambda:0):return DraftValidationService(client,clock=clock,today=lambda:date(2026,9,10),utcnow=lambda:datetime(2026,9,10,tzinfo=timezone.utc),sleeper=lambda _:None)
-def info(status="SUCCESS",errors=None,warehouses=True):
- return {"status":status,"clusters":[{"cluster_name":"Москва","macrolocal_cluster_id":111,"supply_type":"DIRECT","warehouses":([{"availability_status":{"state":"AVAILABLE","invalid_reason":"UNSPECIFIED"},"storage_warehouse":{"warehouse_id":9001},"total_rank":1,"total_score":100}] if warehouses else [])}],"errors":errors or []}
+def warehouse(warehouse_id=9001,state="FULL_AVAILABLE",invalid_reason="UNSPECIFIED",rank=1,score=100):
+ return {"availability_status":{"state":state,"invalid_reason":invalid_reason},"storage_warehouse":{"warehouse_id":warehouse_id},"total_rank":rank,"total_score":score}
+def info(status="SUCCESS",errors=None,warehouses=None):
+ rows=[warehouse()] if warehouses is None else warehouses
+ return {"status":status,"clusters":[{"cluster_name":"Москва","macrolocal_cluster_id":111,"supply_type":"DIRECT","warehouses":rows}],"errors":errors or []}
 def slots(rows=None,error="UNSPECIFIED"):
  return {"error_reason":error,"result":{"drop_off_warehouse_timeslots":{"current_time_in_timezone":"2026-09-10T12:00:00+03:00","days":([{"date_in_timezone":"2026-09-11","timeslots":rows}] if rows is not None else []),"warehouse_timezone":"Europe/Moscow"},"requested_date_from":"2026-09-11","requested_date_to":"2026-09-12"}}
 def validate(svc,cands):return svc.validate(cands,SCENARIO,provenance="p",source_clusters=CLUSTERS)
@@ -44,12 +47,14 @@ def test_rejected_resolution_partial_and_empty_slots_preserve_both_causes():
  c=CandidateShipment("partial",ShipmentMethod.DIRECT,None,None,None,("Москва",),rows,5,Decimal(5),())
  client=FakeClient([{"draft_id":8,"errors":[]},info(errors=errors),slots(None)])
  option=validate(service(client),(c,))[0]
- assert option.state is ValidationState.PARTIAL and option.reason_codes==("OZON_PARTIAL_ACCEPTANCE","NO_TIMESLOT")
+ assert option.state is ValidationState.PARTIAL and option.reason_codes==("OZON_PARTIAL_ACCEPTANCE","BAD","NO_TIMESLOT")
  assert option.rejected_assignments[0].quantity==3
 
 def test_failed_and_unspecified_fail_closed():
- failed=FakeClient([{"draft_id":1,"errors":[]},info(status="FAILED")])
- assert validate(service(failed),(candidate(ShipmentMethod.DIRECT),))[0].state is ValidationState.REJECTED
+ failed=FakeClient([{"draft_id":1,"errors":[]},info(status="FAILED",errors=[{"error_reasons":["INVALID_SELLER_WAREHOUSE"]}])])
+ failed_option=validate(service(failed),(candidate(ShipmentMethod.DIRECT),))[0]
+ assert failed_option.state is ValidationState.REJECTED
+ assert failed_option.reason_codes==("OZON_REJECTED_CANDIDATE","INVALID_SELLER_WAREHOUSE")
  bad=FakeClient([{"draft_id":1,"errors":[]},info(status="UNSPECIFIED")])
  option=validate(service(bad),(candidate(ShipmentMethod.DIRECT),))[0]
  assert option.state is ValidationState.UNAVAILABLE and option.reason_codes==("OZON_INVALID_DRAFT_RESPONSE",)
@@ -67,3 +72,57 @@ def test_third_create_in_rolling_minute_is_locally_rate_limited():
  client=FakeClient(sum(([{"draft_id":i+1,"errors":[]},info(),slots([])] for i in range(2)),[]))
  options=validate(service(client),cs)
  assert options[2].state is ValidationState.RATE_LIMITED and options[2].reason_codes==("DRAFT_RATE_BUDGET_EXHAUSTED",) and len(client.calls)==6
+
+def test_partial_and_not_available_warehouses_fail_closed_without_timeslot_call():
+ for state in ("PARTIAL_AVAILABLE","NOT_AVAILABLE","UNSPECIFIED"):
+  client=FakeClient([{"draft_id":1,"errors":[]},info(warehouses=[warehouse(state=state)])])
+  option=validate(service(client),(candidate(ShipmentMethod.DIRECT),))[0]
+  assert option.state is ValidationState.UNAVAILABLE
+  assert option.reason_codes==("OZON_STORAGE_WAREHOUSE_UNAVAILABLE",)
+  assert option.warehouse_evidence[0].availability_state==state
+  assert [call[0] for call in client.calls]==[client.calls[0][0],DRAFT_CREATE_INFO]
+
+def test_first_full_available_warehouse_is_selected_in_response_order():
+ warehouses=[warehouse(9001,"NOT_AVAILABLE",score=1000),warehouse(9002,score=1),warehouse(9003,score=999)]
+ client=FakeClient([{"draft_id":1,"errors":[]},info(warehouses=warehouses),slots([])])
+ validate(service(client),(candidate(ShipmentMethod.DIRECT),))
+ assert client.calls[-1][0]==DRAFT_TIMESLOT_INFO
+ assert client.calls[-1][1]["selected_cluster_warehouses"]==[{"macrolocal_cluster_id":111,"storage_warehouse_id":9002}]
+
+def test_full_available_with_blocking_invalid_reason_is_invalid_response():
+ client=FakeClient([{"draft_id":1,"errors":[]},info(warehouses=[warehouse(invalid_reason="BLOCKED")])])
+ option=validate(service(client),(candidate(ShipmentMethod.DIRECT),))[0]
+ assert option.state is ValidationState.UNAVAILABLE
+ assert option.reason_codes==("OZON_INVALID_DRAFT_RESPONSE",)
+ assert len(client.calls)==2
+
+def test_global_reasons_are_deduplicated_and_unspecified_or_blank_are_ignored():
+ errors=[{"error_reasons":["","UNSPECIFIED","SOME_REASON","SOME_REASON"]},{"error_reasons":["NEXT_REASON","SOME_REASON"]}]
+ client=FakeClient([{"errors":errors}])
+ option=validate(service(client),(candidate(ShipmentMethod.DIRECT),))[0]
+ assert option.state is ValidationState.REJECTED
+ assert option.reason_codes==("OZON_REJECTED_CANDIDATE","SOME_REASON","NEXT_REASON")
+
+def test_create_errors_with_valid_draft_id_are_preserved_and_info_is_authoritative():
+ create_errors=[{"error_reasons":["PRELIMINARY_REASON"],"error_message":"detail","message":"evidence","macrolocal_cluster_ids":[111],"skus":[100]}]
+ client=FakeClient([{"draft_id":7,"errors":create_errors},info(status="FAILED",errors=[{"error_reasons":["FINAL_REASON"]}])])
+ option=validate(service(client),(candidate(ShipmentMethod.DIRECT),))[0]
+ assert [call[0] for call in client.calls[1:]]==[DRAFT_CREATE_INFO]
+ assert option.reason_codes==("OZON_REJECTED_CANDIDATE","PRELIMINARY_REASON","FINAL_REASON")
+
+def test_partial_preserves_global_and_item_reasons_before_no_timeslot():
+ errors=[{"error_reasons":["GLOBAL_REASON"],"items_validation":[{"macrolocal_cluster_id":111,"rejected_items":[{"sku":101,"reasons":["ITEM_REASON"]}]}]}]
+ from decimal import Decimal
+ from backend.shipment.contracts import CandidateAssignment,CandidateShipment
+ c=candidate(ShipmentMethod.DIRECT,("Москва",),skus=("100",))
+ rows=(c.assignments[0],CandidateAssignment("101","B","Москва",3,1,Decimal(1),Decimal(3),"single",("A",)))
+ c=CandidateShipment("partial-global",ShipmentMethod.DIRECT,None,None,None,("Москва",),rows,5,Decimal(5),())
+ client=FakeClient([{"draft_id":8,"errors":[]},info(errors=errors),slots(None)])
+ option=validate(service(client),(c,))[0]
+ assert option.reason_codes==("OZON_PARTIAL_ACCEPTANCE","GLOBAL_REASON","ITEM_REASON","NO_TIMESLOT")
+
+def test_pr_api3_availability_fixtures_do_not_use_synthetic_available_state():
+ from pathlib import Path
+ sources=(Path(__file__).read_text(encoding="utf-8"),Path("backend/ozon/draft_validation.py").read_text(encoding="utf-8"))
+ assert 'state="AVAILABLE"' not in sources
+ assert 'availability_state=="AVAILABLE"' not in sources
