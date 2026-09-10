@@ -196,6 +196,9 @@ def _without_import_timestamps(payload):
     snapshot.pop("created_at", None)
     for metadata in snapshot.get("report_meta", {}).values():
         metadata.pop("imported_at", None)
+    shippable_plan = snapshot.get("shippable_plan", {})
+    shippable_plan.pop("analysis_snapshot_id", None)
+    shippable_plan.pop("shippable_plan_id", None)
     return normalized
 
 
@@ -692,8 +695,13 @@ def test_api_prepared_inputs_route_diagnostics_by_analytical_domain():
 
 
 def test_api_shippable_plan_uses_exact_same_snapshot_placement_zones():
+    parity_snapshot = _api_parity_fixture()
     snapshot = replace(
-        _api_parity_fixture(),
+        parity_snapshot,
+        operational_seller_stock=tuple(
+            replace(record, available_quantity=3, fbs_quantity=3)
+            for record in parity_snapshot.operational_seller_stock
+        ),
         placement_zones=(PlacementZoneEvidence("SKU-1", ("ZONE-A", "ZONE-B")),),
     )
     api_module.OZON_SOURCE_STORE.put(snapshot)
@@ -705,6 +713,7 @@ def test_api_shippable_plan_uses_exact_same_snapshot_placement_zones():
     assert response.status_code == 200, response.text
     plan = response.json()["snapshot"]["shippable_plan"]
     assert plan["source_snapshot_id"] == snapshot.source_snapshot_id
+    assert len(plan["lines"]) == 1
     assert plan["lines"][0]["placement_zone_kind"] == "multiple"
     assert plan["lines"][0]["placement_zones"] == ["ZONE-A", "ZONE-B"]
 
