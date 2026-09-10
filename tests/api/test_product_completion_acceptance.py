@@ -267,6 +267,34 @@ def test_product_completion_safe_and_calculated_semantics(product_completion_pay
     assert row["calculated_plan_qty"] > row["safe_plan_qty"]
 
 
+def test_malformed_capacity_is_legacy_equivalent_to_absent_restriction_row():
+    from tests.api.test_analysis import _analysis_data, _post_analysis
+
+    malformed_files = _build_product_completion_acceptance_files()
+    malformed_files["restrictions_file"] = (
+        "restrictions.xlsx",
+        make_xlsx(
+            headers=["SKU", "Кластер", "Склад", "Возможно ли поставить товар",
+                     "Максимальный размер поставки"],
+            rows=[["SKU-1", "Москва", "M1", "Да", "bad"]],
+        ),
+    )
+    absent_files = _build_product_completion_acceptance_files()
+    absent_files["restrictions_file"] = (
+        "restrictions.xlsx",
+        make_xlsx(
+            headers=["SKU", "Кластер", "Склад", "Возможно ли поставить товар",
+                     "Максимальный размер поставки"],
+            rows=[["OTHER", "Москва", "M1", "Да", 20]],
+        ),
+    )
+
+    malformed = _post_analysis(files=malformed_files, data=_analysis_data()).json()["snapshot"]
+    absent = _post_analysis(files=absent_files, data=_analysis_data()).json()["snapshot"]
+    for key in ("calculated_allocations", "safe_allocations", "decision_rows"):
+        assert malformed[key] == absent[key]
+
+
 def test_product_completion_rejects_max_volume():
     from tests.api.test_analysis import _analysis_data, _post_analysis
     response = _post_analysis(files=_build_product_completion_acceptance_files(),

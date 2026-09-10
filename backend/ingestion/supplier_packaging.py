@@ -9,7 +9,7 @@ from openpyxl import load_workbook
 
 from backend.domain.contracts import ImportResult, ReportMeta
 from ._common import _diag
-from .normalization import normalize_header, normalize_text
+from .normalization import normalize_header, normalize_seller_article_identity
 
 _SHEET = "Прайс списком"
 _ARTICLE_HEADER = "код"
@@ -30,16 +30,12 @@ def normalize_supplier_article(value: object) -> str:
     """Normalize real numeric spreadsheet cells without coercing string identity."""
     if isinstance(value, bool) or value is None:
         raise ValueError("supplier article is invalid")
-    if isinstance(value, int):
-        return str(value)
     if isinstance(value, float):
         if not isfinite(value) or not value.is_integer():
             raise ValueError("supplier article is invalid")
-        return str(int(value))
-    if isinstance(value, str):
-        article = value.strip()
-        if article:
-            return article
+    article = normalize_seller_article_identity(value)
+    if article:
+        return article
     raise ValueError("supplier article is invalid")
 
 

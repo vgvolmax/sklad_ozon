@@ -38,6 +38,17 @@ def test_capacity_unknown_and_prohibited_only_remain_distinct():
     assert conservative_cluster_capacity(prohibited).eligibility is RestrictionEligibility.INELIGIBLE
 
 
+def test_invalid_capacity_remains_allowed_unknown_operational_evidence():
+    malformed = [RestrictionRecord(
+        "S", "A", RestrictionState.ALLOWED, "", "Да", "C", None,
+        RestrictionCapacityKind.UNKNOWN, (), False,
+    )]
+    capacity = conservative_cluster_capacity(malformed)
+    assert capacity.eligibility is RestrictionEligibility.ALLOWED
+    assert capacity.capacity_kind is RestrictionCapacityKind.UNKNOWN
+    assert capacity.capacity_qty is None
+
+
 def test_api_facts_preserve_exact_zones_join_pack_by_article_and_keep_shared_skus():
     facts = build_operational_supply_facts(
         products=(SupplyProductIdentity("123", "40750"), SupplyProductIdentity("456", "40750")),

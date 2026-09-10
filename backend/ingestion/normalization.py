@@ -3,6 +3,7 @@
 import re
 import unicodedata
 from collections.abc import Mapping
+from math import isfinite
 
 from backend.domain.contracts import ImportDiagnostic
 
@@ -14,6 +15,17 @@ def normalize_text(value: object) -> str:
         return ""
     text = unicodedata.normalize("NFC", str(value)).replace("\ufeff", "").replace("\u00a0", " ")
     return _WHITESPACE.sub(" ", text).strip()
+
+
+def normalize_seller_article_identity(value: object) -> str:
+    """Preserve string identity while canonicalizing integer-like numeric cells."""
+    if isinstance(value, bool):
+        return normalize_text(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and isfinite(value) and value.is_integer():
+        return str(int(value))
+    return normalize_text(value)
 
 
 def normalize_header(value: object) -> str:

@@ -87,3 +87,15 @@ def test_capacity_kinds_and_invalid_capacity_are_explicit():
         ("N", RestrictionCapacityKind.UNKNOWN, None),
     ]
     assert "INVALID_MAX_SUPPLY_QTY" in {d.code for d in result.diagnostics}
+    assert [r.capacity_evidence_valid for r in result.records] == [
+        True, True, True, True, False, False, False,
+    ]
+
+
+def test_restriction_capacity_validity_contract_rejects_non_boolean():
+    import pytest
+    from backend.ingestion.restrictions import RestrictionRecord
+
+    with pytest.raises(TypeError):
+        RestrictionRecord("S", "W", RestrictionState.ALLOWED, "", "Да",
+                          capacity_evidence_valid=1)

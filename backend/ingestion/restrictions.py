@@ -29,6 +29,11 @@ class RestrictionRecord:
     max_supply_qty: int | None = None
     capacity_kind: RestrictionCapacityKind = RestrictionCapacityKind.UNKNOWN
     placement_zones: tuple[str, ...] = ()
+    capacity_evidence_valid: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.capacity_evidence_valid, bool):
+            raise TypeError("capacity_evidence_valid must be bool")
 
 
 def import_restrictions(data: bytes, report_context: ReportMeta) -> ImportResult[RestrictionRecord]:
@@ -52,6 +57,7 @@ def import_restrictions(data: bytes, report_context: ReportMeta) -> ImportResult
         maximum = row.get("максимальный размер поставки")
         max_qty = None
         capacity_kind = RestrictionCapacityKind.UNKNOWN
+        capacity_evidence_valid = True
         maximum_text = normalize_text(maximum).casefold()
         if state is RestrictionState.PROHIBITED and maximum_text in {"", "-"}:
             max_qty = None
@@ -66,9 +72,14 @@ def import_restrictions(data: bytes, report_context: ReportMeta) -> ImportResult
             except (ValueError, TypeError, OverflowError):
                 diagnostics.append(_diag("INVALID_MAX_SUPPLY_QTY","Maximum supply quantity is invalid.",row=row_number))
                 max_qty = None
+                capacity_evidence_valid = False
             else:
                 capacity_kind = RestrictionCapacityKind.ZERO if max_qty == 0 else RestrictionCapacityKind.FINITE
         zone_text = normalize_text(row.get("зона размещения"))
         zones = tuple(dict.fromkeys(part.strip() for part in zone_text.replace(";", ",").split(",") if part.strip()))
-        records.append(RestrictionRecord(sku, warehouse, state, normalize_text(row.get("причина")), raw, normalize_text(row.get("кластер")), max_qty, capacity_kind, zones)); sources.append(row_number)
+        records.append(RestrictionRecord(
+            sku, warehouse, state, normalize_text(row.get("причина")), raw,
+            normalize_text(row.get("кластер")), max_qty, capacity_kind, zones,
+            capacity_evidence_valid,
+        )); sources.append(row_number)
     return ImportResult(tuple(records), tuple(diagnostics), report_context, tuple(sources))

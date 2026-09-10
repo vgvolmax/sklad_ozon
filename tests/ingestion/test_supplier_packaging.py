@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from backend.domain.contracts import ReportMeta
+from backend.ingestion.normalization import normalize_seller_article_identity
 from backend.ingestion.supplier_packaging import (
     import_supplier_packaging,
     normalize_supplier_article,
@@ -19,6 +20,15 @@ META = ReportMeta("unitka.xlsx", datetime.now(timezone.utc).isoformat())
 ])
 def test_normalize_supplier_article(value, expected):
     assert normalize_supplier_article(value) == expected
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    (40750, "40750"), (40750.0, "40750"), (40750.5, "40750.5"),
+    ("40750.0", "40750.0"), (" 40750 ", "40750"), ("00123", "00123"),
+    (None, ""),
+])
+def test_source_aware_seller_article_identity(value, expected):
+    assert normalize_seller_article_identity(value) == expected
 
 
 @pytest.mark.parametrize("value", [40750.5, True, False, None, "", "   "])
