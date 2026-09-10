@@ -1,9 +1,15 @@
 """Immutable contracts for local shipment composition."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backend.ozon.draft_contracts import ValidatedShipmentOption
 
 
 def _nonblank(value: object, name: str) -> None:
@@ -165,6 +171,39 @@ class CandidateShipment:
                 (item.total_volume_l for item in self.assignments), Decimal("0")):
             raise ValueError("total_volume_l must equal assignment volumes")
         _id_tuple(self.reason_codes, "reason_codes", str)
+
+
+@dataclass(frozen=True, slots=True)
+class ShipmentOptionOutcome:
+    candidate: CandidateShipment
+    validation: ValidatedShipmentOption
+    unresolved_assignments: tuple[CandidateAssignment, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RankedShipmentOption:
+    option_id: str
+    outcome: ShipmentOptionOutcome
+    accepted_qty: int
+    rejected_qty: int
+    accepted_cluster_count: int
+    accepted_sku_count: int
+    accepted_volume_l: Decimal
+    has_timeslot: bool
+    rank_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ShipmentPlan:
+    shipment_plan_id: str
+    source_snapshot_id: str | None
+    analysis_snapshot_id: str
+    shippable_plan_id: str
+    analysis_as_of: date
+    scenario_fingerprint: str
+    ranked_options: tuple[RankedShipmentOption, ...]
+    unavailable_options: tuple[ShipmentOptionOutcome, ...]
+    diagnostics: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,6 +3,7 @@
 from collections import OrderedDict
 
 from backend.decision.contracts import AnalysisSnapshot
+from .contracts import ShipmentPlan
 
 
 class AnalysisSnapshotStore:
@@ -26,3 +27,14 @@ class AnalysisSnapshotStore:
 
     def __len__(self) -> int:
         return len(self._snapshots)
+
+class ShipmentPlanStore:
+    def __init__(self,max_plans: int=8):
+        if isinstance(max_plans,bool) or not isinstance(max_plans,int) or max_plans<1: raise ValueError("max_plans must be a positive integer")
+        self._max_plans=max_plans; self._plans=OrderedDict()
+    def put(self,plan: ShipmentPlan):
+        self._plans.pop(plan.shipment_plan_id,None); self._plans[plan.shipment_plan_id]=plan
+        while len(self._plans)>self._max_plans:self._plans.popitem(last=False)
+    def get(self,shipment_plan_id): return self._plans.get(shipment_plan_id)
+    def clear(self): self._plans.clear()
+    def __len__(self): return len(self._plans)

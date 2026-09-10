@@ -8,6 +8,7 @@ from .contracts import (
     CandidateShipment,
     MethodRule,
     ShipmentDiagnostic,
+    ShipmentOptionOutcome, RankedShipmentOption, ShipmentPlan,
     ShipmentMethod,
     ShipmentScenario,
 )
@@ -15,5 +16,6 @@ from .contracts import (
 __all__ = (
     "CandidateAssignment", "CandidateBuildResult", "CandidateShipment", "MethodRule",
     "ShipmentDiagnostic", "ShipmentMethod", "ShipmentScenario", "build_candidate_result",
+    "ShipmentOptionOutcome", "RankedShipmentOption", "ShipmentPlan",
     "DEFAULT_MAX_CANDIDATES", "build_candidate_shipments", "select_shipment_scope",
 )
