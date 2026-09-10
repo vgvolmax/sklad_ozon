@@ -43,6 +43,7 @@ from backend.ozon.vault import CredentialVault, OzonVaultError
 from backend.ozon.handoff import HandoffPointStore, search_handoff_points
 from backend.ozon.source_store import OzonSourceSnapshotStore
 from backend.ozon.sync import capability_matrix, sync_ozon_source
+from backend.ozon.draft_validation import DraftValidationService
 from backend.shipment import DEFAULT_MAX_CANDIDATES, build_candidate_result
 from backend.shipment.store import AnalysisSnapshotStore
 from backend.shipment.wire import parse_shipment_scenario
@@ -55,6 +56,7 @@ OZON_CLIENT=OzonClient(OZON_VAULT)
 HANDOFF_STORE=HandoffPointStore()
 OZON_SOURCE_STORE=OzonSourceSnapshotStore()
 ANALYSIS_STORE=AnalysisSnapshotStore()
+DRAFT_VALIDATION_SERVICE=DraftValidationService(OZON_CLIENT)
 DECIMAL_NAMES=['acquiring_rate','advertising_rate','buyout_rate','fixed_fbo_fee','income_tax_rate','vat_rate','co_invest_rate','min_profit_per_unit','min_margin_rate','min_roi']
 STAGES={
     "preparing":(1,"Подготовка файлов"), "reports":(2,"Чтение отчётов"),
@@ -220,6 +222,62 @@ async def shipment_candidates(request:Request):
     return {'api_version':1,'analysis_snapshot_id':analysis_id,
             'shippable_plan_id':plan_id,'candidates':wire(result.candidates),
             'diagnostics':wire(result.diagnostics)}
+
+@router.post('/api/shipment/validate')
+async def shipment_validate(request:Request):
+    """Validate reconstructed backend candidates; client rows are never authoritative."""
+    body=await json_object(request)
+    if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
+    supported={'analysis_snapshot_id','shippable_plan_id','scenario','candidate_ids'}
+    extra=set(body)-supported
+    if extra:return error(400,'UNSUPPORTED_FIELD','Request field is not supported.',sorted(extra)[0])
+    analysis_id=body.get('analysis_snapshot_id'); plan_id=body.get('shippable_plan_id')
+    candidate_ids=body.get('candidate_ids')
+    if not isinstance(analysis_id,str) or not analysis_id.strip():
+        return error(400,'ANALYSIS_SNAPSHOT_ID_REQUIRED','Analysis identity is required.','analysis_snapshot_id')
+    if not isinstance(plan_id,str) or not plan_id.strip():
+        return error(400,'SHIPPABLE_PLAN_ID_REQUIRED','Shippable Plan identity is required.','shippable_plan_id')
+    if not isinstance(candidate_ids,list) or not candidate_ids or any(not isinstance(x,str) or not x.strip() for x in candidate_ids) or len(candidate_ids)!=len(set(candidate_ids)):
+        return error(400,'INVALID_CANDIDATE_IDS','Candidate identities must be a nonempty unique list.','candidate_ids')
+    snapshot=ANALYSIS_STORE.get(analysis_id)
+    if snapshot is None:return error(404,'ANALYSIS_SNAPSHOT_NOT_FOUND','Analysis snapshot was not found.','analysis_snapshot_id')
+    plan=snapshot.shippable_plan
+    if plan is None or plan.shippable_plan_id!=plan_id or plan.analysis_snapshot_id!=analysis_id:
+        return error(409,'SHIPPABLE_PLAN_IDENTITY_MISMATCH','Shippable Plan does not belong to this analysis.','shippable_plan_id')
+    if snapshot.source_mode is not SourceMode.API or plan.source_mode is not SourceMode.API:
+        return error(409,'LIVE_VALIDATION_REQUIRES_API_SOURCE','Live validation requires an API-backed analysis.','analysis_snapshot_id')
+    source_id=snapshot.source_snapshot_id
+    if not source_id or source_id!=plan.source_snapshot_id:
+        return error(409,'SOURCE_PROVENANCE_MISMATCH','Analysis and plan provenance do not match.','analysis_snapshot_id')
+    source=OZON_SOURCE_STORE.get(source_id)
+    if source is None:return error(409,'OZON_SOURCE_SNAPSHOT_NOT_FOUND','The analysis source snapshot is no longer available.','analysis_snapshot_id')
+    if snapshot.analysis_as_of!=source.source_as_of or plan.analysis_as_of!=source.source_as_of:
+        return error(409,'SOURCE_PROVENANCE_MISMATCH','Analysis and source provenance do not match.','analysis_snapshot_id')
+    try: scenario=parse_shipment_scenario(body.get('scenario'))
+    except ValueError:return error(400,'INVALID_SHIPMENT_SCENARIO','Shipment scenario is invalid.','scenario')
+    crossdock=any(method.value.endswith('crossdock') for method in scenario.allowed_methods)
+    if crossdock:
+        active={row.seller_warehouse_id for row in source.seller_warehouses if row.is_active}
+        if scenario.seller_warehouse_id is not None and scenario.seller_warehouse_id not in active:
+            return error(409,'SELLER_WAREHOUSE_INVALID','Seller warehouse is no longer active.','scenario.seller_warehouse_id')
+        for point_id in scenario.selected_handoff_point_ids:
+            point=HANDOFF_STORE.get(point_id)
+            if point is None or not point.warehouse_type:
+                return error(409,'HANDOFF_POINT_UNRESOLVED','Select the handoff point again.','scenario.selected_handoff_point_ids')
+    try: OZON_VAULT.require_credentials()
+    except OzonVaultError:return error(423,'OZON_VAULT_LOCKED','Unlock the Ozon credential vault first.',None)
+    result=build_candidate_result(plan=plan,scenario=scenario,
+        seller_warehouses=source.seller_warehouses,handoff_store=HANDOFF_STORE,
+        max_candidates=DEFAULT_MAX_CANDIDATES)
+    by_id={candidate.candidate_id:candidate for candidate in result.candidates}
+    if any(candidate_id not in by_id for candidate_id in candidate_ids):
+        return error(409,'CANDIDATE_PROVENANCE_MISMATCH','Candidate does not belong to the stored plan and scenario.','candidate_ids')
+    # Upstream order, rather than client order, owns deterministic draft budgeting.
+    selected=tuple(candidate for candidate in result.candidates if candidate.candidate_id in set(candidate_ids))
+    options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,selected,scenario,
+                                    provenance=f'{analysis_id}:{plan_id}:{source_id}')
+    return {'api_version':1,'analysis_snapshot_id':analysis_id,
+            'shippable_plan_id':plan_id,'options':wire(options)}
 
 def input_status(*results):
     return {
