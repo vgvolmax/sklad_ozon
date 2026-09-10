@@ -62,14 +62,23 @@ class OzonTimeslot:
 @dataclass(frozen=True, slots=True)
 class OzonWarehouseEvidence:
     destination_cluster_id: str
-    warehouse_id: int
-    score: float | None = None
+    macrolocal_cluster_id: int
+    storage_warehouse_id: int
+    availability_state: str
+    invalid_reason: str
+    total_rank: int | float | None = None
+    total_score: int | float | None = None
 
     def __post_init__(self) -> None:
         _text(self.destination_cluster_id, "destination_cluster_id")
-        _positive_int(self.warehouse_id, "warehouse_id")
-        if self.score is not None and (isinstance(self.score, bool) or not isinstance(self.score, (int, float))):
-            raise TypeError("score must be numeric")
+        _positive_int(self.macrolocal_cluster_id, "macrolocal_cluster_id")
+        _positive_int(self.storage_warehouse_id, "storage_warehouse_id")
+        _text(self.availability_state, "availability_state")
+        _text(self.invalid_reason, "invalid_reason", blank=True)
+        for name in ("total_rank", "total_score"):
+            value = getattr(self, name)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+                raise TypeError(f"{name} must be numeric")
 
 
 @dataclass(frozen=True, slots=True)
