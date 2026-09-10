@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING
+from datetime import date
 
 from backend.domain.signals import RecommendationDistortionSignal, SignalConfidence
+from backend.domain.contracts import RestrictionCapacityKind
 
 if TYPE_CHECKING:
     from backend.economics import UnitEconomicsResult
@@ -45,6 +47,72 @@ class RouteConfidence(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+
+
+class RestrictionEligibility(str, Enum):
+    UNKNOWN = "unknown"
+    ALLOWED = "allowed"
+    INELIGIBLE = "ineligible"
+
+
+class PlacementZoneKind(str, Enum):
+    UNKNOWN = "unknown"
+    SINGLE = "single"
+    MULTIPLE = "multiple"
+
+
+@dataclass(frozen=True, slots=True)
+class SupplyProductIdentity:
+    sku: str
+    article: str
+
+    def __post_init__(self) -> None:
+        _require_nonblank(self.sku, "sku")
+
+
+@dataclass(frozen=True, slots=True)
+class RestrictionCapacityEvidence:
+    eligibility: RestrictionEligibility
+    capacity_kind: RestrictionCapacityKind
+    capacity_qty: int | None
+
+    def __post_init__(self) -> None:
+        if self.capacity_qty is not None and (isinstance(self.capacity_qty, bool) or not isinstance(self.capacity_qty, int)):
+            raise TypeError("capacity_qty must be an int")
+        if self.capacity_kind is RestrictionCapacityKind.FINITE:
+            if self.capacity_qty is None or self.capacity_qty <= 0:
+                raise ValueError("finite capacity must have a positive quantity")
+        elif self.capacity_kind is RestrictionCapacityKind.ZERO:
+            if self.capacity_qty != 0:
+                raise ValueError("zero capacity must have quantity zero")
+        elif self.capacity_qty is not None:
+            raise ValueError("unknown/unlimited capacity must not have a quantity")
+
+
+@dataclass(frozen=True, slots=True)
+class OperationalSupplyFact:
+    sku: str
+    article: str
+    cluster_id: str
+    pack_multiple: int | None
+    placement_zone_kind: PlacementZoneKind
+    placement_zones: tuple[str, ...]
+    restriction_eligibility: RestrictionEligibility
+    capacity_kind: RestrictionCapacityKind
+    capacity_qty: int | None
+    restriction_report_date: date | None
+    reason_codes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _require_nonblank(self.sku, "sku")
+        _require_nonblank(self.cluster_id, "cluster_id")
+        if self.pack_multiple is not None:
+            if isinstance(self.pack_multiple, bool) or not isinstance(self.pack_multiple, int):
+                raise TypeError("pack_multiple must be an int")
+            if self.pack_multiple <= 0:
+                raise ValueError("pack_multiple must be positive")
+        RestrictionCapacityEvidence(
+            self.restriction_eligibility, self.capacity_kind, self.capacity_qty)
 
 
 @dataclass(frozen=True, slots=True)

@@ -49,7 +49,7 @@ def make_multisheet_xlsx(sheets: list[tuple[str, list[object], list[list[object]
     return _normalize_zip_metadata(stream.getvalue())
 
 
-def make_real_unitka(*, product_rows=None, tariff_rows=None, fbo_complete=True,
+def make_real_unitka(*, product_rows=None, tariff_rows=None, pack_rows=None, fbo_complete=True,
                      product_available_qty=None, economics_scheme_fbo=False,
                      extra_fbo_data_sheets=0, duplicate_tariff_section=False) -> bytes:
     """Build the sanitized two-sheet shape used by operational Unitka files."""
@@ -92,6 +92,11 @@ def make_real_unitka(*, product_rows=None, tariff_rows=None, fbo_complete=True,
         for row in tariffs.iter_rows():
             for cell in row:
                 duplicate.cell(cell.row, cell.column, cell.value)
+    if pack_rows is not None:
+        packaging = workbook.create_sheet("Прайс списком")
+        packaging.append(["КОД", "Упак"])
+        for row in pack_rows:
+            packaging.append(row)
     stream = BytesIO(); workbook.save(stream); workbook.close()
     return _normalize_zip_metadata(stream.getvalue())
 

@@ -236,10 +236,13 @@ async def import_unitka(request:Request):
     form=await request.form(); upload=form.get('file')
     if upload is None:return error(400,'MISSING_FIELD','Required multipart field is missing.','file')
     data=await read(upload,'file'); context=meta(upload)
-    bundle=import_unitka_bundle(data,context); products=bundle.product_economics; tariffs=bundle.tariffs
+    bundle=import_unitka_bundle(data,context)
+    products, tariffs, packs = bundle.product_economics, bundle.tariffs, bundle.pack_multiplicity
     return {"api_version":1,"kind":"unitka","product_economics":wire(products.records),"tariffs":wire(tariffs.records),
-            "diagnostics":wire(products.diagnostics+tariffs.diagnostics),"meta":wire(context),
-            "record_sources":{"product_economics":list(products.record_sources),"tariffs":list(tariffs.record_sources)}}
+            "pack_multiplicity":wire(packs.records),
+            "diagnostics":wire(products.diagnostics+tariffs.diagnostics+packs.diagnostics),"meta":wire(context),
+            "record_sources":{"product_economics":list(products.record_sources),"tariffs":list(tariffs.record_sources),
+                              "pack_multiplicity":list(packs.record_sources)}}
 
 async def prepare_analysis(request:Request, request_id="http"):
     form=await request.form(); common=['availability_file','restrictions_file','orders_file']

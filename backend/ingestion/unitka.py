@@ -10,12 +10,14 @@ from openpyxl import load_workbook
 from backend.domain.contracts import ImportResult, ProductEconomicsInput, ReportMeta, TariffRow
 from .product_economics import import_product_economics
 from .tariffs import import_tariffs
+from .supplier_packaging import PackMultiplicityEvidence, import_supplier_packaging
 
 
 @dataclass(frozen=True, slots=True)
 class UnitkaImportBundle:
     product_economics: ImportResult[ProductEconomicsInput]
     tariffs: ImportResult[TariffRow]
+    pack_multiplicity: ImportResult[PackMultiplicityEvidence]
 
 
 def import_unitka_bundle(data: bytes, report_context: ReportMeta, *,
@@ -34,6 +36,10 @@ def import_unitka_bundle(data: bytes, report_context: ReportMeta, *,
         products = import_product_economics(data, report_context, workbook=workbook)
         if timing:
             timing("unitka_economics", perf_counter() - started, len(products.records))
-        return UnitkaImportBundle(products, tariffs)
+        started = perf_counter()
+        packs = import_supplier_packaging(data, report_context, workbook=workbook)
+        if timing:
+            timing("unitka_pack_multiplicity", perf_counter() - started, len(packs.records))
+        return UnitkaImportBundle(products, tariffs, packs)
     finally:
         workbook.close()

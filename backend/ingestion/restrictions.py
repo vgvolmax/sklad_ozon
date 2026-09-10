@@ -2,7 +2,8 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from backend.domain.contracts import ImportResult, ReportMeta
+from math import isfinite
+from backend.domain.contracts import ImportResult, ReportMeta, RestrictionCapacityKind
 from ._common import _diag, read_source_rows, read_xlsx_tables
 from .normalization import normalize_text
 
@@ -26,6 +27,8 @@ class RestrictionRecord:
     source_value: str
     cluster: str = ""
     max_supply_qty: int | None = None
+    capacity_kind: RestrictionCapacityKind = RestrictionCapacityKind.UNKNOWN
+    placement_zones: tuple[str, ...] = ()
 
 
 def import_restrictions(data: bytes, report_context: ReportMeta) -> ImportResult[RestrictionRecord]:
@@ -48,14 +51,24 @@ def import_restrictions(data: bytes, report_context: ReportMeta) -> ImportResult
             diagnostics.append(_diag("UNKNOWN_RESTRICTION_VALUE", f"Unknown restriction value: {raw!r}", row=row_number, field="state", severity="warning"))
         maximum = row.get("максимальный размер поставки")
         max_qty = None
+        capacity_kind = RestrictionCapacityKind.UNKNOWN
         maximum_text = normalize_text(maximum).casefold()
         if state is RestrictionState.PROHIBITED and maximum_text in {"", "-"}:
             max_qty = None
-        elif maximum not in (None, "") and maximum_text != "без ограничений":
+        elif maximum_text == "без ограничений":
+            capacity_kind = RestrictionCapacityKind.UNLIMITED
+        elif maximum not in (None, ""):
             try:
+                if isinstance(maximum, bool):
+                    raise ValueError
                 value=float(maximum); max_qty=int(value)
-                if value != max_qty or max_qty < 0: raise ValueError
-            except (ValueError,TypeError):
-                diagnostics.append(_diag("INVALID_MAX_SUPPLY_QTY","Maximum supply quantity is invalid.",row=row_number)); continue
-        records.append(RestrictionRecord(sku, warehouse, state, normalize_text(row.get("причина")), raw, normalize_text(row.get("кластер")), max_qty)); sources.append(row_number)
+                if not isfinite(value) or value != max_qty or max_qty < 0: raise ValueError
+            except (ValueError, TypeError, OverflowError):
+                diagnostics.append(_diag("INVALID_MAX_SUPPLY_QTY","Maximum supply quantity is invalid.",row=row_number))
+                max_qty = None
+            else:
+                capacity_kind = RestrictionCapacityKind.ZERO if max_qty == 0 else RestrictionCapacityKind.FINITE
+        zone_text = normalize_text(row.get("зона размещения"))
+        zones = tuple(dict.fromkeys(part.strip() for part in zone_text.replace(";", ",").split(",") if part.strip()))
+        records.append(RestrictionRecord(sku, warehouse, state, normalize_text(row.get("причина")), raw, normalize_text(row.get("кластер")), max_qty, capacity_kind, zones)); sources.append(row_number)
     return ImportResult(tuple(records), tuple(diagnostics), report_context, tuple(sources))

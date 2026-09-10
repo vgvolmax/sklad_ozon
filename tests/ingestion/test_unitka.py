@@ -11,12 +11,14 @@ META = ReportMeta("unitka.xlsx", datetime.now(timezone.utc).isoformat())
 
 def test_combined_unitka_matches_standalone_importers():
     data = make_real_unitka(product_rows=[["ART-1", "Товар", 100, 1000, "10%", 1]],
-                            tariff_rows=[(0, "0-0,2 л", "Москва", "Казань", 18, 69)])
+                            tariff_rows=[(0, "0-0,2 л", "Москва", "Казань", 18, 69)],
+                            pack_rows=[["ART-1", "72/6"]])
     expected_products = import_product_economics(data, META)
     expected_tariffs = import_tariffs(data, META)
     bundle = unitka_module.import_unitka_bundle(data, META)
     assert bundle.product_economics == expected_products
     assert bundle.tariffs == expected_tariffs
+    assert bundle.pack_multiplicity.records[0].pack_multiple == 6
 
 
 def test_combined_unitka_opens_workbook_once(monkeypatch):
