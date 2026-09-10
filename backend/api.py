@@ -49,6 +49,8 @@ from backend.shipment.store import AnalysisSnapshotStore, ShipmentPlanStore
 from backend.shipment.orchestration import build_shipment_plan, ShipmentOrchestrationError
 from backend.shipment.export import render_export, ShipmentExportError
 from backend.shipment.wire import parse_shipment_scenario
+from backend.shipment.api_context import (ShipmentPreparationError,
+                                          prepare_shipment_validation)
 MAX_UPLOAD_BYTES=64*1024*1024
 router=APIRouter()
 logger=logging.getLogger(__name__)
@@ -242,44 +244,17 @@ async def shipment_validate(request:Request):
         return error(400,'SHIPPABLE_PLAN_ID_REQUIRED','Shippable Plan identity is required.','shippable_plan_id')
     if not isinstance(candidate_ids,list) or not candidate_ids or any(not isinstance(x,str) or not x.strip() for x in candidate_ids) or len(candidate_ids)!=len(set(candidate_ids)):
         return error(400,'INVALID_CANDIDATE_IDS','Candidate identities must be a nonempty unique list.','candidate_ids')
-    snapshot=ANALYSIS_STORE.get(analysis_id)
-    if snapshot is None:return error(404,'ANALYSIS_SNAPSHOT_NOT_FOUND','Analysis snapshot was not found.','analysis_snapshot_id')
-    plan=snapshot.shippable_plan
-    if plan is None or plan.shippable_plan_id!=plan_id or plan.analysis_snapshot_id!=analysis_id:
-        return error(409,'SHIPPABLE_PLAN_IDENTITY_MISMATCH','Shippable Plan does not belong to this analysis.','shippable_plan_id')
-    if snapshot.source_mode is not SourceMode.API or plan.source_mode is not SourceMode.API:
-        return error(409,'LIVE_VALIDATION_REQUIRES_API_SOURCE','Live validation requires an API-backed analysis.','analysis_snapshot_id')
-    source_id=snapshot.source_snapshot_id
-    if not source_id or source_id!=plan.source_snapshot_id:
-        return error(409,'SOURCE_PROVENANCE_MISMATCH','Analysis and plan provenance do not match.','analysis_snapshot_id')
-    source=OZON_SOURCE_STORE.get(source_id)
-    if source is None:return error(409,'OZON_SOURCE_SNAPSHOT_NOT_FOUND','The analysis source snapshot is no longer available.','analysis_snapshot_id')
-    if snapshot.analysis_as_of!=source.source_as_of or plan.analysis_as_of!=source.source_as_of:
-        return error(409,'SOURCE_PROVENANCE_MISMATCH','Analysis and source provenance do not match.','analysis_snapshot_id')
-    try: scenario=parse_shipment_scenario(body.get('scenario'))
-    except ValueError:return error(400,'INVALID_SHIPMENT_SCENARIO','Shipment scenario is invalid.','scenario')
-    crossdock=any(method.value.endswith('crossdock') for method in scenario.allowed_methods)
-    if crossdock:
-        active={row.seller_warehouse_id for row in source.seller_warehouses if row.is_active}
-        if scenario.seller_warehouse_id is not None and scenario.seller_warehouse_id not in active:
-            return error(409,'SELLER_WAREHOUSE_INVALID','Seller warehouse is no longer active.','scenario.seller_warehouse_id')
-        for point_id in scenario.selected_handoff_point_ids:
-            point=HANDOFF_STORE.get(point_id)
-            if point is None or not point.warehouse_type:
-                return error(409,'HANDOFF_POINT_UNRESOLVED','Select the handoff point again.','scenario.selected_handoff_point_ids')
+    try: prepared=prepare_shipment_validation(analysis_store=ANALYSIS_STORE,
+        source_store=OZON_SOURCE_STORE,handoff_store=HANDOFF_STORE,
+        analysis_id=analysis_id,plan_id=plan_id,scenario_payload=body.get('scenario'),
+        candidate_ids=candidate_ids)
+    except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     try: OZON_VAULT.require_credentials()
     except OzonVaultError:return error(423,'OZON_VAULT_LOCKED','Unlock the Ozon credential vault first.',None)
-    result=build_candidate_result(plan=plan,scenario=scenario,
-        seller_warehouses=source.seller_warehouses,handoff_store=HANDOFF_STORE,
-        max_candidates=DEFAULT_MAX_CANDIDATES)
-    by_id={candidate.candidate_id:candidate for candidate in result.candidates}
-    if any(candidate_id not in by_id for candidate_id in candidate_ids):
-        return error(409,'CANDIDATE_PROVENANCE_MISMATCH','Candidate does not belong to the stored plan and scenario.','candidate_ids')
-    # Upstream order, rather than client order, owns deterministic draft budgeting.
-    selected=tuple(candidate for candidate in result.candidates if candidate.candidate_id in set(candidate_ids))
-    options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,selected,scenario,
+    source_id=prepared.snapshot.source_snapshot_id
+    options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,prepared.candidates,prepared.scenario,
                                     provenance=f'{analysis_id}:{plan_id}:{source_id}',
-                                    source_clusters=source.clusters)
+                                    source_clusters=prepared.source_snapshot.clusters)
     return {'api_version':1,'analysis_snapshot_id':analysis_id,
             'shippable_plan_id':plan_id,'options':wire(options)}
 
@@ -295,32 +270,16 @@ async def shipment_plan(request:Request):
     if not isinstance(plan_id,str) or not plan_id.strip():return error(400,'SHIPPABLE_PLAN_ID_REQUIRED','Shippable Plan identity is required.','shippable_plan_id')
     if not isinstance(ids,list) or not ids or any(not isinstance(x,str) or not x.strip() for x in ids) or len(ids)!=len(set(ids)):
         return error(400,'INVALID_CANDIDATE_IDS','Candidate identities must be a nonempty unique list.','candidate_ids')
-    snapshot=ANALYSIS_STORE.get(analysis_id)
-    if snapshot is None:return error(404,'ANALYSIS_SNAPSHOT_NOT_FOUND','Analysis snapshot was not found.','analysis_snapshot_id')
-    plan=snapshot.shippable_plan
-    if plan is None or plan.shippable_plan_id!=plan_id or plan.analysis_snapshot_id!=analysis_id:
-        return error(409,'SHIPMENT_PLAN_PROVENANCE_MISMATCH','Shippable Plan does not belong to this analysis.','shippable_plan_id')
-    if snapshot.source_mode is not SourceMode.API or plan.source_mode is not SourceMode.API:
-        return error(409,'LIVE_VALIDATION_REQUIRES_API_SOURCE','Live validation requires an API-backed analysis.','analysis_snapshot_id')
-    source_id=snapshot.source_snapshot_id
-    source=OZON_SOURCE_STORE.get(source_id) if source_id else None
-    if not source or source_id!=plan.source_snapshot_id or snapshot.analysis_as_of!=source.source_as_of or plan.analysis_as_of!=source.source_as_of:
-        return error(409,'SHIPMENT_PLAN_PROVENANCE_MISMATCH','Analysis, plan, and source provenance do not match.','analysis_snapshot_id')
-    try:scenario=parse_shipment_scenario(body.get('scenario'))
-    except ValueError:return error(400,'INVALID_SHIPMENT_SCENARIO','Shipment scenario is invalid.','scenario')
-    crossdock=any(method.value.endswith('crossdock') for method in scenario.allowed_methods)
-    if crossdock:
-        active={row.seller_warehouse_id for row in source.seller_warehouses if row.is_active}
-        if scenario.seller_warehouse_id is not None and scenario.seller_warehouse_id not in active:return error(409,'SHIPMENT_PLAN_PROVENANCE_MISMATCH','Seller warehouse is no longer active.','scenario.seller_warehouse_id')
-        if any(HANDOFF_STORE.get(x) is None or not HANDOFF_STORE.get(x).warehouse_type for x in scenario.selected_handoff_point_ids):return error(409,'SHIPMENT_PLAN_PROVENANCE_MISMATCH','Handoff point is unresolved.','scenario.selected_handoff_point_ids')
+    try: prepared=prepare_shipment_validation(analysis_store=ANALYSIS_STORE,
+        source_store=OZON_SOURCE_STORE,handoff_store=HANDOFF_STORE,
+        analysis_id=analysis_id,plan_id=plan_id,scenario_payload=body.get('scenario'),
+        candidate_ids=ids)
+    except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     try:OZON_VAULT.require_credentials()
     except OzonVaultError:return error(423,'OZON_VAULT_LOCKED','Unlock the Ozon credential vault first.',None)
-    result=build_candidate_result(plan=plan,scenario=scenario,seller_warehouses=source.seller_warehouses,handoff_store=HANDOFF_STORE,max_candidates=DEFAULT_MAX_CANDIDATES)
-    wanted=set(ids);by_id={x.candidate_id:x for x in result.candidates}
-    if not wanted.issubset(by_id):return error(409,'SHIPMENT_PLAN_PROVENANCE_MISMATCH','Candidate does not belong to the stored scenario.','candidate_ids')
-    selected=tuple(x for x in result.candidates if x.candidate_id in wanted)
-    options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,selected,scenario,provenance=f'{analysis_id}:{plan_id}:{source_id}',source_clusters=source.clusters)
-    try:shipment=build_shipment_plan(source_snapshot_id=source_id,analysis_snapshot_id=analysis_id,shippable_plan_id=plan_id,analysis_as_of=snapshot.analysis_as_of,scenario=scenario,candidates=selected,validations=options,diagnostics=tuple(x.code for x in result.diagnostics))
+    source_id=prepared.snapshot.source_snapshot_id
+    options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,prepared.candidates,prepared.scenario,provenance=f'{analysis_id}:{plan_id}:{source_id}',source_clusters=prepared.source_snapshot.clusters)
+    try:shipment=build_shipment_plan(source_snapshot_id=source_id,analysis_snapshot_id=analysis_id,shippable_plan_id=plan_id,analysis_as_of=prepared.snapshot.analysis_as_of,scenario=prepared.scenario,candidates=prepared.candidates,validations=options,diagnostics=tuple(x.code for x in prepared.diagnostics))
     except ShipmentOrchestrationError as exc:return error(502,exc.code,'Ozon validation returned inconsistent candidate evidence.',None)
     SHIPMENT_PLAN_STORE.put(shipment)
     return {'api_version':1,'shipment_plan':wire(shipment)}
