@@ -1,9 +1,15 @@
 """Immutable contracts for local shipment composition."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backend.ozon.draft_contracts import ValidatedShipmentOption
 
 
 def _nonblank(value: object, name: str) -> None:
@@ -170,7 +176,7 @@ class CandidateShipment:
 @dataclass(frozen=True, slots=True)
 class ShipmentOptionOutcome:
     candidate: CandidateShipment
-    validation: object
+    validation: ValidatedShipmentOption
     unresolved_assignments: tuple[CandidateAssignment, ...]
 
 
