@@ -13,6 +13,13 @@ class SourceMode(str, Enum):
     FILES = "files"
 
 
+class RestrictionCapacityKind(str, Enum):
+    UNKNOWN = "unknown"
+    ZERO = "zero"
+    FINITE = "finite"
+    UNLIMITED = "unlimited"
+
+
 class OrderLifecycle(str, Enum):
     FULFILLED = "fulfilled"
     IN_PROGRESS = "in_progress"

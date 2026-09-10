@@ -109,6 +109,38 @@ def _allocation(payload, cluster):
     return next(decision["allocation_qty"] for result in payload["allocations"] for decision in result["decisions"] if decision["cluster_id"] == cluster)
 
 
+def test_unitka_import_exposes_pack_evidence_from_single_open_bundle():
+    data = make_real_unitka(pack_rows=[[40750.0, "72/6"]])
+    response = CLIENT.post("/api/import/unitka", files={"file": ("unitka.xlsx", data)})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["pack_multiplicity"] == [{
+        "article": "40750", "pack_multiple": 6, "source_row": 2,
+        "source_value": "72/6", "reason_codes": [],
+    }]
+    assert payload["record_sources"]["pack_multiplicity"] == [2]
+
+
+def test_restriction_56_day_reference_cannot_change_demand_need_or_plans():
+    def analyzed(reference):
+        files = _analysis_files()
+        files["restrictions_file"] = ("restrictions.xlsx", make_xlsx(
+            headers=["SKU", "Кластер", "Склад", "Возможно ли поставить товар",
+                     "Максимальный размер поставки", "Рекомендуемая поставка на 56 дней"],
+            rows=[["SKU-1", "Москва", "W1", "Да", "Без ограничений", reference]],
+        ))
+        response = _post_analysis(files=files)
+        assert response.status_code == 200
+        return response.json()
+
+    low, high = analyzed(10), analyzed(9999)
+    assert low["demand"] == high["demand"]
+    assert [row["calculated_need_qty"] for row in low["placements"]] == \
+        [row["calculated_need_qty"] for row in high["placements"]]
+    assert low["allocations"] == high["allocations"]
+    assert low["safe_allocations"] == high["safe_allocations"]
+
+
 def _placement(payload, cluster):
     return next(item for item in payload["placements"] if item["cluster_id"] == cluster)
 

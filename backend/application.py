@@ -228,13 +228,19 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
     placements_list = []
     for sku_index, sku in enumerate(skus, 1):
         sku_restrictions = restrictions_by_sku.get(sku, ())
+        legacy_restrictions = tuple(
+            row for row in sku_restrictions if row.capacity_evidence_valid
+        )
         mapped = tuple(WarehouseCapability(r.warehouse, r.cluster, r.max_supply_qty)
-                       for r in sku_restrictions if getattr(r, "cluster", ""))
+                       for r in legacy_restrictions if getattr(r, "cluster", ""))
         if not mapped:
             mapped = tuple(WarehouseCapability(r.warehouse, r.cluster, None)
                            for r in sorted(availability_by_sku.get(sku, ()), key=lambda x:(x.warehouse,x.cluster))
                            if r.warehouse not in bad_warehouses)
-        placements_list.extend(compare_placements(candidates_by_sku.get(sku, ()), sku_restrictions, tuple(dict.fromkeys(mapped))))
+        placements_list.extend(compare_placements(
+            candidates_by_sku.get(sku, ()), legacy_restrictions,
+            tuple(dict.fromkeys(mapped)),
+        ))
         progress("placements", sku_index, len(skus))
     placements=tuple(sorted(placements_list, key=lambda item: (item.sku, item.cluster_id)))
     placements_by_sku = grouped(placements, lambda item: item.sku)

@@ -1,5 +1,6 @@
 from backend.domain.contracts import ReportMeta
 from backend.ingestion.restrictions import RestrictionState, import_restrictions
+from backend.supply.contracts import RestrictionCapacityKind
 from tests.helpers.xlsx_fixtures import make_multisheet_xlsx, make_xlsx
 
 META = ReportMeta(source_name="restrictions.xlsx", imported_at="2026-08-21T10:00:00Z", report_generated_at="2026-08-20")
@@ -48,6 +49,10 @@ def test_real_multisheet_restrictions_preserve_prohibited_dash():
     result = import_restrictions(data, META)
     assert [(r.sku, r.state, r.max_supply_qty) for r in result.records] == [
         ("SKU-1", RestrictionState.PROHIBITED, None), ("SKU-2", RestrictionState.ALLOWED, None)]
+    assert [r.capacity_kind for r in result.records] == [
+        RestrictionCapacityKind.UNKNOWN, RestrictionCapacityKind.UNLIMITED,
+    ]
+    assert result.records[1].placement_zones == ()
     assert "INVALID_MAX_SUPPLY_QTY" not in {d.code for d in result.diagnostics}
 
 
@@ -61,3 +66,36 @@ def test_empty_auxiliary_sheet_does_not_report_dimension_repair():
 
     assert [record.sku for record in result.records] == ["1"]
     assert "WORKSHEET_DIMENSION_REPAIRED" not in {d.code for d in result.diagnostics}
+
+
+def test_capacity_kinds_and_invalid_capacity_are_explicit():
+    data = make_xlsx(
+        headers=["SKU", "Склад", "Статус", "Максимальный размер поставки"],
+        rows=[["U", "W1", "Разрешено", "Без ограничений"],
+              ["F", "W2", "Разрешено", 20], ["Z", "W3", "Разрешено", 0],
+              ["K", "W4", "Разрешено", ""], ["I", "W5", "Разрешено", "bad"],
+              ["B", "W6", "Разрешено", True], ["N", "W7", "Разрешено", "inf"]],
+    )
+    result = import_restrictions(data, META)
+    assert [(r.sku, r.capacity_kind, r.max_supply_qty) for r in result.records] == [
+        ("U", RestrictionCapacityKind.UNLIMITED, None),
+        ("F", RestrictionCapacityKind.FINITE, 20),
+        ("Z", RestrictionCapacityKind.ZERO, 0),
+        ("K", RestrictionCapacityKind.UNKNOWN, None),
+        ("I", RestrictionCapacityKind.UNKNOWN, None),
+        ("B", RestrictionCapacityKind.UNKNOWN, None),
+        ("N", RestrictionCapacityKind.UNKNOWN, None),
+    ]
+    assert "INVALID_MAX_SUPPLY_QTY" in {d.code for d in result.diagnostics}
+    assert [r.capacity_evidence_valid for r in result.records] == [
+        True, True, True, True, False, False, False,
+    ]
+
+
+def test_restriction_capacity_validity_contract_rejects_non_boolean():
+    import pytest
+    from backend.ingestion.restrictions import RestrictionRecord
+
+    with pytest.raises(TypeError):
+        RestrictionRecord("S", "W", RestrictionState.ALLOWED, "", "Да",
+                          capacity_evidence_valid=1)

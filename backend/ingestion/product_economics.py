@@ -3,7 +3,7 @@
 from decimal import Decimal
 from backend.domain.contracts import ImportResult, ProductEconomicsInput, ReportMeta
 from ._common import _diag, parse_decimal, read_source_rows, read_xlsx_tables
-from .normalization import normalize_text
+from .normalization import normalize_seller_article_identity, normalize_text
 
 _HEADERS = {"sku": "sku", "артикул": "article", "себестоимость": "cost", "доступный остаток": "available", "цена": "price", "комиссия": "commission", "объём, л": "volume", "объем, л": "volume"}
 _HEADERS.update({"себестоимость единицы":"cost", "цена поставщика до скидок ozon":"price",
@@ -34,7 +34,7 @@ def import_product_economics(data: bytes, report_context: ReportMeta, *, workboo
     for row_number, raw in source.rows:
         row = {_HEADERS[key]: value for key, value in raw.items() if key in _HEADERS}
         sku = normalize_text(row.get("sku"))
-        article = normalize_text(row.get("article"))
+        article = normalize_seller_article_identity(row.get("article"))
         if not sku and not article:
             continue
         try:
