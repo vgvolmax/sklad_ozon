@@ -43,6 +43,9 @@ from backend.ozon.vault import CredentialVault, OzonVaultError
 from backend.ozon.handoff import HandoffPointStore, search_handoff_points
 from backend.ozon.source_store import OzonSourceSnapshotStore
 from backend.ozon.sync import capability_matrix, sync_ozon_source
+from backend.shipment import build_candidate_result
+from backend.shipment.store import AnalysisSnapshotStore
+from backend.shipment.wire import parse_shipment_scenario
 MAX_UPLOAD_BYTES=64*1024*1024
 router=APIRouter()
 logger=logging.getLogger(__name__)
@@ -51,6 +54,7 @@ OZON_VAULT=CredentialVault(Path(__file__).resolve().parents[1]/"data"/"ozon-cred
 OZON_CLIENT=OzonClient(OZON_VAULT)
 HANDOFF_STORE=HandoffPointStore()
 OZON_SOURCE_STORE=OzonSourceSnapshotStore()
+ANALYSIS_STORE=AnalysisSnapshotStore()
 DECIMAL_NAMES=['acquiring_rate','advertising_rate','buyout_rate','fixed_fbo_fee','income_tax_rate','vat_rate','co_invest_rate','min_profit_per_unit','min_margin_rate','min_roi']
 STAGES={
     "preparing":(1,"Подготовка файлов"), "reports":(2,"Чтение отчётов"),
@@ -176,6 +180,44 @@ def ozon_source_status(source_snapshot_id:str):
     return {'api_version':1,'source_snapshot_id':source_snapshot_id,'source_as_of':snapshot.source_as_of.isoformat(),
             'source_timezone':snapshot.source_timezone,'capabilities':capability_matrix(snapshot),
             'endpoint_evidence':wire(snapshot.endpoint_evidence),'diagnostics':wire(snapshot.diagnostics)}
+
+@router.post('/api/shipment/candidates')
+async def shipment_candidates(request:Request):
+    body=await json_object(request)
+    if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
+    analysis_id=body.get('analysis_snapshot_id')
+    plan_id=body.get('shippable_plan_id')
+    if not isinstance(analysis_id,str) or not analysis_id.strip():
+        return error(400,'ANALYSIS_SNAPSHOT_ID_REQUIRED','Analysis identity is required.','analysis_snapshot_id')
+    if not isinstance(plan_id,str) or not plan_id.strip():
+        return error(400,'SHIPPABLE_PLAN_ID_REQUIRED','Shippable Plan identity is required.','shippable_plan_id')
+    snapshot=ANALYSIS_STORE.get(analysis_id)
+    if snapshot is None:
+        return error(404,'ANALYSIS_SNAPSHOT_NOT_FOUND','Analysis snapshot was not found.','analysis_snapshot_id')
+    plan=snapshot.shippable_plan
+    if plan is None or plan.shippable_plan_id != plan_id or plan.analysis_snapshot_id != analysis_id:
+        return error(409,'SHIPPABLE_PLAN_IDENTITY_MISMATCH','Shippable Plan does not belong to this analysis.','shippable_plan_id')
+    try:
+        scenario=parse_shipment_scenario(body.get('scenario'))
+        max_candidates=body.get('max_candidates',12)
+        if isinstance(max_candidates,bool) or not isinstance(max_candidates,int) or max_candidates<=0:
+            raise ValueError('invalid max_candidates')
+    except ValueError:
+        return error(400,'INVALID_SHIPMENT_SCENARIO','Shipment scenario is invalid.','scenario')
+    seller_warehouses=()
+    if plan.source_snapshot_id is not None:
+        source=OZON_SOURCE_STORE.get(plan.source_snapshot_id)
+        if source is None:
+            return error(409,'OZON_SOURCE_SNAPSHOT_NOT_FOUND','The analysis source snapshot is no longer available.','analysis_snapshot_id')
+        if source.source_as_of != plan.analysis_as_of:
+            return error(409,'SOURCE_PROVENANCE_MISMATCH','Analysis and source provenance do not match.','analysis_snapshot_id')
+        seller_warehouses=source.seller_warehouses
+    result=build_candidate_result(plan=plan,scenario=scenario,
+        seller_warehouses=seller_warehouses,handoff_store=HANDOFF_STORE,
+        max_candidates=max_candidates)
+    return {'api_version':1,'analysis_snapshot_id':analysis_id,
+            'shippable_plan_id':plan_id,'candidates':wire(result.candidates),
+            'diagnostics':wire(result.diagnostics)}
 
 def input_status(*results):
     return {
@@ -599,6 +641,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         blocked_decision_rows=snapshot.decision_rows,
     )
     snapshot=replace(snapshot,shippable_plan=shippable_plan)
+    ANALYSIS_STORE.put(snapshot)
     return {"api_version":1,"complete":complete,"snapshot":wire(snapshot),"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"safe_allocations":wire(result.safe_allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}
 
 
