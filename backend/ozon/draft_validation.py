@@ -214,12 +214,15 @@ class DraftValidationService:
             if exc.code is OzonErrorCode.UNAVAILABLE and exc.status is None:return self._option(candidate,ValidationState.OUTCOME_UNKNOWN,("DRAFT_CREATE_OUTCOME_UNKNOWN",))
             return self._option(candidate,ValidationState.UNAVAILABLE,("OZON_INVALID_DRAFT_RESPONSE" if exc.code is OzonErrorCode.INVALID_RESPONSE else "OZON_UNAVAILABLE",))
         except (InvalidDraftResponse,ValueError,TypeError):return self._option(candidate,ValidationState.UNAVAILABLE,("OZON_INVALID_DRAFT_RESPONSE",))
+        if cancelled():return self._option(candidate,ValidationState.UNAVAILABLE,("VALIDATION_CANCELLED",),draft_id=draft_id)
         info=None;deadline=self.clock()+MAX_POLL_DURATION_SECONDS
         for attempt in range(MAX_INFO_POLL_ATTEMPTS):
+            if cancelled():return self._option(candidate,ValidationState.UNAVAILABLE,("VALIDATION_CANCELLED",),draft_id=draft_id)
             try:info=normalize_draft_info(self.client.post_json(DRAFT_CREATE_INFO,{"draft_id":draft_id},policy=READ_POLICY),candidate,identities)
             except OzonClientError as exc:return self._option(candidate,ValidationState.RATE_LIMITED if exc.code is OzonErrorCode.RATE_LIMITED else ValidationState.UNAVAILABLE,("OZON_RATE_LIMITED" if exc.code is OzonErrorCode.RATE_LIMITED else "OZON_UNAVAILABLE",),draft_id=draft_id)
             except (InvalidDraftResponse,ValueError,TypeError):return self._option(candidate,ValidationState.UNAVAILABLE,("OZON_INVALID_DRAFT_RESPONSE",),draft_id=draft_id)
             if info is not None:break
+            if cancelled():return self._option(candidate,ValidationState.UNAVAILABLE,("VALIDATION_CANCELLED",),draft_id=draft_id)
             if attempt+1<MAX_INFO_POLL_ATTEMPTS and self.clock()<deadline:self.sleeper(min(POLL_INTERVAL_SECONDS,max(0,deadline-self.clock())))
         if info is None:return self._option(candidate,ValidationState.UNAVAILABLE,("DRAFT_INFO_TIMEOUT",),draft_id=draft_id)
         causal_reasons=_normalized_reason_codes((*_error_reason_codes(preliminary_errors+info.errors),*(row.code for row in info.rejected)))
@@ -228,11 +231,12 @@ class DraftValidationService:
         try:selected=_selected_warehouses(info.warehouses,identities)
         except InvalidDraftResponse:return self._option(candidate,ValidationState.UNAVAILABLE,("OZON_INVALID_DRAFT_RESPONSE",),draft_id=draft_id,accepted=info.accepted,rejected=info.rejected,warehouses=info.warehouses)
         except ValueError as exc:return self._option(candidate,ValidationState.UNAVAILABLE,(str(exc),),draft_id=draft_id,accepted=info.accepted,rejected=info.rejected,warehouses=info.warehouses)
+        if cancelled():return self._option(candidate,ValidationState.UNAVAILABLE,("VALIDATION_CANCELLED",),draft_id=draft_id,accepted=info.accepted,rejected=info.rejected,warehouses=info.warehouses)
         payload={"draft_id":draft_id,"supply_type":create.supply_type,"selected_cluster_warehouses":selected,"date_from":scenario.date_from.isoformat(),"date_to":scenario.date_to.isoformat()}
         try:timeslots=normalize_timeslots(self.client.post_json(DRAFT_TIMESLOT_INFO,payload,policy=READ_POLICY))
         except TimeslotResponseError as exc:return self._option(candidate,ValidationState.UNAVAILABLE,(str(exc),),draft_id=draft_id,accepted=info.accepted,rejected=info.rejected,warehouses=info.warehouses)
         except OzonClientError as exc:return self._option(candidate,ValidationState.RATE_LIMITED if exc.code is OzonErrorCode.RATE_LIMITED else ValidationState.UNAVAILABLE,("OZON_RATE_LIMITED" if exc.code is OzonErrorCode.RATE_LIMITED else "OZON_UNAVAILABLE",),draft_id=draft_id)
         except (InvalidDraftResponse,ValueError,TypeError):return self._option(candidate,ValidationState.UNAVAILABLE,("OZON_INVALID_DRAFT_RESPONSE",),draft_id=draft_id)
         if info.rejected:return self._option(candidate,ValidationState.PARTIAL,("OZON_PARTIAL_ACCEPTANCE",)+causal_reasons+(("NO_TIMESLOT",) if not timeslots else ()),draft_id=draft_id,accepted=info.accepted,rejected=info.rejected,warehouses=info.warehouses,timeslots=timeslots)
-        if not timeslots:return self._option(candidate,ValidationState.NO_TIMESLOT,("NO_TIMESLOT",),draft_id=draft_id,accepted=info.accepted,warehouses=info.warehouses)
-        return self._option(candidate,ValidationState.ACCEPTED,(),draft_id=draft_id,accepted=info.accepted,warehouses=info.warehouses,timeslots=timeslots)
+        if not timeslots:return self._option(candidate,ValidationState.NO_TIMESLOT,_normalized_reason_codes((*causal_reasons,"NO_TIMESLOT")),draft_id=draft_id,accepted=info.accepted,warehouses=info.warehouses)
+        return self._option(candidate,ValidationState.ACCEPTED,causal_reasons,draft_id=draft_id,accepted=info.accepted,warehouses=info.warehouses,timeslots=timeslots)

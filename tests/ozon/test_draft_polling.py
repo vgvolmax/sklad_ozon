@@ -24,6 +24,7 @@ def info(status="SUCCESS",errors=None,warehouses=None):
 def slots(rows=None,error="UNSPECIFIED"):
  return {"error_reason":error,"result":{"drop_off_warehouse_timeslots":{"current_time_in_timezone":"2026-09-10T12:00:00+03:00","days":([{"date_in_timezone":"2026-09-11","timeslots":rows}] if rows is not None else []),"warehouse_timezone":"Europe/Moscow"},"requested_date_from":"2026-09-11","requested_date_to":"2026-09-12"}}
 def validate(svc,cands):return svc.validate(cands,SCENARIO,provenance="p",source_clusters=CLUSTERS)
+def validate_cancelled(svc,cands,cancelled):return svc.validate(cands,SCENARIO,provenance="p",source_clusters=CLUSTERS,cancelled=cancelled)
 def test_ambiguous_create_is_once_and_quarantined():
  client=FakeClient([OzonClientError(OzonErrorCode.UNAVAILABLE,"lost")]);svc=service(client)
  assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].state is ValidationState.OUTCOME_UNKNOWN
@@ -36,6 +37,29 @@ def test_in_progress_success_current_timeslot_wire():
  assert option.state is ValidationState.ACCEPTED and [x.from_dt.hour for x in option.timeslots]==[9,12]
  payload=client.calls[-1][1];assert payload["selected_cluster_warehouses"]==[{"macrolocal_cluster_id":111,"storage_warehouse_id":9001}]
  assert "cluster_id" not in payload["selected_cluster_warehouses"][0] and "warehouse_id" not in payload["selected_cluster_warehouses"][0]
+
+def test_cancel_after_create_preserves_draft_id_and_stops_calls():
+ client=FakeClient([{"draft_id":1,"errors":[]}]);svc=service(client)
+ option=validate_cancelled(svc,(candidate(ShipmentMethod.DIRECT),),lambda:len(client.calls)==1)[0]
+ assert option.state is ValidationState.UNAVAILABLE
+ assert option.reason_codes==("VALIDATION_CANCELLED",) and option.draft_id==1
+ assert len(client.calls)==1
+
+def test_cancel_after_in_progress_stops_before_sleep_and_next_poll():
+ client=FakeClient([{"draft_id":2,"errors":[]},{"status":"IN_PROGRESS","clusters":[],"errors":[]}])
+ slept=[];svc=DraftValidationService(client,clock=lambda:0,today=lambda:date(2026,9,10),utcnow=lambda:datetime(2026,9,10,tzinfo=timezone.utc),sleeper=slept.append)
+ option=validate_cancelled(svc,(candidate(ShipmentMethod.DIRECT),),lambda:sum(call[0]==DRAFT_CREATE_INFO for call in client.calls)==1)[0]
+ assert option.state is ValidationState.UNAVAILABLE
+ assert option.reason_codes==("VALIDATION_CANCELLED",) and option.draft_id==2
+ assert [call[0] for call in client.calls[1:]]==[DRAFT_CREATE_INFO] and slept==[]
+
+def test_cancel_after_success_preserves_evidence_and_stops_before_timeslots():
+ client=FakeClient([{"draft_id":3,"errors":[]},info()]);svc=service(client)
+ option=validate_cancelled(svc,(candidate(ShipmentMethod.DIRECT),),lambda:any(call[0]==DRAFT_CREATE_INFO for call in client.calls))[0]
+ assert option.state is ValidationState.UNAVAILABLE
+ assert option.reason_codes==("VALIDATION_CANCELLED",) and option.draft_id==3
+ assert option.accepted_assignments and option.warehouse_evidence
+ assert [call[0] for call in client.calls[1:]]==[DRAFT_CREATE_INFO]
 
 def test_rejected_resolution_partial_and_empty_slots_preserve_both_causes():
  errors=[{"items_validation":[{"macrolocal_cluster_id":111,"rejected_items":[{"sku":101,"reasons":["BAD"]}]}]}]
@@ -109,6 +133,23 @@ def test_create_errors_with_valid_draft_id_are_preserved_and_info_is_authoritati
  option=validate(service(client),(candidate(ShipmentMethod.DIRECT),))[0]
  assert [call[0] for call in client.calls[1:]]==[DRAFT_CREATE_INFO]
  assert option.reason_codes==("OZON_REJECTED_CANDIDATE","PRELIMINARY_REASON","FINAL_REASON")
+
+def test_accepted_preserves_deduplicated_create_and_info_reasons():
+ create_errors=[{"error_reasons":["SAME_REASON","PRELIMINARY_REASON"]}]
+ final_errors=[{"error_reasons":["SAME_REASON","FINAL_REASON"]}]
+ timeslots=[{"from_in_timezone":"2026-09-11T09:00:00+03:00","to_in_timezone":"2026-09-11T10:00:00+03:00"}]
+ client=FakeClient([{"draft_id":7,"errors":create_errors},info(errors=final_errors),slots(timeslots)])
+ option=validate(service(client),(candidate(ShipmentMethod.DIRECT),))[0]
+ assert option.state is ValidationState.ACCEPTED
+ assert option.reason_codes==("SAME_REASON","PRELIMINARY_REASON","FINAL_REASON")
+
+def test_no_timeslot_preserves_create_and_info_reasons_before_state_reason():
+ create_errors=[{"error_reasons":["PRELIMINARY_REASON"]}]
+ final_errors=[{"error_reasons":["FINAL_REASON","NO_TIMESLOT"]}]
+ client=FakeClient([{"draft_id":7,"errors":create_errors},info(errors=final_errors),slots(None)])
+ option=validate(service(client),(candidate(ShipmentMethod.DIRECT),))[0]
+ assert option.state is ValidationState.NO_TIMESLOT
+ assert option.reason_codes==("PRELIMINARY_REASON","FINAL_REASON","NO_TIMESLOT")
 
 def test_partial_preserves_global_and_item_reasons_before_no_timeslot():
  errors=[{"error_reasons":["GLOBAL_REASON"],"items_validation":[{"macrolocal_cluster_id":111,"rejected_items":[{"sku":101,"reasons":["ITEM_REASON"]}]}]}]
