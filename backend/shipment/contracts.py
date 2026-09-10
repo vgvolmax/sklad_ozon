@@ -168,6 +168,39 @@ class CandidateShipment:
 
 
 @dataclass(frozen=True, slots=True)
+class ShipmentOptionOutcome:
+    candidate: CandidateShipment
+    validation: object
+    unresolved_assignments: tuple[CandidateAssignment, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RankedShipmentOption:
+    option_id: str
+    outcome: ShipmentOptionOutcome
+    accepted_qty: int
+    rejected_qty: int
+    accepted_cluster_count: int
+    accepted_sku_count: int
+    accepted_volume_l: Decimal
+    has_timeslot: bool
+    rank_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ShipmentPlan:
+    shipment_plan_id: str
+    source_snapshot_id: str | None
+    analysis_snapshot_id: str
+    shippable_plan_id: str
+    analysis_as_of: date
+    scenario_fingerprint: str
+    ranked_options: tuple[RankedShipmentOption, ...]
+    unavailable_options: tuple[ShipmentOptionOutcome, ...]
+    diagnostics: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ShipmentDiagnostic:
     code: str
     method: ShipmentMethod | None = None
