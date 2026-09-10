@@ -179,7 +179,6 @@ shipmentView: {
   maxClusters: 5,
   dirty: false,
   candidates: null,
-  validation: null,
   plan: null,
   busyStage: null,
   error: null
@@ -244,15 +243,21 @@ Cross-dock action requires resolved selected point; backend remains final valida
 
 ---
 
-## Task 9 — explicit candidate→validate→plan workflow
+## Task 9 — explicit candidate→plan workflow
 
 Only `Найти варианты в Ozon` starts external flow:
 
 ```text
 /api/shipment/candidates
-→ /api/shipment/validate
 → /api/shipment/plan
 ```
+
+`/api/shipment/plan` reconstructs the backend candidates, validates them through
+`DraftValidationService`, obtains current Ozon evidence/timeslots, ranks the
+validated options, and stores the immutable `ShipmentPlan`. The primary PR-E UI
+must not call `/api/shipment/validate`, because doing so would repeat live
+validation and could create unnecessary temporary drafts. The endpoint remains
+an independently supported backend capability.
 
 This action is enabled only for API-backed analysis with current source provenance and an unlocked vault. FILES-backed analysis shows a correction-oriented action to return to `Данные` and use API mode; it must not silently sync/live-validate behind the user's back.
 
@@ -263,14 +268,16 @@ Near action, persistent disclosure:
 Реальные заявки на поставку не создаются.
 ```
 
-Busy stages may be:
+Busy stages reflect only the two observable requests:
 
 ```text
-Собираем варианты
-Проверяем в Ozon
-Получаем окна
-Ранжируем
+Собираем варианты…
+Проверяем варианты в Ozon…
 ```
+
+During the second stage a calm explanation may say that composition, available
+windows, and ranking are being checked; the UI must not simulate intermediate
+progress with timers.
 
 Run identity prevents stale responses overwriting newer scenario. Previous successful manifests remain visible during refresh/failure. Locked vault directs user to `Данные`, not an ad-hoc password prompt.
 

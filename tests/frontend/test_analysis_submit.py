@@ -27,6 +27,7 @@ def test_request_body_captures_all_controls_and_appends_only_supported_scenario(
         "tax_system": "usn_income",
         "horizon_days": "56",
         "include_inbound": "true",
+        "source_mode": "files",
     }
     assert "optimization_objective" not in result
 

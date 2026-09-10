@@ -2,12 +2,12 @@
 
 ## Status and precedence
 
-This root contract is the durable cross-screen behavior contract for the currently shipped application plus the migration boundary for the active API-first roadmap.
+This root contract is the durable cross-screen behavior contract for the shipped API-first application.
 
 Read current/target behavior in this order:
 
 1. `docs/superpowers/specs/2026-09-09-ozon-api-first-shipment-planner-design.md` for active business/data/operational ownership;
-2. `docs/superpowers/specs/2026-09-09-api-first-plan-ui-design.md` for target `План` / `Данные` behavior;
+2. `docs/superpowers/specs/2026-09-09-api-first-plan-ui-design.md` for `План` / `Данные` behavior;
 3. this file for durable cross-screen behavior and current runtime baseline;
 4. `DESIGN.md` for visual identity/tokens.
 
@@ -15,7 +15,7 @@ There is no active correction/amendment overlay.
 
 The superseded selected-network / PlanningSnapshot workflow is not an active future requirement. Do not reconstruct `SupplyNetworkSelector`, network-only replan, selected-network coverage planning or old `План размещения` behavior from Git history/archive.
 
-Before PR-E, committed Plan/Data runtime may still show older presentation. That is compatibility evidence only; new API-first work follows the 09.09 canonical specs. PR-E must update runtime + this file + `DESIGN.md` together so the final root contracts describe shipped behavior without migration notes.
+The root contract describes the shipped PR-E runtime. Historical wide-Plan and selected-network workflows are not supported.
 
 ## Product context
 
@@ -45,7 +45,7 @@ Top-level routes remain exactly:
 Данные
 ```
 
-Inside target `План`:
+Inside `План`:
 
 ```text
 Товары | Отгрузки
@@ -120,7 +120,7 @@ Required behavior:
 
 API is the primary operational source. FILES is an explicit reserve workflow, not an automatic peer toggle.
 
-Target `Данные` hierarchy:
+`Данные` hierarchy:
 
 ```text
 Ozon connection/session
@@ -192,7 +192,7 @@ Pack rounding is visible but not a warning by itself.
 
 ## Shipment intent contract
 
-Target controls:
+Controls:
 
 ```text
 date range
@@ -340,9 +340,9 @@ Desktop/laptop primary. At narrow width/200% zoom:
 - shipment controls stack logically;
 - manifest actions remain reachable.
 
-## PR-E completion
+## Shipped API-first ownership
 
-PR-E finishes migration by making runtime, `DESIGN.md` and this contract agree on:
+The runtime, `DESIGN.md`, and this contract agree on:
 
 ```text
 API-first Data hierarchy
@@ -357,4 +357,4 @@ no selected-network future workflow
 no real supply creation
 ```
 
-After PR-E, remove/update migration wording so root contracts describe the shipped UI directly.
+The user remains the final actor and completes the real supply manually in Ozon.

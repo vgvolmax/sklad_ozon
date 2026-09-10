@@ -102,3 +102,14 @@ def test_plan_has_no_objective_control_and_explains_margin_priority():
     assert "Макс. прибыль" not in app
     assert "Макс. маржа" not in app
     assert "План отдаёт приоритет более маржинальным вариантам размещения." in app
+
+def test_article_plan_identity_search_and_reconciliation():
+    snap={'decision_rows':[{'sku':'100','article':'40750','product_name':'Кран','destination_cluster_id':'A'},{'sku':'200','article':'40750','product_name':'Кран другой','destination_cluster_id':'B'}],'shippable_plan':{'lines':[]}}
+    fixture=json.dumps(snap,ensure_ascii=False)
+    items=node(f"SkladOzon.buildArticlePlanItems({fixture})")
+    assert [x['sku'] for x in items]==['100','200'] and all(x['duplicateArticle'] for x in items)
+    for query,sku in [('40750','100'),('200','200'),('другой','200')]:
+        got=node(f"SkladOzon.filterArticlePlanItems(SkladOzon.buildArticlePlanItems({fixture}),{json.dumps(query,ensure_ascii=False)}).map(x=>x.sku)")
+        assert sku in got
+    assert node(f"SkladOzon.reconcileSelectedSku(SkladOzon.buildArticlePlanItems({fixture}),'200')")=='200'
+    assert node(f"SkladOzon.reconcileSelectedSku(SkladOzon.buildArticlePlanItems({fixture}),'missing')")=='100'

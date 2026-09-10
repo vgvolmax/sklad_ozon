@@ -66,10 +66,10 @@ def test_section_navigation_action_preserves_complete_plan_view_and_serializes_i
         'columns': [],
     }
     assert result['data']['section'] == 'data'
-    assert result['data']['planView'] == expected_view
+    assert {key: result['data']['planView'][key] for key in expected_view} == expected_view
     assert result['dataHash'] == '#data?q=39439&filter=blocked&sort=profit%3Adesc&page=2&size=100'
     assert result['plan']['section'] == 'plan'
-    assert result['plan']['planView'] == expected_view
+    assert {key: result['plan']['planView'][key] for key in expected_view} == expected_view
     assert result['planHash'] == '#plan?q=39439&filter=blocked&sort=profit%3Adesc&page=2&size=100'
 
 
