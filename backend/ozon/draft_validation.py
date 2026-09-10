@@ -10,7 +10,7 @@ from .client import OzonClientError, OzonRequestPolicy
 from .contracts import OzonErrorCode
 from .draft_contracts import OzonRejectedAssignment, OzonTimeslot, OzonWarehouseEvidence, ValidatedShipmentOption, ValidationState
 from .endpoints import DRAFT_CREATE_INFO, DRAFT_TIMESLOT_INFO
-from .source_contracts import Cluster
+from .source_contracts import Cluster, source_business_date
 from .supply_drafts import CREATE_POLICY, DraftClusterIdentity, build_draft_create_request, resolve_candidate_cluster_identities
 
 DEFAULT_MAX_NEW_DRAFTS=6
@@ -21,6 +21,7 @@ VALIDATION_CACHE_TTL_SECONDS=120.0
 OUTCOME_UNKNOWN_TTL_SECONDS=24*60*60
 VALIDATION_CACHE_MAX_ENTRIES=64
 READ_POLICY=OzonRequestPolicy(retry_safe=True,max_attempts=3)
+FULL_ELIGIBLE_WAREHOUSE_STATES=frozenset({"AVAILABLE","FULL_AVAILABLE"})
 
 class InvalidDraftResponse(ValueError): pass
 class TimeslotResponseError(ValueError): pass
@@ -40,6 +41,7 @@ class _DraftInfo:
     rejected: tuple[OzonRejectedAssignment,...]
     warehouses: tuple[OzonWarehouseEvidence,...]
     errors: tuple[OzonDraftErrorEvidence,...]
+    rejected_reason_codes: tuple[str,...]
 
 
 def _positive_int(value):
@@ -64,10 +66,13 @@ def _normalized_reason_codes(values):
         if value and value!="UNSPECIFIED" and value not in output:output.append(value)
     return tuple(output)
 
+def ozon_business_today(utcnow=lambda:datetime.now(timezone.utc)):
+    return source_business_date(utcnow())
+
 def _normalize_errors(errors,candidate,identities):
     if not isinstance(errors,list):raise InvalidDraftResponse("errors")
     destination_by_macro={x.macrolocal_cluster_id:x.destination_cluster_id for x in identities}
-    rejected_output=[];error_output=[]
+    rejected_output=[];rejected_reason_codes=[];error_output=[]
     for error in errors:
         if not isinstance(error,dict):raise InvalidDraftResponse("error")
         reasons=error.get("error_reasons",[])
@@ -91,11 +96,14 @@ def _normalize_errors(errors,candidate,identities):
                 if len(matches)!=1:raise InvalidDraftResponse("rejected identity")
                 reasons=raw.get("reasons",[])
                 if not isinstance(reasons,list):raise InvalidDraftResponse("reasons")
-                code=str(reasons[0] if reasons else "OZON_REJECTED")
+                normalized_reasons=_normalized_reason_codes(reasons)
+                for reason in normalized_reasons:
+                    if reason not in rejected_reason_codes:rejected_reason_codes.append(reason)
+                code=normalized_reasons[0] if normalized_reasons else "OZON_REJECTED"
                 rejected_output.append(OzonRejectedAssignment(matches[0].sku,matches[0].article,destination,matches[0].quantity,code,code))
     identities_seen=[(x.sku,x.destination_cluster_id) for x in rejected_output]
     if len(identities_seen)!=len(set(identities_seen)):raise InvalidDraftResponse("duplicate rejection")
-    return tuple(rejected_output),tuple(error_output)
+    return tuple(rejected_output),tuple(error_output),tuple(rejected_reason_codes)
 
 def _error_reason_codes(errors):
     return _normalized_reason_codes(reason for error in errors for reason in error.error_reasons)
@@ -105,7 +113,7 @@ def normalize_draft_info(response,candidate,identities):
     status=response.get("status")
     if status=="IN_PROGRESS":return None
     if status not in {"SUCCESS","FAILED"}:raise InvalidDraftResponse("status")
-    rejected,errors=_normalize_errors(response.get("errors",[]),candidate,identities)
+    rejected,errors,rejected_reason_codes=_normalize_errors(response.get("errors",[]),candidate,identities)
     destination_by_macro={x.macrolocal_cluster_id:x.destination_cluster_id for x in identities}
     warehouses=[]
     clusters=response.get("clusters",[])
@@ -128,19 +136,19 @@ def normalize_draft_info(response,candidate,identities):
             reason=availability.get("invalid_reason","")
             if not _positive_int(wid) or not isinstance(state,str) or not isinstance(reason,str):raise InvalidDraftResponse("warehouse evidence")
             warehouses.append(OzonWarehouseEvidence(destination_by_macro[macro],macro,wid,state,reason,raw.get("total_rank"),raw.get("total_score")))
-    if status=="FAILED":return _DraftInfo(status,(),rejected,tuple(warehouses),errors)
+    if status=="FAILED":return _DraftInfo(status,(),rejected,tuple(warehouses),errors,rejected_reason_codes)
     rejected_keys={(x.sku,x.destination_cluster_id) for x in rejected}
     accepted=tuple(x for x in candidate.assignments if (x.sku,x.destination_cluster_id) not in rejected_keys)
     if sum(x.quantity for x in accepted)+sum(x.quantity for x in rejected)!=candidate.total_qty:raise InvalidDraftResponse("quantity conservation")
-    return _DraftInfo(status,accepted,rejected,tuple(warehouses),errors)
+    return _DraftInfo(status,accepted,rejected,tuple(warehouses),errors,rejected_reason_codes)
 
 def _selected_warehouses(warehouses,identities):
     selected=[]
     for identity in identities:
         cluster_rows=[x for x in warehouses if x.macrolocal_cluster_id==identity.macrolocal_cluster_id]
-        if any(x.availability_state=="FULL_AVAILABLE" and x.invalid_reason not in {"","UNSPECIFIED"} for x in cluster_rows):
+        if any(x.availability_state in FULL_ELIGIBLE_WAREHOUSE_STATES and x.invalid_reason not in {"","UNSPECIFIED"} for x in cluster_rows):
             raise InvalidDraftResponse("warehouse availability contradiction")
-        rows=[x for x in cluster_rows if x.availability_state=="FULL_AVAILABLE" and x.invalid_reason in {"","UNSPECIFIED"}]
+        rows=[x for x in cluster_rows if x.availability_state in FULL_ELIGIBLE_WAREHOUSE_STATES and x.invalid_reason in {"","UNSPECIFIED"}]
         if not rows:raise ValueError("OZON_STORAGE_WAREHOUSE_UNAVAILABLE")
         # Preserve response order; rank is evidence, not a new optimizer.
         row=rows[0]
@@ -170,8 +178,8 @@ def normalize_timeslots(response):
     return tuple(sorted(output,key=lambda x:(x.from_dt,x.to_dt)))
 
 class DraftValidationService:
-    def __init__(self,client,*,clock:Callable[[],float]=time.monotonic,utcnow=lambda:datetime.now(timezone.utc),today=date.today,sleeper=time.sleep,cache_ttl=VALIDATION_CACHE_TTL_SECONDS,cache_size=VALIDATION_CACHE_MAX_ENTRIES):
-        self.client=client;self.clock=clock;self.utcnow=utcnow;self.today=today;self.sleeper=sleeper;self.cache_ttl=cache_ttl;self.cache_size=cache_size
+    def __init__(self,client,*,clock:Callable[[],float]=time.monotonic,utcnow=lambda:datetime.now(timezone.utc),today=None,sleeper=time.sleep,cache_ttl=VALIDATION_CACHE_TTL_SECONDS,cache_size=VALIDATION_CACHE_MAX_ENTRIES):
+        self.client=client;self.clock=clock;self.utcnow=utcnow;self.today=today or ozon_business_today;self.sleeper=sleeper;self.cache_ttl=cache_ttl;self.cache_size=cache_size
         self._cache=OrderedDict();self._create_attempts=deque()
     def _key(self,c,s,p):
         return hashlib.sha256(json.dumps([c.candidate_id,p,s.date_from.isoformat(),s.date_to.isoformat(),[(x.sku,x.destination_cluster_id,x.quantity) for x in c.assignments]],separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
@@ -200,13 +208,13 @@ class DraftValidationService:
             while len(self._cache)>self.cache_size:self._cache.popitem(last=False)
         return tuple(output)
     def _validate_one(self,candidate,scenario,identities,create,cancelled):
-        preliminary_errors=()
+        preliminary_errors=();preliminary_rejected_reasons=()
         try:
             response=self.client.post_json(create.path,create.payload,policy=CREATE_POLICY);draft_id=_draft_id(response)
             errors=response.get("errors",[]) if isinstance(response,dict) else []
-            rejected,preliminary_errors=_normalize_errors(errors,candidate,identities)
+            rejected,preliminary_errors,preliminary_rejected_reasons=_normalize_errors(errors,candidate,identities)
             if draft_id is None:
-                reasons=_error_reason_codes(preliminary_errors)
+                reasons=_normalized_reason_codes((*_error_reason_codes(preliminary_errors),*preliminary_rejected_reasons))
                 if rejected or reasons:return self._option(candidate,ValidationState.REJECTED,("OZON_REJECTED_CANDIDATE",)+reasons,rejected=rejected)
                 raise InvalidDraftResponse("missing draft_id")
         except OzonClientError as exc:
@@ -225,7 +233,7 @@ class DraftValidationService:
             if cancelled():return self._option(candidate,ValidationState.UNAVAILABLE,("VALIDATION_CANCELLED",),draft_id=draft_id)
             if attempt+1<MAX_INFO_POLL_ATTEMPTS and self.clock()<deadline:self.sleeper(min(POLL_INTERVAL_SECONDS,max(0,deadline-self.clock())))
         if info is None:return self._option(candidate,ValidationState.UNAVAILABLE,("DRAFT_INFO_TIMEOUT",),draft_id=draft_id)
-        causal_reasons=_normalized_reason_codes((*_error_reason_codes(preliminary_errors+info.errors),*(row.code for row in info.rejected)))
+        causal_reasons=_normalized_reason_codes((*_error_reason_codes(preliminary_errors+info.errors),*preliminary_rejected_reasons,*info.rejected_reason_codes))
         if info.status=="FAILED":return self._option(candidate,ValidationState.REJECTED,("OZON_REJECTED_CANDIDATE",)+causal_reasons,draft_id=draft_id,rejected=info.rejected,warehouses=info.warehouses)
         if not info.accepted:return self._option(candidate,ValidationState.REJECTED,("OZON_REJECTED_CANDIDATE",)+causal_reasons,draft_id=draft_id,rejected=info.rejected,warehouses=info.warehouses)
         try:selected=_selected_warehouses(info.warehouses,identities)
