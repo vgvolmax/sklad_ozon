@@ -40,7 +40,7 @@ from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
 from backend.ozon.contracts import OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import CONNECTION_TEST_PATH
 from backend.ozon.vault import CredentialVault, OzonVaultError
-from backend.ozon.handoff import HandoffPointStore, search_handoff_points
+from backend.ozon.handoff import HandoffPointStore, handoff_supply_types, search_handoff_points
 from backend.ozon.source_store import OzonSourceSnapshotStore
 from backend.ozon.sync import capability_matrix, sync_ozon_source
 from backend.ozon.draft_validation import DraftValidationService
@@ -164,8 +164,12 @@ async def ozon_handoff_search(request:Request):
     if not isinstance(supply_types,list) or not all(isinstance(item,str) and item.strip() for item in supply_types):
         return error(400,'INVALID_SUPPLY_TYPES','Expected a list of supply types.','supply_types')
     try:
+        ozon_supply_types=handoff_supply_types(tuple(supply_types))
+    except ValueError:
+        return error(400,'INVALID_SUPPLY_TYPES','Unknown shipment method.','supply_types')
+    try:
         OZON_VAULT.require_credentials()
-        points=search_handoff_points(OZON_CLIENT,query,tuple(supply_types))
+        points=search_handoff_points(OZON_CLIENT,query,ozon_supply_types)
         HANDOFF_STORE.put_all(points)
         return {'api_version':1,'items':wire(points)}
     except OzonVaultError as exc:return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
