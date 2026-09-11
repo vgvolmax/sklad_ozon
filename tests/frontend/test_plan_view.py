@@ -24,12 +24,22 @@ def rows():
 
 
 def test_decision_line_none_zero_and_different_horizon():
-    snap={'summary':{'total_ozon_recommended_qty':0,'total_calculated_need_qty':None,'total_calculated_plan_qty':9,'total_safe_plan_qty':4},'freshness_warnings':['Горизонты различаются: Ozon 28 дней, наш расчёт 56 дней.']}
+    snap={'summary':{'total_ozon_recommended_qty':0,'total_calculated_need_qty':None,'total_calculated_plan_qty':9,'total_safe_plan_qty':None},'freshness_warnings':['Горизонты различаются: Ozon 28 дней, наш расчёт 56 дней.']}
     model=node(f"SkladOzon.buildDecisionLineModel({json.dumps(snap, ensure_ascii=False)})")
     assert [x['label'] for x in model['steps']] == ['Ozon','Наша потребность','Наш план']
     assert model['safe']['label'] == 'Safe Plan'
+    assert model['safe']['value'] is None
     assert model['differentHorizon'] is True
     assert node("[SkladOzon.presentNumber(null),SkladOzon.presentNumber(0)]") == ['Не рассчитано','0']
+
+
+def test_horizon_comparability_has_human_labels_for_every_state():
+    assert node("['same_horizon','different_horizon','ozon_horizon_unknown','ozon_recommendation_missing'].map(SkladOzon.presentHorizonComparability)") == [
+        'Горизонты совпадают',
+        'Горизонты различаются',
+        'Горизонт Ozon неизвестен',
+        'Рекомендация Ozon отсутствует',
+    ]
 
 
 def test_exact_structured_filters_and_search():

@@ -127,7 +127,7 @@ class DecisionSummary:
     decision_row_count: int
     total_ozon_recommended_qty: int
     total_calculated_need_qty: int
-    total_safe_plan_qty: int
+    total_safe_plan_qty: int | None
     total_calculated_plan_qty: int
     expected_calculated_plan_profit: Decimal
     disagreement_row_count: int

@@ -315,9 +315,10 @@ def test_missing_fbo_and_inbound_evidence_blocks_calculated_need():
     assert payload["allocations"][0]["decisions"][0]["reason_codes"] == [
         "CALCULATED_NEED_MISSING"
     ]
-    assert payload["safe_allocations"][0]["decisions"][0]["reason_codes"] == [
-        "CALCULATED_NEED_MISSING"
-    ]
+    assert payload["safe_allocations"] == []
+    row = payload["snapshot"]["decision_rows"][0]
+    assert row["safe_plan_qty"] is None
+    assert "SAFE_PLAN_OZON_HORIZON_UNKNOWN" in row["status_codes"]
 
 
 def test_explicit_zero_fbo_and_inbound_are_valid_need_evidence():
@@ -378,10 +379,12 @@ def test_explicit_zero_recommendation_alone_creates_decision_identity():
 
 
 def test_snapshot_preserves_missing_ozon_recommendation_vs_explicit_zero():
-    missing = _post_analysis(recommendations=(None,)).json()["snapshot"]["decision_rows"][0]
+    missing_snapshot = _post_analysis(recommendations=(None,)).json()["snapshot"]
+    missing = missing_snapshot["decision_rows"][0]
     zero = _post_analysis(recommendations=(0,)).json()["snapshot"]["decision_rows"][0]
     assert missing["need"]["ozon_recommended_qty"] is None
     assert missing["safe_plan_qty"] is None
+    assert missing_snapshot["summary"]["total_safe_plan_qty"] is None
     assert zero["need"]["ozon_recommended_qty"] == 0
     assert zero["safe_plan_qty"] == 0
 
@@ -412,6 +415,12 @@ def test_explicit_horizon_and_inbound_scenario_propagate_through_snapshot():
     assert row["need"]["horizon_days"] == 67
     assert row["need"]["ozon_horizon_days"] == 56
     assert row["need"]["comparability"] == "different_horizon"
+    assert row["safe_plan_qty"] is None
+    assert row["calculated_plan_qty"] is not None
+    assert horizon["summary"]["total_safe_plan_qty"] is None
+    assert {"SAFE_PLAN_UNAVAILABLE", "SAFE_PLAN_HORIZON_MISMATCH"} <= set(row["status_codes"])
+    assert any("Safe Plan не рассчитан" in text and "67" in text
+               for text in row["explanations"])
     assert any("56" in warning and "67" in warning
                for warning in horizon["freshness_warnings"])
 
@@ -433,6 +442,34 @@ def test_explicit_horizon_and_inbound_scenario_propagate_through_snapshot():
     assert without_inbound["scenario"]["include_inbound"] is False
     assert (with_inbound["decision_rows"][0]["need"]["calculated_need_qty"] <
             without_inbound["decision_rows"][0]["need"]["calculated_need_qty"])
+
+
+def test_unknown_ozon_horizon_fails_closed_without_blocking_calculated_plan():
+    files = _analysis_files(recommendations=(20,), available_stock=100)
+    files["availability_file"] = (
+        "availability.xlsx",
+        make_xlsx(
+            headers=[
+                "SKU", "Склад", "Кластер", "Доступно",
+                "Рекомендуемая поставка", "Остаток FBO, шт",
+                "Товары в пути на склад озон, шт",
+            ],
+            rows=[["SKU-1", "W1", "Москва", 999, 20, 0, 0]],
+        ),
+    )
+
+    payload = _post_analysis(files=files).json()
+    row = payload["snapshot"]["decision_rows"][0]
+
+    assert row["need"]["comparability"] == "ozon_horizon_unknown"
+    assert payload["safe_allocations"] == []
+    assert row["safe_plan_qty"] is None
+    assert row["calculated_plan_qty"] > 0
+    assert {"SAFE_PLAN_UNAVAILABLE", "SAFE_PLAN_OZON_HORIZON_UNKNOWN"} <= set(row["status_codes"])
+    assert any("горизонт рекомендации Ozon неизвестен" in text
+               for text in row["explanations"])
+    assert payload["snapshot"]["summary"]["total_safe_plan_qty"] is None
+    assert payload["snapshot"]["shippable_plan"]["lines"][0]["analytical_qty"] == row["calculated_plan_qty"]
 
 
 def test_non_positive_profit_reason_reaches_complete_decision_row():

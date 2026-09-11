@@ -6,7 +6,8 @@ import pytest
 from backend.decision import FlowView, HorizonComparability, NeedComparison
 from backend.decision.explanations import explain_decision
 from backend.decision.snapshot import (_is_incomplete_row, _route_aggregate,
-                                       _signal_status_codes, _views,
+                                       _signal_status_codes,
+                                       _total_safe_plan_qty, _views,
                                        first_nonblank)
 
 
@@ -24,7 +25,23 @@ def test_horizon_explanation_is_localized_and_keeps_exact_values():
 
     explanations = explain_decision(need=need, status_codes=())
 
-    assert explanations == ("Горизонты различаются: Ozon 56 дней, наш расчёт 67 дней.",)
+    assert explanations == (
+        "Safe Plan не рассчитан: рекомендация Ozon относится к горизонту "
+        "56 дней, а текущий сценарий — 67 дней.",
+    )
+
+
+def test_unknown_ozon_horizon_explanation_is_safe_specific():
+    need = NeedComparison(
+        "SKU", "Москва", Decimal("1"), 56, Decimal("8"), 0, 0, True,
+        8, 5, None, -3, Decimal("-0.375"),
+        HorizonComparability.OZON_HORIZON_UNKNOWN, True, (),
+    )
+
+    assert explain_decision(need=need, status_codes=()) == (
+        "Safe Plan не рассчитан: горизонт рекомендации Ozon неизвестен, "
+        "поэтому её нельзя использовать как числовой потолок.",
+    )
 
 
 def test_need_blocker_explanations_use_canonical_codes():
@@ -139,6 +156,17 @@ def test_identity_fallback_and_incomplete_row_contract_preserve_real_zero():
     missing_row = SimpleNamespace(need=need, safe_plan_qty=None, calculated_plan_qty=0)
     assert _is_incomplete_row(
         missing_row, placement, route_required=False, route_complete=True)
+
+
+def test_safe_summary_fails_closed_without_hiding_valid_zero():
+    row = lambda recommendation, safe: SimpleNamespace(
+        need=SimpleNamespace(ozon_recommended_qty=recommendation),
+        safe_plan_qty=safe,
+    )
+
+    assert _total_safe_plan_qty((row(0, 0), row(10, 4))) == 4
+    assert _total_safe_plan_qty((row(10, 4), row(20, None))) is None
+    assert _total_safe_plan_qty((row(None, None),)) is None
 
 
 def test_signal_status_projection_matches_complete_decision_identity_only():
