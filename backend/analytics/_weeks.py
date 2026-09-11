@@ -1,7 +1,7 @@
 """Shared completed-ISO-week policy for analytics populations."""
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import Enum
 
 
@@ -35,6 +35,28 @@ def parse_source_date(value: str) -> date | None:
 def require_completed_iso_weeks(policy: WeekPolicy) -> None:
     if policy != WeekPolicy.COMPLETED_ISO_WEEKS:
         raise ValueError(f"unsupported week policy: {policy!r}")
+
+
+def completed_iso_week_axis(
+    *,
+    first_week: tuple[int, int] | None,
+    as_of: date,
+) -> tuple[tuple[int, int], ...]:
+    """Return completed ISO weeks from ``first_week`` through the week before ``as_of``."""
+    if first_week is None:
+        return ()
+
+    cursor = date.fromisocalendar(first_week[0], first_week[1], 1)
+    current = as_of.isocalendar()
+    current_monday = date.fromisocalendar(current.year, current.week, 1)
+    weeks: list[tuple[int, int]] = []
+
+    while cursor < current_monday:
+        iso = cursor.isocalendar()
+        weeks.append((iso.year, iso.week))
+        cursor += timedelta(days=7)
+
+    return tuple(weeks)
 
 
 def make_window(
