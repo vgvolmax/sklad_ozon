@@ -22,10 +22,12 @@ def test_credentials_are_immutable_and_repr_is_redacted():
 
 
 def test_vault_status_is_immutable_and_contains_only_safe_metadata():
-    status = VaultStatus(configured=True, locked=False, masked_client_id_suffix="…1234", last_connection_check=None)
+    status = VaultStatus(configured=True, locked=False, masked_client_id_suffix="…1234", last_connection_check=None,
+                         credential_context_id="opaque")
     assert status.masked_client_id_suffix == "…1234"
     assert set(status.__dataclass_fields__) == {
-        "configured", "locked", "masked_client_id_suffix", "last_connection_check"
+        "configured", "locked", "masked_client_id_suffix", "last_connection_check",
+        "credential_context_id"
     }
     with pytest.raises(FrozenInstanceError):
         status.locked = True
@@ -34,7 +36,7 @@ def test_vault_status_is_immutable_and_contains_only_safe_metadata():
 def test_error_codes_are_stable():
     assert {code.value for code in OzonErrorCode} == {
         "OZON_VAULT_LOCKED", "OZON_AUTH_FAILED", "OZON_RATE_LIMITED",
-        "OZON_UNAVAILABLE", "OZON_INVALID_RESPONSE",
+        "OZON_UNAVAILABLE", "OZON_INVALID_RESPONSE", "OZON_CREDENTIAL_CONTEXT_CHANGED",
     }
 
 

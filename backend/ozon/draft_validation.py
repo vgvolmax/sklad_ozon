@@ -189,7 +189,8 @@ class DraftValidationService:
         now=self.clock()
         while self._create_attempts and now-self._create_attempts[0]>=86400:self._create_attempts.popleft()
         return sum(now-x<60 for x in self._create_attempts)<2 and sum(now-x<3600 for x in self._create_attempts)<50 and len(self._create_attempts)<500
-    def validate(self,candidates,scenario,*,provenance,source_clusters:tuple[Cluster,...],cancelled=lambda:False):
+    def validate(self,candidates,scenario,*,provenance,source_clusters:tuple[Cluster,...],client=None,cancelled=lambda:False):
+        active_client=client or self.client
         output=[];created=0
         for candidate in candidates:
             if cancelled():break
@@ -204,13 +205,13 @@ class DraftValidationService:
             except (ValueError,TypeError) as exc:
                 output.append(self._option(candidate,ValidationState.UNAVAILABLE,(str(exc),)));continue
             created+=1;self._create_attempts.append(self.clock())
-            option=self._validate_one(candidate,scenario,identities,create,cancelled);output.append(option);self._cache[key]=(self.clock(),option)
+            option=self._validate_one(candidate,scenario,identities,create,cancelled,active_client);output.append(option);self._cache[key]=(self.clock(),option)
             while len(self._cache)>self.cache_size:self._cache.popitem(last=False)
         return tuple(output)
-    def _validate_one(self,candidate,scenario,identities,create,cancelled):
+    def _validate_one(self,candidate,scenario,identities,create,cancelled,client):
         preliminary_errors=();preliminary_rejected_reasons=()
         try:
-            response=self.client.post_json(create.path,create.payload,policy=CREATE_POLICY);draft_id=_draft_id(response)
+            response=client.post_json(create.path,create.payload,policy=CREATE_POLICY);draft_id=_draft_id(response)
             errors=response.get("errors",[]) if isinstance(response,dict) else []
             rejected,preliminary_errors,preliminary_rejected_reasons=_normalize_errors(errors,candidate,identities)
             if draft_id is None:
@@ -226,7 +227,7 @@ class DraftValidationService:
         info=None;deadline=self.clock()+MAX_POLL_DURATION_SECONDS
         for attempt in range(MAX_INFO_POLL_ATTEMPTS):
             if cancelled():return self._option(candidate,ValidationState.UNAVAILABLE,("VALIDATION_CANCELLED",),draft_id=draft_id)
-            try:info=normalize_draft_info(self.client.post_json(DRAFT_CREATE_INFO,{"draft_id":draft_id},policy=READ_POLICY),candidate,identities)
+            try:info=normalize_draft_info(client.post_json(DRAFT_CREATE_INFO,{"draft_id":draft_id},policy=READ_POLICY),candidate,identities)
             except OzonClientError as exc:return self._option(candidate,ValidationState.RATE_LIMITED if exc.code is OzonErrorCode.RATE_LIMITED else ValidationState.UNAVAILABLE,("OZON_RATE_LIMITED" if exc.code is OzonErrorCode.RATE_LIMITED else "OZON_UNAVAILABLE",),draft_id=draft_id)
             except (InvalidDraftResponse,ValueError,TypeError):return self._option(candidate,ValidationState.UNAVAILABLE,("OZON_INVALID_DRAFT_RESPONSE",),draft_id=draft_id)
             if info is not None:break
@@ -241,7 +242,7 @@ class DraftValidationService:
         except ValueError as exc:return self._option(candidate,ValidationState.UNAVAILABLE,(str(exc),),draft_id=draft_id,accepted=info.accepted,rejected=info.rejected,warehouses=info.warehouses)
         if cancelled():return self._option(candidate,ValidationState.UNAVAILABLE,("VALIDATION_CANCELLED",),draft_id=draft_id,accepted=info.accepted,rejected=info.rejected,warehouses=info.warehouses)
         payload={"draft_id":draft_id,"supply_type":create.supply_type,"selected_cluster_warehouses":selected,"date_from":scenario.date_from.isoformat(),"date_to":scenario.date_to.isoformat()}
-        try:timeslots=normalize_timeslots(self.client.post_json(DRAFT_TIMESLOT_INFO,payload,policy=READ_POLICY))
+        try:timeslots=normalize_timeslots(client.post_json(DRAFT_TIMESLOT_INFO,payload,policy=READ_POLICY))
         except TimeslotResponseError as exc:return self._option(candidate,ValidationState.UNAVAILABLE,(str(exc),),draft_id=draft_id,accepted=info.accepted,rejected=info.rejected,warehouses=info.warehouses)
         except OzonClientError as exc:return self._option(candidate,ValidationState.RATE_LIMITED if exc.code is OzonErrorCode.RATE_LIMITED else ValidationState.UNAVAILABLE,("OZON_RATE_LIMITED" if exc.code is OzonErrorCode.RATE_LIMITED else "OZON_UNAVAILABLE",),draft_id=draft_id)
         except (InvalidDraftResponse,ValueError,TypeError):return self._option(candidate,ValidationState.UNAVAILABLE,("OZON_INVALID_DRAFT_RESPONSE",),draft_id=draft_id)

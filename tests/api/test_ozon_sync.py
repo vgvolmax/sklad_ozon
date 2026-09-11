@@ -48,6 +48,16 @@ def test_registry_and_capability_matrix_excludes_handoff():
     assert "handoff" not in matrix and matrix["ozon_comparison"]["complete"] is False
 
 
+def test_sync_snapshot_carries_captured_credential_context(monkeypatch):
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_postings", lambda *_args: ((), ()))
+    _patch_non_history(monkeypatch)
+
+    source = sync_ozon_source(object(), credential_context_id="opaque-context-a")
+
+    assert source.credential_context_id == "opaque-context-a"
+
+
 def test_initial_twelve_window_with_eight_usable_weeks_fetches_once(monkeypatch):
     import backend.ozon.sync as module
     calls = []

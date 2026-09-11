@@ -35,7 +35,8 @@ def capability_matrix(snapshot: OzonSourceSnapshot, *, include_inbound: bool = T
     }
 
 
-def sync_ozon_source(client, *, progress_callback=None) -> OzonSourceSnapshot:
+def sync_ozon_source(client, *, credential_context_id: str | None = None,
+                     progress_callback=None) -> OzonSourceSnapshot:
     now = datetime.now(timezone.utc)
     as_of = source_business_date(now)
     window = history_window(as_of)
@@ -121,4 +122,5 @@ def sync_ozon_source(client, *, progress_callback=None) -> OzonSourceSnapshot:
     return OzonSourceSnapshot(
         uuid4().hex, now.isoformat(), as_of, SOURCE_TIMEZONE, window.history_from,
         window.history_to, orders, availability, seller_stock, clusters,
-        seller_warehouses, zones, tuple(evidence), tuple(diagnostics))
+        seller_warehouses, zones, tuple(evidence), tuple(diagnostics),
+        credential_context_id)

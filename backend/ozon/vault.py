@@ -9,16 +9,18 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from threading import RLock
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from .contracts import OzonCredentials, OzonErrorCode, VaultStatus
+from .contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode, VaultStatus
 
 
 _AAD = b"sklad_ozon:ozon-vault:v1"
 _KDF = {"name": "scrypt", "n": 32768, "r": 8, "p": 1, "dklen": 32}
 _CIPHER = {"name": "AES-256-GCM"}
+_CONTEXT_DOMAIN = b"sklad_ozon:credential-context:v1\0"
 
 
 class OzonVaultError(Exception):
@@ -36,6 +38,7 @@ class CredentialVault:
         self._path = Path(path)
         self._credentials: OzonCredentials | None = None
         self._last_connection_check: str | None = None
+        self._lock = RLock()
 
     def setup(self, credentials: OzonCredentials, password: str) -> VaultStatus:
         password_bytes = self._password_bytes(password)
@@ -57,12 +60,17 @@ class CredentialVault:
             "ciphertext_b64": base64.b64encode(ciphertext).decode("ascii"),
             "masked_client_id_suffix": credentials.masked_client_id_suffix,
         }
-        self._write_atomic(json.dumps(document, separators=(",", ":")).encode("utf-8"))
-        self._credentials = credentials
-        self._last_connection_check = None
-        return self.status()
+        with self._lock:
+            self._write_atomic(json.dumps(document, separators=(",", ":")).encode("utf-8"))
+            self._credentials = credentials
+            self._last_connection_check = None
+            return self.status()
 
     def unlock(self, password: str) -> VaultStatus:
+        with self._lock:
+            return self._unlock(password)
+
+    def _unlock(self, password: str) -> VaultStatus:
         if not self._path.is_file():
             raise OzonVaultError(OzonErrorCode.AUTH_FAILED, "Ozon credential vault is not configured")
         try:
@@ -84,8 +92,9 @@ class CredentialVault:
     def lock(self) -> VaultStatus:
         # Python cannot promise secure memory zeroization; dropping this reference
         # only makes credentials unavailable to subsequent backend operations.
-        self._credentials = None
-        return self.status()
+        with self._lock:
+            self._credentials = None
+            return self.status()
 
     def status(self) -> VaultStatus:
         configured = self._path.is_file()
@@ -101,7 +110,26 @@ class CredentialVault:
             locked=self._credentials is None,
             masked_client_id_suffix=suffix,
             last_connection_check=self._last_connection_check,
+            credential_context_id=self.credential_context_id(),
         )
+
+    def credential_context_id(self) -> str | None:
+        """Return an opaque identity derived only from the encrypted document."""
+        with self._lock:
+            try:
+                document = self._path.read_bytes()
+            except FileNotFoundError:
+                return None
+            return hashlib.sha256(_CONTEXT_DOMAIN + document).hexdigest()
+
+    def capture_context(self) -> OzonCredentialContext:
+        """Atomically capture matching credentials and encrypted-vault identity."""
+        with self._lock:
+            credentials = self.require_credentials()
+            context_id = self.credential_context_id()
+            if context_id is None:
+                raise OzonVaultError(OzonErrorCode.LOCKED, "Ozon credential vault is locked")
+            return OzonCredentialContext(context_id, credentials)
 
     def require_credentials(self) -> OzonCredentials:
         if self._credentials is None:

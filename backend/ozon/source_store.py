@@ -27,5 +27,8 @@ class OzonSourceSnapshotStore:
             raise KeyError(source_snapshot_id)
         return snapshot
 
+    def clear(self) -> None:
+        self._snapshots.clear()
+
     def __len__(self) -> int:
         return len(self._snapshots)

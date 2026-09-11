@@ -10,6 +10,7 @@ class OzonErrorCode(str, Enum):
     RATE_LIMITED = "OZON_RATE_LIMITED"
     UNAVAILABLE = "OZON_UNAVAILABLE"
     INVALID_RESPONSE = "OZON_INVALID_RESPONSE"
+    CREDENTIAL_CONTEXT_CHANGED = "OZON_CREDENTIAL_CONTEXT_CHANGED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,8 +35,15 @@ class OzonCredentials:
 
 
 @dataclass(frozen=True, slots=True)
+class OzonCredentialContext:
+    context_id: str
+    credentials: OzonCredentials = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class VaultStatus:
     configured: bool
     locked: bool
     masked_client_id_suffix: str | None
     last_connection_check: str | None
+    credential_context_id: str | None

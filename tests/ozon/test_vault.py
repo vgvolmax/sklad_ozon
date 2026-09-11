@@ -108,6 +108,19 @@ def test_status_survives_process_restart_without_decrypting(tmp_path):
     assert restarted.status().masked_client_id_suffix == "…3456"
 
 
+def test_credential_context_is_stable_until_every_successful_setup(tmp_path):
+    path = tmp_path / "vault.json"
+    vault = CredentialVault(path)
+    first = vault.setup(CREDS, "password").credential_context_id
+    assert first and vault.credential_context_id() == first
+    assert vault.lock().credential_context_id == first
+    assert vault.unlock("password").credential_context_id == first
+    assert CredentialVault(path).credential_context_id() == first
+
+    second = vault.setup(CREDS, "password").credential_context_id
+    assert second and second != first
+
+
 @pytest.mark.parametrize("password", ["   ", "\t\n"])
 def test_setup_rejects_whitespace_only_password_without_creating_vault(tmp_path, password):
     path = tmp_path / "vault.json"

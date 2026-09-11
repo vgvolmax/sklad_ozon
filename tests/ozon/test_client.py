@@ -137,3 +137,20 @@ def test_request_policy_accepts_valid_values(policy):
 def test_client_timeout_is_validated():
     with pytest.raises(ValueError):
         OzonClient(VaultStub(), timeout=0)
+
+
+def test_bound_client_rejects_changed_context_before_transport(tmp_path):
+    from backend.ozon.vault import CredentialVault
+
+    vault = CredentialVault(tmp_path / "vault.json")
+    vault.setup(OzonCredentials("account-a", "key-a"), "password")
+    context = vault.capture_context()
+    transport = FakeTransport([response()])
+    bound = OzonClient(vault, transport=transport).bind_context(context)
+    vault.setup(OzonCredentials("account-b", "key-b"), "password")
+
+    with pytest.raises(OzonClientError) as error:
+        bound.post_json("/v1/test", {}, policy=OzonRequestPolicy(False))
+
+    assert error.value.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED
+    assert transport.calls == []

@@ -33,3 +33,5 @@ def test_store_is_memory_only_and_stale_identity_fails():
     first.put_all((point,))
     assert first.require(7) == point
     with pytest.raises(KeyError): second.require(7)
+    first.clear()
+    assert len(first) == 0 and first.get(7) is None
