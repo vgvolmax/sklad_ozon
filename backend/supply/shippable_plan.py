@@ -7,7 +7,11 @@ from decimal import Decimal
 import hashlib
 import json
 
-from backend.domain.contracts import ProductEconomicsInput, SourceMode
+from backend.domain.contracts import (
+    ProductEconomicsInput,
+    RestrictionCapacityKind,
+    SourceMode,
+)
 
 from .contracts import (
     AllocationObjective,
@@ -34,6 +38,26 @@ def round_up_to_pack(quantity: int, pack_multiple: int) -> int:
     quantity = _require_int(quantity, "quantity")
     pack_multiple = _require_int(pack_multiple, "pack_multiple", positive=True)
     return ((quantity + pack_multiple - 1) // pack_multiple) * pack_multiple
+
+
+def whole_pack_capacity(
+    *, capacity_kind: RestrictionCapacityKind,
+    capacity_qty: int | None, pack_multiple: int,
+) -> int | None:
+    """Return the known physical capacity usable by complete packs."""
+    if not isinstance(capacity_kind, RestrictionCapacityKind):
+        raise TypeError("capacity_kind must be RestrictionCapacityKind")
+    pack_multiple = _require_int(pack_multiple, "pack_multiple", positive=True)
+    if capacity_kind is RestrictionCapacityKind.FINITE:
+        capacity_qty = _require_int(capacity_qty, "capacity_qty", positive=True)
+        return (capacity_qty // pack_multiple) * pack_multiple
+    if capacity_kind is RestrictionCapacityKind.ZERO:
+        if capacity_qty != 0:
+            raise ValueError("zero capacity must have quantity zero")
+        return 0
+    if capacity_qty is not None:
+        raise ValueError("unknown/unlimited capacity must not have a quantity")
+    return None
 
 
 def _decimal_text(value: Decimal | None) -> str | None:
@@ -222,11 +246,22 @@ def build_shippable_plan(
                 remaining = max(0, remaining - min(remaining, decision.allocation_qty))
                 continue
             fundable = (remaining // pack) * pack
-            shipped = min(draft["rounded"], fundable)
+            fact = draft["fact"]
+            physical_capacity = None if fact is None else whole_pack_capacity(
+                capacity_kind=fact.capacity_kind,
+                capacity_qty=fact.capacity_qty,
+                pack_multiple=pack,
+            )
+            caps = [draft["rounded"], fundable]
+            if physical_capacity is not None:
+                caps.append(physical_capacity)
+            shipped = min(caps)
             shipped_by_cluster[decision.cluster_id] = shipped
             remaining -= shipped
-            if shipped < draft["rounded"]:
+            if fundable < draft["rounded"]:
                 draft["reasons"].append("WHOLE_PACK_LIMITED_BY_SELLER_STOCK")
+            if physical_capacity is not None and physical_capacity < draft["rounded"]:
+                draft["reasons"].append("WHOLE_PACK_LIMITED_BY_PHYSICAL_CAPACITY")
         for draft in drafts:
             decision = draft["decision"]
             fact = draft["fact"]

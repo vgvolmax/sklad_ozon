@@ -19,6 +19,7 @@ from backend.supply import (
     build_shippable_plan,
     round_up_to_pack,
 )
+from backend.supply.shippable_plan import whole_pack_capacity
 
 
 def decision(cluster, qty, rank, *, sku="SKU-1"):
@@ -41,10 +42,11 @@ def product(*, sku="SKU-1", volume=Decimal("0.2"), available=9999):
 
 
 def fact(cluster, *, sku="SKU-1", article="ART-1", pack=6,
-         zone_kind=PlacementZoneKind.SINGLE, zones=("A",), reasons=()):
+         zone_kind=PlacementZoneKind.SINGLE, zones=("A",), reasons=(),
+         capacity_kind=RestrictionCapacityKind.UNKNOWN, capacity_qty=None):
     return OperationalSupplyFact(
         sku, article, cluster, pack, zone_kind, zones,
-        RestrictionEligibility.UNKNOWN, RestrictionCapacityKind.UNKNOWN, None,
+        RestrictionEligibility.UNKNOWN, capacity_kind, capacity_qty,
         None, reasons,
     )
 
@@ -101,6 +103,91 @@ def test_zero_scarcity_and_exact_pack_matrix(qty, stock, expected):
     plan = build(decisions=(decision("A", qty, 1),), stock=stock)
     assert plan.lines[0].shippable_qty == expected
     assert expected == 0 or expected % 6 == 0
+
+
+def test_pack_rounding_never_exceeds_finite_physical_capacity():
+    plan = build(
+        decisions=(decision("A", 5, 1),),
+        stock=100,
+        facts=(fact("A", capacity_kind=RestrictionCapacityKind.FINITE,
+                    capacity_qty=5),),
+    )
+
+    line = plan.lines[0]
+    assert line.analytical_qty == 5
+    assert line.rounded_target_qty == 6
+    assert line.rounding_delta_qty == 1
+    assert line.shippable_qty == 0
+    assert "WHOLE_PACK_LIMITED_BY_PHYSICAL_CAPACITY" in line.reason_codes
+
+
+@pytest.mark.parametrize(("kind", "capacity", "pack", "expected"), [
+    (RestrictionCapacityKind.FINITE, 5, 3, 3),
+    (RestrictionCapacityKind.FINITE, 5, 6, 0),
+    (RestrictionCapacityKind.FINITE, 6, 6, 6),
+    (RestrictionCapacityKind.FINITE, 7, 6, 6),
+    (RestrictionCapacityKind.ZERO, 0, 6, 0),
+    (RestrictionCapacityKind.UNLIMITED, None, 6, None),
+    (RestrictionCapacityKind.UNKNOWN, None, 6, None),
+])
+def test_whole_pack_capacity_semantics(kind, capacity, pack, expected):
+    assert whole_pack_capacity(
+        capacity_kind=kind, capacity_qty=capacity, pack_multiple=pack,
+    ) == expected
+
+
+@pytest.mark.parametrize(("kind", "capacity", "pack", "expected", "limited"), [
+    (RestrictionCapacityKind.FINITE, 5, 3, 3, True),
+    (RestrictionCapacityKind.FINITE, 6, 6, 6, False),
+    (RestrictionCapacityKind.FINITE, 7, 6, 6, False),
+    (RestrictionCapacityKind.UNLIMITED, None, 6, 6, False),
+    (RestrictionCapacityKind.UNKNOWN, None, 6, 6, False),
+    (RestrictionCapacityKind.ZERO, 0, 6, 0, True),
+])
+def test_physical_capacity_limits_only_shippable_whole_packs(
+        kind, capacity, pack, expected, limited):
+    plan = build(
+        decisions=(decision("A", 5, 1),), stock=100,
+        facts=(fact("A", pack=pack, capacity_kind=kind, capacity_qty=capacity),),
+        source_mode=(SourceMode.API if kind is RestrictionCapacityKind.UNKNOWN
+                     else SourceMode.FILES),
+        source_snapshot_id=("api-source" if kind is RestrictionCapacityKind.UNKNOWN
+                            else None),
+    )
+    line = plan.lines[0]
+    assert line.analytical_qty == 5
+    assert line.rounded_target_qty == round_up_to_pack(5, pack)
+    assert line.shippable_qty == expected
+    assert ("WHOLE_PACK_LIMITED_BY_PHYSICAL_CAPACITY" in line.reason_codes) is limited
+
+
+def test_seller_and_physical_limits_are_reported_independently():
+    plan = build(
+        decisions=(decision("A", 11, 1),), stock=6,
+        facts=(fact("A", pack=6, capacity_kind=RestrictionCapacityKind.FINITE,
+                    capacity_qty=6),),
+    )
+    line = plan.lines[0]
+    assert line.rounded_target_qty == 12
+    assert line.shippable_qty == 6
+    assert "WHOLE_PACK_LIMITED_BY_SELLER_STOCK" in line.reason_codes
+    assert "WHOLE_PACK_LIMITED_BY_PHYSICAL_CAPACITY" in line.reason_codes
+
+
+def test_physical_limit_leaves_shared_seller_stock_for_next_cluster():
+    decisions = (decision("A", 5, 1), decision("B", 5, 2))
+    plan = build(
+        decisions=decisions, stock=10,
+        facts=(
+            fact("A", pack=3, capacity_kind=RestrictionCapacityKind.FINITE,
+                 capacity_qty=5),
+            fact("B", pack=3, capacity_kind=RestrictionCapacityKind.UNLIMITED),
+        ),
+    )
+    lines = {line.destination_cluster_id: line for line in plan.lines}
+    assert lines["A"].shippable_qty == 3
+    assert lines["B"].shippable_qty == 6
+    assert sum(line.shippable_qty or 0 for line in plan.lines) == 9
 
 
 def test_exact_fit_and_filtering_are_all_cluster_and_never_reallocate():
