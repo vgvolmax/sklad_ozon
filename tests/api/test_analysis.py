@@ -674,7 +674,7 @@ def test_api_and_files_typed_sources_are_business_equivalent_without_fabricated_
     assert placement["feasibility"]["max_supply_qty"] is None
     assert placement["feasibility"]["reasons"] == ["PHYSICAL_CAPACITY_PENDING_OZON_VALIDATION"]
     assert "NO_EXPLICIT_ALLOWED_WAREHOUSE" not in placement["feasibility"]["reasons"]
-    assert _allocation(api_payload, "Москва") > 0
+    assert api_payload["allocations"] == files_payload["allocations"] == []
     assert "CONFLICTING_FBS_AVAILABLE_STOCK" in {item["code"] for item in api_payload["diagnostics"]}
     assert "CONFLICTING_FBS_AVAILABLE_STOCK" in {item["code"] for item in files_payload["diagnostics"]}
     assert api_payload["snapshot"]["source_mode"] == "api"

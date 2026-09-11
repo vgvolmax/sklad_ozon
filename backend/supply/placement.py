@@ -4,7 +4,13 @@ from collections.abc import Iterable
 
 from backend.ingestion.restrictions import RestrictionRecord
 
-from .contracts import PlacementAssessment, PlacementInput, PlacementSource, WarehouseCapability
+from .contracts import (
+    PhysicalFeasibilityState,
+    PlacementAssessment,
+    PlacementInput,
+    PlacementSource,
+    WarehouseCapability,
+)
 from .feasibility import assess_feasibility
 
 
@@ -36,6 +42,8 @@ def compare_placements(
             (PlacementSource.OBSERVED in source_set, "OBSERVED_CANDIDATE"),
             (PlacementSource.RECOMMENDED in source_set, "RECOMMENDED_CANDIDATE"),
             (PlacementSource.COUNTERFACTUAL in source_set, "COUNTERFACTUAL_CANDIDATE"),
+            (feasibility.physical_state is PhysicalFeasibilityState.UNKNOWN_PENDING_LIVE_VALIDATION,
+             "PHYSICAL_CAPACITY_PENDING_OZON_VALIDATION"),
             (not feasibility.analytical_allocation_allowed, "PHYSICALLY_INFEASIBLE"),
             (feasibility.max_supply_qty == 0, "PHYSICAL_CEILING_ZERO"),
             (not candidate.economics.complete, "ECONOMICS_INCOMPLETE"),

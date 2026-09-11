@@ -29,6 +29,8 @@ def explain_decision(*, need: NeedComparison, status_codes: tuple[str, ...],
         messages.append("План не рассчитан: не указан объём товара.")
     if "MISSING_SELLER_AVAILABLE_STOCK" in status_codes:
         messages.append("План не рассчитан: нет данных о доступном остатке продавца.")
+    if "PHYSICAL_CAPACITY_PENDING_OZON_VALIDATION" in status_codes:
+        messages.append("Физическая возможность поставки ещё не подтверждена Ozon; состав будет проверен при поиске вариантов отгрузки.")
     allocator_messages = {
         "NON_POSITIVE_PROFIT": "Поставка не включена в план: расчётная прибыль на единицу неположительная.",
         "BELOW_MIN_PROFIT_PER_UNIT": "Поставка не включена в план: прибыль на единицу ниже заданного минимального порога.",
