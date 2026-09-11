@@ -219,7 +219,7 @@ def test_api_files_parity_acceptance_preserves_demand_flow_need_and_seller_confl
                            if item["sku"] == "SKU-1" and item["cluster_id"] == "Москва")
     assert api_decision["need"] == files_decision["need"]
     assert api_placement["feasibility"]["physical_state"] == "unknown_pending_live_validation"
-    assert files_placement["feasibility"]["physical_state"] == "confirmed_allowed"
+    assert files_placement["feasibility"]["physical_state"] == "confirmed_blocked"
     assert {item["code"] for item in api_payload["diagnostics"]} >= {"CONFLICTING_FBS_AVAILABLE_STOCK"}
     assert {item["code"] for item in files_payload["diagnostics"]} >= {"CONFLICTING_FBS_AVAILABLE_STOCK"}
     assert (api_snapshot["source_mode"], api_snapshot["source_snapshot_id"]) == ("api", "parity-api")
