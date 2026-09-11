@@ -51,7 +51,7 @@ class Payload:
 
 def _orders(origin="Москва", destination="Москва", *, pii=False):
     headers = ["SKU", "Количество", "Цена продавца", "Кластер отгрузки", "Кластер доставки", "Статус", "Принят в обработку"]
-    values = ["SKU-1", 1, 1000, origin, destination, "Доставлен", "2026-07-01T10:00:00"]
+    values = ["SKU-1", 1, 1000, origin, destination, "Доставлен", "2026-08-20T10:00:00"]
     if pii:
         headers += ["Имя покупателя", "Телефон", "Email", "Адрес"]
         values += list(PII_MARKERS)
@@ -230,8 +230,8 @@ def _real_four_files(fbs_a=(0, 0, 84, 0), *, include_second=True, obsolete=False
     restrictions = make_multisheet_xlsx([("Справка", ["meta"], [["x"]]),
         ("Ограничения", [None], [[None], restriction_headers, *restriction_rows])])
     order_header = "SKU;Артикул;Количество;Статус;Ваша цена;Кластер отгрузки;Кластер доставки;Склад отгрузки;Принят в обработку;Имя покупателя\n"
-    orders = order_header + "SKU-A;ART-A;1;Доставлен;1000;Москва;Москва;МОСКВА_РФЦ;2026-07-01T10:00:00;PII_REAL_SHAPE\n"
-    if include_second: orders += "SKU-B;ART-B;1;Доставлен;1000;Москва;Москва;МОСКВА_РФЦ;2026-07-01T10:00:00;PII_REAL_SHAPE\n"
+    orders = order_header + "SKU-A;ART-A;1;Доставлен;1000;Москва;Москва;МОСКВА_РФЦ;2026-08-20T10:00:00;PII_REAL_SHAPE\n"
+    if include_second: orders += "SKU-B;ART-B;1;Доставлен;1000;Москва;Москва;МОСКВА_РФЦ;2026-08-20T10:00:00;PII_REAL_SHAPE\n"
     product_rows = [["ART-A", "A", 100, 1000, "10%", 1]]
     if include_second: product_rows.append(["ART-B", "B", 100, 1000, "10%", 1])
     if obsolete: product_rows.append(["OLD-ARTICLE", "Старый", 100, 1000, "10%", 1])
@@ -492,6 +492,7 @@ def test_legacy_max_profit_objective_is_rejected():
         "message": "Unsupported optimization objective.",
         "field": "optimization_objective",
     }
+
 
 def test_unknown_ozon_horizon_stays_unknown(monkeypatch):
     comparisons = []
