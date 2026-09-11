@@ -10,7 +10,24 @@ AS_OF = date(2026, 8, 26)  # 2026-W35; W34 is the last completed ISO week.
 
 
 def order(*, sku="SKU-A", quantity=10, iso_week=31, destination="Москва"):
-    accepted = date.fromisocalendar(2026, iso_week, 1)
+    return order_at(
+        sku=sku,
+        quantity=quantity,
+        iso_year=2026,
+        iso_week=iso_week,
+        destination=destination,
+    )
+
+
+def order_at(
+    *,
+    sku="SKU-A",
+    quantity=10,
+    iso_year,
+    iso_week,
+    destination="Москва",
+):
+    accepted = date.fromisocalendar(iso_year, iso_week, 1)
     return OrderRecord(
         sku=sku,
         quantity=quantity,
@@ -21,8 +38,8 @@ def order(*, sku="SKU-A", quantity=10, iso_week=31, destination="Москва"):
     )
 
 
-def estimate_for(orders, *, sku="SKU-A", destination="Москва"):
-    demand = aggregate_demand(orders, AS_OF)
+def estimate_for(orders, *, sku="SKU-A", destination="Москва", as_of=AS_OF):
+    demand = aggregate_demand(orders, as_of)
     estimate = next(
         item
         for item in estimate_destination_demand(demand)
@@ -107,3 +124,35 @@ def test_current_week_does_not_enter_calendar_axis():
     assert demand.window.included_weeks == ((2026, 34),)
     assert demand.window.excluded_current_week_observations == 1
     assert estimate.latest_week_qty == Decimal("10")
+
+
+def test_calendar_axis_crosses_iso_year_boundary_chronologically():
+    as_of = date.fromisocalendar(2026, 3, 3)
+    demand, estimate = estimate_for(
+        (order_at(iso_year=2025, iso_week=52, quantity=10),),
+        as_of=as_of,
+    )
+
+    assert demand.window.included_weeks == (
+        (2025, 52),
+        (2026, 1),
+        (2026, 2),
+    )
+    assert estimate.eligible_week_count == 3
+    assert estimate.latest_week_qty == Decimal("0")
+
+
+def test_calendar_axis_preserves_real_iso_week_53():
+    as_of = date.fromisocalendar(2021, 2, 3)
+    demand, estimate = estimate_for(
+        (order_at(iso_year=2020, iso_week=52, quantity=10),),
+        as_of=as_of,
+    )
+
+    assert demand.window.included_weeks == (
+        (2020, 52),
+        (2020, 53),
+        (2021, 1),
+    )
+    assert estimate.eligible_week_count == 3
+    assert estimate.latest_week_qty == Decimal("0")
