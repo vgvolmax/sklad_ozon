@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
 import math
@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from .contracts import OzonErrorCode
+from .contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
 from .endpoints import OZON_API_BASE
 from .vault import CredentialVault
 
@@ -77,8 +77,15 @@ class OzonClient:
         self._sleep = sleeper
 
     def post_json(self, path: str, payload: dict, *, policy: OzonRequestPolicy) -> dict:
+        return self._post_json(path, payload, policy=policy,
+                               credentials=self._vault.require_credentials())
+
+    def bind_context(self, context: OzonCredentialContext) -> "BoundOzonClient":
+        return BoundOzonClient(self, context)
+
+    def _post_json(self, path: str, payload: dict, *, policy: OzonRequestPolicy,
+                   credentials: OzonCredentials, context_id: str | None = None) -> dict:
         self._validate_path(path)
-        credentials = self._vault.require_credentials()
         request = Request(
             OZON_API_BASE + path,
             data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
@@ -91,6 +98,11 @@ class OzonClient:
         )
         attempts = policy.max_attempts if policy.retry_safe else 1
         for attempt in range(1, attempts + 1):
+            if context_id is not None and self._vault.credential_context_id() != context_id:
+                raise OzonClientError(
+                    OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED,
+                    "Ozon credential context changed",
+                )
             try:
                 response = self._transport(request, self._timeout)
             except Exception:
@@ -112,6 +124,7 @@ class OzonClient:
             except (UnicodeError, json.JSONDecodeError, ValueError):
                 raise OzonClientError(OzonErrorCode.INVALID_RESPONSE, "Ozon API returned invalid JSON") from None
         raise OzonClientError(OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable")
+
 
     @staticmethod
     def _validate_path(path: str) -> None:
@@ -152,3 +165,18 @@ class OzonClient:
         if status >= 500:
             return OzonClientError(OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable", status=status)
         return OzonClientError(OzonErrorCode.INVALID_RESPONSE, "Ozon API rejected the request", status=status)
+
+
+@dataclass(frozen=True, slots=True)
+class BoundOzonClient:
+    _client: OzonClient
+    _context: OzonCredentialContext = field(repr=False)
+
+    @property
+    def context_id(self) -> str:
+        return self._context.context_id
+
+    def post_json(self, path: str, payload: dict, *, policy: OzonRequestPolicy) -> dict:
+        return self._client._post_json(path, payload, policy=policy,
+                                       credentials=self._context.credentials,
+                                       context_id=self._context.context_id)

@@ -14,3 +14,5 @@ def test_source_contract_and_bounded_identity_store():
  for x in 'abc': store.put(snap(x))
  assert store.get('a') is None and store.require('c').source_snapshot_id=='c'
  with pytest.raises(FrozenInstanceError): store.require('c').source_timezone='x'
+ store.clear()
+ assert len(store)==0 and store.get('c') is None

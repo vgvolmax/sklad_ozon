@@ -61,3 +61,4 @@ class OzonSourceSnapshot:
     placement_zones: tuple[Any, ...]
     endpoint_evidence: tuple[EndpointEvidence, ...]
     diagnostics: tuple[Any, ...]
+    credential_context_id: str | None = None

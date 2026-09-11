@@ -12,6 +12,21 @@ class ShipmentPreparationError(ValueError):
         super().__init__(code)
 
 
+CREDENTIAL_CONTEXT_MESSAGE = (
+    'Подключение Ozon изменилось. Обновите данные Ozon и пересчитайте план.'
+)
+
+
+def require_source_credential_context(source, expected_context_id, *, field='source_snapshot_id'):
+    """Validate API source provenance without requiring plaintext credentials."""
+    if (not expected_context_id or
+            source.credential_context_id != expected_context_id):
+        raise ShipmentPreparationError(
+            'OZON_CREDENTIAL_CONTEXT_CHANGED', CREDENTIAL_CONTEXT_MESSAGE,
+            field, 409)
+    return source
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedShipmentValidation:
     snapshot: object
@@ -23,7 +38,8 @@ class PreparedShipmentValidation:
 
 
 def prepare_shipment_validation(*, analysis_store, source_store, handoff_store,
-                                analysis_id, plan_id, scenario_payload, candidate_ids):
+                                analysis_id, plan_id, scenario_payload, candidate_ids,
+                                expected_credential_context_id=None):
     snapshot=analysis_store.get(analysis_id)
     if snapshot is None:
         raise ShipmentPreparationError('ANALYSIS_SNAPSHOT_NOT_FOUND','Analysis snapshot was not found.','analysis_snapshot_id',404)
@@ -38,6 +54,8 @@ def prepare_shipment_validation(*, analysis_store, source_store, handoff_store,
     source=source_store.get(source_id)
     if source is None:
         raise ShipmentPreparationError('OZON_SOURCE_SNAPSHOT_NOT_FOUND','The analysis source snapshot is no longer available.','analysis_snapshot_id')
+    require_source_credential_context(
+        source, expected_credential_context_id, field='analysis_snapshot_id')
     if snapshot.analysis_as_of!=source.source_as_of or plan.analysis_as_of!=source.source_as_of:
         raise ShipmentPreparationError('SOURCE_PROVENANCE_MISMATCH','Analysis and source provenance do not match.','analysis_snapshot_id')
     try: scenario=parse_shipment_scenario(scenario_payload)

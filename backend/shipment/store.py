@@ -3,6 +3,7 @@
 from collections import OrderedDict
 
 from backend.decision.contracts import AnalysisSnapshot
+from backend.domain.contracts import SourceMode
 from .contracts import ShipmentPlan
 
 
@@ -24,6 +25,13 @@ class AnalysisSnapshotStore:
 
     def clear(self) -> None:
         self._snapshots.clear()
+
+    def clear_api(self) -> None:
+        self._snapshots = OrderedDict(
+            (snapshot_id, snapshot)
+            for snapshot_id, snapshot in self._snapshots.items()
+            if snapshot.source_mode is not SourceMode.API
+        )
 
     def __len__(self) -> int:
         return len(self._snapshots)

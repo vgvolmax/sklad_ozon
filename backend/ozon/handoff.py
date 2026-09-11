@@ -49,6 +49,12 @@ class HandoffPointStore:
         except KeyError:
             raise KeyError(f"Unresolved handoff point {warehouse_id}") from None
 
+    def clear(self) -> None:
+        self._points.clear()
+
+    def __len__(self) -> int:
+        return len(self._points)
+
 
 def search_handoff_points(client: OzonClient, query: str, supply_types: tuple[str, ...]) -> tuple[HandoffPoint, ...]:
     query = query.strip()

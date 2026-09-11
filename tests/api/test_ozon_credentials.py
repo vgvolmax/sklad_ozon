@@ -22,6 +22,9 @@ class FakeOzonClient:
         self.calls.append((path, payload, policy))
         return {"seller_name": "safe"}
 
+    def bind_context(self, _context):
+        return self
+
 
 @pytest.fixture
 def local_api(tmp_path, monkeypatch):
@@ -49,11 +52,15 @@ def setup(client):
 def test_setup_status_lock_unlock_and_restart_state(local_api):
     client, vault, _ = local_api
     initial = client.get("/api/ozon/credentials/status")
-    assert initial.json() == {"configured": False, "locked": True, "masked_client_id_suffix": None, "last_connection_check": None}
+    assert initial.json() == {"configured": False, "locked": True, "masked_client_id_suffix": None, "last_connection_check": None, "credential_context_id": None}
 
     configured = setup(client)
     assert configured.status_code == 200
-    assert configured.json() == {"configured": True, "locked": False, "masked_client_id_suffix": "…cret", "last_connection_check": None}
+    assert configured.json()["configured"] is True
+    assert configured.json()["locked"] is False
+    assert configured.json()["masked_client_id_suffix"] == "…cret"
+    assert configured.json()["last_connection_check"] is None
+    assert len(configured.json()["credential_context_id"]) == 64
     assert_no_secrets(configured)
 
     locked = client.post("/api/ozon/credentials/lock")
@@ -138,5 +145,20 @@ def test_successful_connection_test_updates_only_safe_timestamp(local_api):
     assert response.json()["last_connection_check"].endswith("+00:00")
     assert len(ozon_client.calls) == 1
     assert vault.require_credentials() == OzonCredentials(CLIENT_ID, API_KEY)
-    assert set(response.json()) == {"configured", "locked", "masked_client_id_suffix", "last_connection_check"}
+    assert set(response.json()) == {"configured", "locked", "masked_client_id_suffix", "last_connection_check", "credential_context_id"}
     assert_no_secrets(response)
+
+
+def test_setup_replacement_invalidates_old_api_source_and_shipment_plan(local_api, monkeypatch):
+    from tests.ozon.test_source_store import snap
+
+    client, _, _ = local_api
+    api.OZON_SOURCE_STORE.put(snap("old-source"))
+    monkeypatch.setattr(api.SHIPMENT_PLAN_STORE, "clear", lambda: setattr(
+        test_setup_replacement_invalidates_old_api_source_and_shipment_plan, "plan_cleared", True))
+
+    response = setup(client)
+
+    assert response.status_code == 200
+    assert api.OZON_SOURCE_STORE.get("old-source") is None
+    assert getattr(test_setup_replacement_invalidates_old_api_source_and_shipment_plan, "plan_cleared", False)

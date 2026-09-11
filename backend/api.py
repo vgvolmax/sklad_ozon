@@ -8,7 +8,7 @@ import json
 import logging
 from pathlib import Path, PurePath
 from queue import Queue
-from threading import Event, Thread
+from threading import Event, RLock, Thread
 from time import perf_counter
 from uuid import uuid4
 from fastapi import APIRouter, Request
@@ -51,7 +51,9 @@ from backend.shipment.orchestration import build_shipment_plan, ShipmentOrchestr
 from backend.shipment.export import render_export, ShipmentExportError
 from backend.shipment.wire import parse_shipment_scenario
 from backend.shipment.api_context import (ShipmentPreparationError,
-                                          prepare_shipment_validation)
+                                          CREDENTIAL_CONTEXT_MESSAGE,
+                                          prepare_shipment_validation,
+                                          require_source_credential_context)
 MAX_UPLOAD_BYTES=64*1024*1024
 router=APIRouter()
 logger=logging.getLogger(__name__)
@@ -63,6 +65,7 @@ OZON_SOURCE_STORE=OzonSourceSnapshotStore()
 ANALYSIS_STORE=AnalysisSnapshotStore()
 DRAFT_VALIDATION_SERVICE=DraftValidationService(OZON_CLIENT)
 SHIPMENT_PLAN_STORE=ShipmentPlanStore()
+OZON_CONTEXT_COMMIT_LOCK=RLock()
 DECIMAL_NAMES=['acquiring_rate','advertising_rate','buyout_rate','fixed_fbo_fee','income_tax_rate','vat_rate','co_invest_rate','min_profit_per_unit','min_margin_rate','min_roi']
 STAGES={
     "preparing":(1,"Подготовка файлов"), "reports":(2,"Чтение отчётов"),
@@ -101,6 +104,29 @@ def response(kind,result): return {"api_version":1,"kind":kind,**wire(result)}
 
 def vault_response(status): return wire(status)
 
+def invalidate_ozon_account_context_state():
+    OZON_SOURCE_STORE.clear()
+    HANDOFF_STORE.clear()
+    ANALYSIS_STORE.clear_api()
+    SHIPMENT_PLAN_STORE.clear()
+
+def credential_context_error(field=None):
+    return error(409,'OZON_CREDENTIAL_CONTEXT_CHANGED',CREDENTIAL_CONTEXT_MESSAGE,field)
+
+def commit_current_credential_context(context_id, action, *, field=None):
+    """Linearize credential replacement against persistence of API-derived state."""
+    with OZON_CONTEXT_COMMIT_LOCK:
+        if not context_id or OZON_VAULT.credential_context_id()!=context_id:
+            raise ShipmentPreparationError(
+                'OZON_CREDENTIAL_CONTEXT_CHANGED',CREDENTIAL_CONTEXT_MESSAGE,field,409)
+        return action()
+
+def current_source(source_snapshot_id, *, field='source_snapshot_id'):
+    snapshot=OZON_SOURCE_STORE.get(source_snapshot_id)
+    if snapshot is None:
+        raise ShipmentPreparationError('OZON_SOURCE_SNAPSHOT_NOT_FOUND','Ozon source snapshot was not found.',field,404)
+    return require_source_credential_context(snapshot,OZON_VAULT.credential_context_id(),field=field)
+
 async def json_object(request:Request):
     try:
         value=await request.json()
@@ -123,7 +149,10 @@ async def ozon_credentials_setup(request:Request):
         return error(400,'PASSWORD_CONFIRMATION_MISMATCH','Password confirmation does not match.','password_confirmation')
     try:
         credentials=OzonCredentials(body['client_id'],body['api_key'])
-        return vault_response(OZON_VAULT.setup(credentials,body['password']))
+        with OZON_CONTEXT_COMMIT_LOCK:
+            status=OZON_VAULT.setup(credentials,body['password'])
+            invalidate_ozon_account_context_state()
+        return vault_response(status)
     except ValueError:
         return error(400,'INVALID_CREDENTIALS','Credentials and password must be nonblank.',None)
     except OSError:
@@ -144,15 +173,19 @@ def ozon_credentials_lock():
 @router.post('/api/ozon/connection/test')
 def ozon_connection_test():
     try:
-        OZON_VAULT.require_credentials()
-        OZON_CLIENT.post_json(CONNECTION_TEST_PATH,{},policy=OzonRequestPolicy(retry_safe=True))
+        context=OZON_VAULT.capture_context()
+        OZON_CLIENT.bind_context(context).post_json(CONNECTION_TEST_PATH,{},policy=OzonRequestPolicy(retry_safe=True))
+        status=commit_current_credential_context(context.context_id,OZON_VAULT.record_connection_check)
     except OzonVaultError as exc:
         return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
     except OzonClientError as exc:
+        if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error()
         statuses={OzonErrorCode.AUTH_FAILED:401,OzonErrorCode.RATE_LIMITED:429,
                   OzonErrorCode.UNAVAILABLE:503,OzonErrorCode.INVALID_RESPONSE:502}
         return error(statuses.get(exc.code,502),exc.code.value,str(exc),None)
-    return vault_response(OZON_VAULT.record_connection_check())
+    except ShipmentPreparationError as exc:
+        return error(exc.http_status,exc.code,exc.message,exc.field)
+    return vault_response(status)
 
 @router.post('/api/ozon/handoff/search')
 async def ozon_handoff_search(request:Request):
@@ -169,26 +202,33 @@ async def ozon_handoff_search(request:Request):
     except ValueError:
         return error(400,'INVALID_SUPPLY_TYPES','Unknown shipment method.','supply_types')
     try:
-        OZON_VAULT.require_credentials()
-        points=search_handoff_points(OZON_CLIENT,query,ozon_supply_types)
-        HANDOFF_STORE.put_all(points)
+        context=OZON_VAULT.capture_context()
+        points=search_handoff_points(OZON_CLIENT.bind_context(context),query,ozon_supply_types)
+        commit_current_credential_context(context.context_id,lambda:HANDOFF_STORE.put_all(points))
         return {'api_version':1,'items':wire(points)}
     except OzonVaultError as exc:return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
-    except OzonClientError as exc:return error(503,exc.code.value,str(exc),None)
+    except OzonClientError as exc:
+        if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error()
+        return error(503,exc.code.value,str(exc),None)
+    except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
 
 @router.post('/api/ozon/sync')
 def ozon_sync():
     try:
-        OZON_VAULT.require_credentials()
-        snapshot=sync_ozon_source(OZON_CLIENT)
-        OZON_SOURCE_STORE.put(snapshot)
+        context=OZON_VAULT.capture_context()
+        snapshot=sync_ozon_source(OZON_CLIENT.bind_context(context),credential_context_id=context.context_id)
+        commit_current_credential_context(context.context_id,lambda:OZON_SOURCE_STORE.put(snapshot))
         return {'api_version':1,'source':wire(snapshot),'capabilities':capability_matrix(snapshot)}
     except OzonVaultError as exc:return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
+    except OzonClientError as exc:
+        if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error()
+        return error(503,exc.code.value,str(exc),None)
+    except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
 
 @router.get('/api/ozon/source/{source_snapshot_id}/status')
 def ozon_source_status(source_snapshot_id:str):
-    snapshot=OZON_SOURCE_STORE.get(source_snapshot_id)
-    if snapshot is None:return error(404,'OZON_SOURCE_SNAPSHOT_NOT_FOUND','Ozon source snapshot was not found.','source_snapshot_id')
+    try:snapshot=current_source(source_snapshot_id)
+    except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     return {'api_version':1,'source_snapshot_id':source_snapshot_id,'source_as_of':snapshot.source_as_of.isoformat(),
             'source_timezone':snapshot.source_timezone,'capabilities':capability_matrix(snapshot),
             'endpoint_evidence':wire(snapshot.endpoint_evidence),'diagnostics':wire(snapshot.diagnostics)}
@@ -220,9 +260,8 @@ async def shipment_candidates(request:Request):
         return error(400,'INVALID_SHIPMENT_SCENARIO','Shipment scenario is invalid.','scenario')
     seller_warehouses=()
     if plan.source_snapshot_id is not None:
-        source=OZON_SOURCE_STORE.get(plan.source_snapshot_id)
-        if source is None:
-            return error(409,'OZON_SOURCE_SNAPSHOT_NOT_FOUND','The analysis source snapshot is no longer available.','analysis_snapshot_id')
+        try:source=current_source(plan.source_snapshot_id,field='analysis_snapshot_id')
+        except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
         if source.source_as_of != plan.analysis_as_of:
             return error(409,'SOURCE_PROVENANCE_MISMATCH','Analysis and source provenance do not match.','analysis_snapshot_id')
         seller_warehouses=source.seller_warehouses
@@ -249,17 +288,25 @@ async def shipment_validate(request:Request):
         return error(400,'SHIPPABLE_PLAN_ID_REQUIRED','Shippable Plan identity is required.','shippable_plan_id')
     if not isinstance(candidate_ids,list) or not candidate_ids or any(not isinstance(x,str) or not x.strip() for x in candidate_ids) or len(candidate_ids)!=len(set(candidate_ids)):
         return error(400,'INVALID_CANDIDATE_IDS','Candidate identities must be a nonempty unique list.','candidate_ids')
+    expected_context=OZON_VAULT.credential_context_id()
     try: prepared=prepare_shipment_validation(analysis_store=ANALYSIS_STORE,
         source_store=OZON_SOURCE_STORE,handoff_store=HANDOFF_STORE,
         analysis_id=analysis_id,plan_id=plan_id,scenario_payload=body.get('scenario'),
-        candidate_ids=candidate_ids)
+        candidate_ids=candidate_ids,expected_credential_context_id=expected_context)
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
-    try: OZON_VAULT.require_credentials()
+    try:
+        context=OZON_VAULT.capture_context()
+        if context.context_id!=expected_context:return credential_context_error('analysis_snapshot_id')
     except OzonVaultError:return error(423,'OZON_VAULT_LOCKED','Unlock the Ozon credential vault first.',None)
     source_id=prepared.snapshot.source_snapshot_id
-    options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,prepared.candidates,prepared.scenario,
-                                    provenance=f'{analysis_id}:{plan_id}:{source_id}',
-                                    source_clusters=prepared.source_snapshot.clusters)
+    try:options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,prepared.candidates,prepared.scenario,
+                                    provenance=f'{context.context_id}:{analysis_id}:{plan_id}:{source_id}',
+                                    source_clusters=prepared.source_snapshot.clusters,
+                                    client=OZON_CLIENT.bind_context(context))
+    except OzonClientError as exc:
+        if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error('analysis_snapshot_id')
+        raise
+    if OZON_VAULT.credential_context_id()!=context.context_id:return credential_context_error('analysis_snapshot_id')
     return {'api_version':1,'analysis_snapshot_id':analysis_id,
             'shippable_plan_id':plan_id,'options':wire(options)}
 
@@ -275,18 +322,26 @@ async def shipment_plan(request:Request):
     if not isinstance(plan_id,str) or not plan_id.strip():return error(400,'SHIPPABLE_PLAN_ID_REQUIRED','Shippable Plan identity is required.','shippable_plan_id')
     if not isinstance(ids,list) or not ids or any(not isinstance(x,str) or not x.strip() for x in ids) or len(ids)!=len(set(ids)):
         return error(400,'INVALID_CANDIDATE_IDS','Candidate identities must be a nonempty unique list.','candidate_ids')
+    expected_context=OZON_VAULT.credential_context_id()
     try: prepared=prepare_shipment_validation(analysis_store=ANALYSIS_STORE,
         source_store=OZON_SOURCE_STORE,handoff_store=HANDOFF_STORE,
         analysis_id=analysis_id,plan_id=plan_id,scenario_payload=body.get('scenario'),
-        candidate_ids=ids)
+        candidate_ids=ids,expected_credential_context_id=expected_context)
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
-    try:OZON_VAULT.require_credentials()
+    try:
+        context=OZON_VAULT.capture_context()
+        if context.context_id!=expected_context:return credential_context_error('analysis_snapshot_id')
     except OzonVaultError:return error(423,'OZON_VAULT_LOCKED','Unlock the Ozon credential vault first.',None)
     source_id=prepared.snapshot.source_snapshot_id
-    options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,prepared.candidates,prepared.scenario,provenance=f'{analysis_id}:{plan_id}:{source_id}',source_clusters=prepared.source_snapshot.clusters)
+    try:options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,prepared.candidates,prepared.scenario,provenance=f'{context.context_id}:{analysis_id}:{plan_id}:{source_id}',source_clusters=prepared.source_snapshot.clusters,client=OZON_CLIENT.bind_context(context))
+    except OzonClientError as exc:
+        if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error('analysis_snapshot_id')
+        raise
+    if OZON_VAULT.credential_context_id()!=context.context_id:return credential_context_error('analysis_snapshot_id')
     try:shipment=build_shipment_plan(source_snapshot_id=source_id,analysis_snapshot_id=analysis_id,shippable_plan_id=plan_id,analysis_as_of=prepared.snapshot.analysis_as_of,scenario=prepared.scenario,candidates=prepared.candidates,validations=options,diagnostics=tuple(x.code for x in prepared.diagnostics))
     except ShipmentOrchestrationError as exc:return error(502,exc.code,'Ozon validation returned inconsistent candidate evidence.',None)
-    SHIPMENT_PLAN_STORE.put(shipment)
+    try:commit_current_credential_context(context.context_id,lambda:SHIPMENT_PLAN_STORE.put(shipment),field='analysis_snapshot_id')
+    except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     return {'api_version':1,'shipment_plan':wire(shipment)}
 
 @router.post('/api/shipment/export')
@@ -405,7 +460,7 @@ async def prepare_analysis(request:Request, request_id="http"):
     if raw_objective != AllocationObjective.MAX_MARGIN.value:
         return error(400,"INVALID_OPTIMIZATION_OBJECTIVE","Unsupported optimization objective.","optimization_objective")
     objective=AllocationObjective.MAX_MARGIN
-    snapshot=None
+    snapshot=None; credential_context_id=None
     if source_mode is SourceMode.API:
         if any(form.get(field) is not None for field in common):
             return error(400,'MIXED_SOURCE_MODE','API source cannot be combined with Ozon report files.',None)
@@ -413,6 +468,9 @@ async def prepare_analysis(request:Request, request_id="http"):
         if not source_snapshot_id:return error(400,'MISSING_SOURCE_SNAPSHOT_ID','API source snapshot identity is required.','source_snapshot_id')
         snapshot=OZON_SOURCE_STORE.get(source_snapshot_id)
         if snapshot is None:return error(400,'OZON_SOURCE_SNAPSHOT_NOT_FOUND','Ozon source snapshot was not found.','source_snapshot_id')
+        credential_context_id=OZON_VAULT.credential_context_id()
+        try:require_source_credential_context(snapshot,credential_context_id,field='source_snapshot_id')
+        except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     else:
         for field in common:
             if form.get(field) is None:return error(400,'MISSING_FIELD','Required multipart field is missing.',field)
@@ -450,7 +508,7 @@ async def prepare_analysis(request:Request, request_id="http"):
         for field in files:
             try: raw.append((form[field],await read(form[field],field,request_id)))
             except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.',field)
-    provenance=(source_mode,snapshot.source_snapshot_id if snapshot else None)
+    provenance=(source_mode,snapshot.source_snapshot_id if snapshot else None,credential_context_id)
     return raw, unitka, files, values, tax, as_of, (explicit_horizon,raw_inbound=="true",objective), provenance, source_inputs
 
 @router.post('/api/analysis')
@@ -458,7 +516,8 @@ async def analysis(request:Request):
     request_id=uuid4().hex[:8]
     prepared=await prepare_analysis(request,request_id)
     if isinstance(prepared,JSONResponse): return prepared
-    return run_analysis_pipeline(*prepared,request_id=request_id)
+    try:return run_analysis_pipeline(*prepared,request_id=request_id)
+    except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
 
 @router.post('/api/analysis/stream')
 async def analysis_stream(request:Request):
@@ -496,6 +555,9 @@ async def analysis_stream(request:Request):
             events.put({"type":"result","request_id":request_id,"elapsed_ms":round((now-started)*1000),"data":result})
         except AnalysisCancelled:
             logger.info("[analysis %s] cancelled",request_id)
+        except ShipmentPreparationError as exc:
+            events.put({"type":"error","request_id":request_id,"stage":last_stage["name"],
+                        "error":{"code":exc.code,"message":exc.message,"field":exc.field}})
         except Exception:
             logger.exception("[analysis %s] failed at %s",request_id,last_stage["name"])
             events.put({"type":"error","request_id":request_id,"stage":last_stage["name"],
@@ -518,7 +580,7 @@ class AnalysisCancelled(Exception):
     """Internal cooperative cancellation at progress boundaries."""
 
 
-def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_request=(None,True,AllocationObjective.MAX_MARGIN), provenance=(SourceMode.FILES,None), source_inputs=None, *, progress_callback=None, request_id="http"):
+def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_request=(None,True,AllocationObjective.MAX_MARGIN), provenance=(SourceMode.FILES,None,None), source_inputs=None, *, progress_callback=None, request_id="http"):
     """Run imports, joins, domain analysis and serialization for both transports."""
     def progress(stage, current=None, total=None, detail=None):
         if progress_callback is not None:
@@ -739,7 +801,12 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         blocked_decision_rows=snapshot.decision_rows,
     )
     snapshot=replace(snapshot,shippable_plan=shippable_plan)
-    ANALYSIS_STORE.put(snapshot)
+    if snapshot.source_mode is SourceMode.API:
+        expected_context=provenance[2] if len(provenance)>2 else None
+        commit_current_credential_context(
+            expected_context,lambda:ANALYSIS_STORE.put(snapshot),field='source_snapshot_id')
+    else:
+        ANALYSIS_STORE.put(snapshot)
     return {"api_version":1,"complete":complete,"snapshot":wire(snapshot),"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"safe_allocations":wire(result.safe_allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}
 
 
