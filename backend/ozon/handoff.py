@@ -5,6 +5,24 @@ from dataclasses import dataclass
 from backend.ozon.client import OzonClient, OzonRequestPolicy
 from backend.ozon.endpoints import HANDOFF_SEARCH_PATH
 
+HANDOFF_SUPPLY_TYPE_BY_METHOD = {
+    "pvz_crossdock": "CREATE_TYPE_CROSSDOCK",
+    "sc_crossdock": "CREATE_TYPE_CROSSDOCK",
+    "direct": "CREATE_TYPE_DIRECT",
+}
+
+def handoff_supply_types(methods: tuple[str, ...]) -> tuple[str, ...]:
+    """Translate domain methods to deduplicated Ozon wire values."""
+    result: list[str] = []
+    for method in methods:
+        try:
+            supply_type = HANDOFF_SUPPLY_TYPE_BY_METHOD[method]
+        except KeyError:
+            raise ValueError(f"unknown handoff method: {method}") from None
+        if supply_type not in result:
+            result.append(supply_type)
+    return tuple(result)
+
 
 @dataclass(frozen=True, slots=True)
 class HandoffPoint:

@@ -113,3 +113,14 @@ def test_article_plan_identity_search_and_reconciliation():
         assert sku in got
     assert node(f"SkladOzon.reconcileSelectedSku(SkladOzon.buildArticlePlanItems({fixture}),'200')")=='200'
     assert node(f"SkladOzon.reconcileSelectedSku(SkladOzon.buildArticlePlanItems({fixture}),'missing')")=='100'
+
+def test_product_summary_aggregates_every_cluster_and_preserves_unknowns():
+    complete="{clusterRows:[{need:{ozon_recommended_qty:10,calculated_need_qty:12},calculated_plan_qty:12,shippable:{shippable_qty:12,resolved_seller_stock:17,pack_multiple:6,unit_volume_l:0.3}},{need:{ozon_recommended_qty:5,calculated_need_qty:6},calculated_plan_qty:6,shippable:{shippable_qty:6,resolved_seller_stock:17,pack_multiple:6,unit_volume_l:0.3}}]}"
+    summary=node(f"SkladOzon.buildProductPlanSummary({complete})")
+    assert summary['ozonRecommendedQty']==15 and summary['calculatedNeedQty']==18 and summary['calculatedPlanQty']==18
+    assert summary['sellerStock']==17 and summary['wholePackAvailable']==12 and summary['packMultiple']==6
+    assert node("SkladOzon.buildProductPlanSummary({clusterRows:[{need:{ozon_recommended_qty:10}},{need:{ozon_recommended_qty:null}}]}).ozonRecommendedQty") is None
+
+def test_search_selection_reconciles_against_visible_items():
+    app=(ROOT/'frontend/assets/js/app.js').read_text()
+    assert 'selected=S.reconcileSelectedSku(visible,state.planView.selectedSku)' in app

@@ -55,3 +55,19 @@ def test_runtime_scenario_guard_prevents_request_capture_and_busy_state():
     busy = lifecycle.index("analysisActive=true")
     assert guard < invalid_return < capture < busy
     assert "analysisError:checked.error" in lifecycle
+
+
+def test_analysis_file_form_has_stable_dom_owner_across_unrelated_renders():
+    source = APP_JS.read_text()
+    render_data = source[source.index("let renderedAnalysisMode"):source.index("function validate", source.index("let renderedAnalysisMode"))]
+    assert "#analysis-region" in render_data
+    assert "renderedAnalysisMode!==state.source.mode" in render_data
+    assert "analysisRegion.innerHTML=analysisFormMarkup()" in render_data
+    assert "root.innerHTML=`<div class=\"stack\">${connectionMarkup()}" not in render_data
+
+
+def test_credential_payloads_use_named_elements_not_form_data():
+    source = APP_JS.read_text()
+    assert "new FormData" not in source
+    for field in ("client_id", "api_key", "password", "password_confirmation"):
+        assert f"form.elements.{field}.value" in source

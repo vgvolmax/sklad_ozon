@@ -14,8 +14,8 @@ class Client:
 
 def test_exact_request_response_contract_and_type_preservation():
     client = Client()
-    result = search_handoff_points(client, "  Тверь ", ("CROSS_DOCK",))
-    assert client.calls[0][1] == {"filter_by_supply_type": ["CROSS_DOCK"], "search": "Тверь"}
+    result = search_handoff_points(client, "  Тверь ", ("CREATE_TYPE_CROSSDOCK",))
+    assert client.calls[0][1] == {"filter_by_supply_type": ["CREATE_TYPE_CROSSDOCK"], "search": "Тверь"}
     assert (result[0].warehouse_type, result[0].point_type) == ("CROSS_DOCK", "PVZ")
     assert "PII" not in repr(result)
 
