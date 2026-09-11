@@ -206,3 +206,14 @@ Motion минимален и сообщает состояние: открыти
 ## PR5 real-scale Flow
 
 «Потоки спроса» теперь используют selected-context-first композицию: bounded searchable selector, backend-ranked Top 8 exact routes plus a non-selectable presentation-only `Прочие`, and a searchable exact route list. The signature visual is the fixed-height **Динамика локальности** timeline: restrained own-destination-demand bars, a dominant local-share line with explicit gaps for unknown values, and backend episode bands. No canvas dimension depends on route count. Route economics and matching Data Quality guidance appear only for the selected exact backend route; local/external routes also differ by text and border pattern. At narrow desktop widths and 200% zoom the three columns stack while large lists retain their own bounded scroll.
+
+
+## Shipped API-first Plan and Data ownership
+
+`Данные` is API-first: `OzonConnectionPanel` and `CredentialVaultDialog` own setup, restart unlock, lock, connection checks, explicit sync, and domain-level freshness. `SourceModePanel` exposes FILES only as an explicit reserve analytical workflow; one analysis run never mixes API and file source evidence.
+
+`План` has `Товары | Отгрузки`. `ArticlePlanSelector` is article-first in presentation and SKU-backed in identity. `PlanProductWorkspace` keeps `Ozon → Наша потребность → План`, whole-pack quantities, exact cluster evidence, and `Не рассчитано` for unknowns.
+
+`ShipmentIntentForm` uses native date inputs and checkboxes. `SellerWarehouseSelector` uses a native `<select>` only when several active warehouses require choice. `HandoffPointSelector` is the single authored asynchronous combobox: remote search begins after four trimmed characters and resolved points remain backend evidence only for the current process.
+
+`ShipmentManifest` and `OzonValidationStatus` render backend order and causal acceptance states without recalculation. The browser calls candidates then ShipmentPlan, displays every returned timeslot, and downloads backend-built XLSX/ZIP artifacts. Temporary drafts are disclosed; no UI claims or performs real supply creation.

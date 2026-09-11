@@ -27,6 +27,7 @@ def test_request_body_captures_all_controls_and_appends_only_supported_scenario(
         "tax_system": "usn_income",
         "horizon_days": "56",
         "include_inbound": "true",
+        "source_mode": "files",
     }
     assert "optimization_objective" not in result
 
@@ -54,3 +55,42 @@ def test_runtime_scenario_guard_prevents_request_capture_and_busy_state():
     busy = lifecycle.index("analysisActive=true")
     assert guard < invalid_return < capture < busy
     assert "analysisError:checked.error" in lifecycle
+
+
+def test_analysis_file_form_has_stable_dom_owner_across_unrelated_renders():
+    source = APP_JS.read_text()
+    render_data = source[source.index("let renderedAnalysisMode"):source.index("function validate", source.index("let renderedAnalysisMode"))]
+    assert "#analysis-region" in render_data
+    assert "renderedAnalysisMode!==state.source.mode" in render_data
+    assert "analysisRegion.innerHTML=analysisFormMarkup()" in render_data
+    assert "root.innerHTML=`<div class=\"stack\">${connectionMarkup()}" not in render_data
+
+
+def test_analysis_form_dynamic_state_updates_without_replacing_file_inputs():
+    source = APP_JS.read_text()
+    updater = source[
+        source.index("function updateAnalysisFormState"):
+        source.index("let renderedAnalysisMode")
+    ]
+    render_data = source[
+        source.index("let renderedAnalysisMode"):
+        source.index("function validate", source.index("let renderedAnalysisMode"))
+    ]
+    assert 'id="analysis-source-basis"' in source
+    assert 'id="analysis-submit"' in source
+    assert 'id="analysis-source-required"' in source
+    assert "submit.disabled=analysisActive||missingSource" in updater
+    assert "state.source.sourceAsOf" in updater
+    assert "Сначала обновите данные Ozon." in updater
+    assert "innerHTML" not in updater
+    assert "updateAnalysisFormState(root)" in render_data
+    assert render_data.index("analysisRegion.innerHTML=analysisFormMarkup()") < render_data.index(
+        "updateAnalysisFormState(root)"
+    )
+
+
+def test_credential_payloads_use_named_elements_not_form_data():
+    source = APP_JS.read_text()
+    assert "new FormData" not in source
+    for field in ("client_id", "api_key", "password", "password_confirmation"):
+        assert f"form.elements.{field}.value" in source
