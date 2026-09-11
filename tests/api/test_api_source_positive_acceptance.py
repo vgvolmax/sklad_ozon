@@ -60,6 +60,7 @@ def test_api_source_reaches_positive_calculated_shippable_and_candidate_before_l
     assert placement["feasibility"]["allowed"] is None
     assert placement["feasibility"]["max_supply_qty"] is None
     assert "PHYSICAL_CAPACITY_PENDING_OZON_VALIDATION" in decision["status_codes"]
+    assert any("не подтверждена Ozon" in text for text in decision["explanations"])
     assert line["analytical_qty"] == decision["calculated_plan_qty"]
     assert line["pack_multiple"] == 6
     assert line["shippable_qty"] > 0
