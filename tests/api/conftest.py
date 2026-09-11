@@ -21,12 +21,16 @@ def isolated_api_credential_context(tmp_path, monkeypatch):
     """Make legacy API fixtures represent the currently configured Ozon account.
 
     Hand-built snapshots that predate credential provenance intentionally omit
-    ``credential_context_id``.  At the HTTP boundary those fixtures should mean
+    ``credential_context_id``. At the HTTP boundary those fixtures should mean
     "snapshot from the current test account", so the test store fills only a
-    missing context id.  Explicit foreign ids remain untouched and still test
+    missing context id. Explicit foreign ids remain untouched and still test
     mismatch rejection.
+
+    The shared harness vault lives in a dedicated subdirectory so tests that
+    intentionally create an initially-unconfigured vault at ``tmp_path`` stay
+    independent.
     """
-    vault = CredentialVault(tmp_path / "ozon-credentials.json")
+    vault = CredentialVault(tmp_path / "_credential_context" / "ozon-credentials.json")
     vault.setup(
         OzonCredentials(TEST_CLIENT_ID, TEST_API_KEY),
         TEST_VAULT_PASSWORD,
