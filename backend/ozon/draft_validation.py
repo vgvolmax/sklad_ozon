@@ -3,6 +3,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import date, datetime, timezone, timedelta
 import hashlib, json, time
+from threading import Event, RLock
 from typing import Callable
 
 from backend.shipment.contracts import CandidateAssignment, CandidateShipment, ShipmentScenario
@@ -42,6 +43,12 @@ class _DraftInfo:
     warehouses: tuple[OzonWarehouseEvidence,...]
     errors: tuple[OzonDraftErrorEvidence,...]
     rejected_reason_codes: tuple[str,...]
+
+@dataclass(slots=True)
+class _InFlightValidation:
+    done: Event
+    option: ValidatedShipmentOption | None = None
+    error: BaseException | None = None
 
 
 def _positive_int(value):
@@ -180,33 +187,68 @@ def normalize_timeslots(response):
 class DraftValidationService:
     def __init__(self,client,*,clock:Callable[[],float]=time.monotonic,utcnow=lambda:datetime.now(timezone.utc),today=None,sleeper=time.sleep,cache_ttl=VALIDATION_CACHE_TTL_SECONDS,cache_size=VALIDATION_CACHE_MAX_ENTRIES):
         self.client=client;self.clock=clock;self.utcnow=utcnow;self.today=today or ozon_business_today;self.sleeper=sleeper;self.cache_ttl=cache_ttl;self.cache_size=cache_size
-        self._cache=OrderedDict();self._create_attempts=deque()
+        self._cache=OrderedDict();self._create_attempts=deque();self._state_lock=RLock();self._inflight={}
     def _key(self,c,s,p):
         return hashlib.sha256(json.dumps([c.candidate_id,p,s.date_from.isoformat(),s.date_to.isoformat(),[(x.sku,x.destination_cluster_id,x.quantity) for x in c.assignments]],separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
     def _option(self,c,state,reasons,**kw):
         return ValidatedShipmentOption(c.candidate_id,kw.get("draft_id"),state,c.method,c.seller_warehouse_id,c.handoff_point_id,tuple(kw.get("accepted",())),tuple(kw.get("rejected",())),tuple(kw.get("warehouses",())),None,tuple(kw.get("timeslots",())),self.utcnow().isoformat(),tuple(reasons))
-    def _budget_available(self):
-        now=self.clock()
+    def _cached_option_locked(self,key,now):
+        cached=self._cache.get(key)
+        ttl=OUTCOME_UNKNOWN_TTL_SECONDS if cached and cached[1].state is ValidationState.OUTCOME_UNKNOWN else self.cache_ttl
+        if cached and now-cached[0]<ttl:return cached[1]
+        if cached:self._cache.pop(key,None)
+        return None
+    def _reserve_create_slot_locked(self,now):
         while self._create_attempts and now-self._create_attempts[0]>=86400:self._create_attempts.popleft()
-        return sum(now-x<60 for x in self._create_attempts)<2 and sum(now-x<3600 for x in self._create_attempts)<50 and len(self._create_attempts)<500
+        if sum(now-x<60 for x in self._create_attempts)>=2 or sum(now-x<3600 for x in self._create_attempts)>=50 or len(self._create_attempts)>=500:return False
+        self._create_attempts.append(now)
+        return True
+    def _wait_for_flight(self,candidate,flight,cancelled):
+        while not flight.done.wait(timeout=.05):
+            if cancelled():return self._option(candidate,ValidationState.UNAVAILABLE,("VALIDATION_CANCELLED",))
+        if flight.error is not None:raise flight.error
+        if flight.option is None:raise RuntimeError("in-flight validation completed without a result")
+        return flight.option
+    def _publish_flight(self,key,flight,option=None,error=None):
+        with self._state_lock:
+            if error is None:
+                self._cache[key]=(self.clock(),option)
+                while len(self._cache)>self.cache_size:self._cache.popitem(last=False)
+                flight.option=option
+            else:flight.error=error
+            self._inflight.pop(key,None)
+            flight.done.set()
     def validate(self,candidates,scenario,*,provenance,source_clusters:tuple[Cluster,...],client=None,cancelled=lambda:False):
         active_client=client or self.client
         output=[];created=0
         for candidate in candidates:
-            if cancelled():break
-            key=self._key(candidate,scenario,provenance);cached=self._cache.get(key)
-            ttl=OUTCOME_UNKNOWN_TTL_SECONDS if cached and cached[1].state is ValidationState.OUTCOME_UNKNOWN else self.cache_ttl
-            if cached and self.clock()-cached[0]<ttl:output.append(cached[1]);continue
-            if created>=DEFAULT_MAX_NEW_DRAFTS or not self._budget_available():
-                output.append(self._option(candidate,ValidationState.RATE_LIMITED,("DRAFT_RATE_BUDGET_EXHAUSTED",)));continue
+            key=self._key(candidate,scenario,provenance)
+            with self._state_lock:
+                cached=self._cached_option_locked(key,self.clock());flight=self._inflight.get(key)
+            if cancelled() and flight is None:break
+            if cached is not None:output.append(cached);continue
+            if flight is not None:
+                output.append(self._wait_for_flight(candidate,flight,cancelled));continue
             if scenario.date_from<self.today() or scenario.date_to>self.today()+timedelta(days=28):
                 output.append(self._option(candidate,ValidationState.UNAVAILABLE,("TIMESLOT_DATE_RANGE_UNSUPPORTED",)));continue
             try:identities=resolve_candidate_cluster_identities(candidate,source_clusters);create=build_draft_create_request(candidate,identities)
             except (ValueError,TypeError) as exc:
                 output.append(self._option(candidate,ValidationState.UNAVAILABLE,(str(exc),)));continue
-            created+=1;self._create_attempts.append(self.clock())
-            option=self._validate_one(candidate,scenario,identities,create,cancelled,active_client);output.append(option);self._cache[key]=(self.clock(),option)
-            while len(self._cache)>self.cache_size:self._cache.popitem(last=False)
+            with self._state_lock:
+                cached=self._cached_option_locked(key,self.clock());flight=self._inflight.get(key)
+                if cached is None and flight is None:
+                    if created>=DEFAULT_MAX_NEW_DRAFTS or not self._reserve_create_slot_locked(self.clock()):
+                        output.append(self._option(candidate,ValidationState.RATE_LIMITED,("DRAFT_RATE_BUDGET_EXHAUSTED",)));continue
+                    flight=_InFlightValidation(Event());self._inflight[key]=flight;owner=True;created+=1
+                else:owner=False
+            if cached is not None:output.append(cached);continue
+            if not owner:
+                output.append(self._wait_for_flight(candidate,flight,cancelled));continue
+            try:option=self._validate_one(candidate,scenario,identities,create,cancelled,active_client)
+            except BaseException as exc:
+                self._publish_flight(key,flight,error=exc);raise
+            else:
+                self._publish_flight(key,flight,option=option);output.append(option)
         return tuple(output)
     def _validate_one(self,candidate,scenario,identities,create,cancelled,client):
         preliminary_errors=();preliminary_rejected_reasons=()
