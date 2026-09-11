@@ -1,9 +1,22 @@
 from datetime import date
+from decimal import Decimal
 
+from backend.domain.contracts import ProductEconomicsInput, SourceMode
 from backend.ozon.handoff import HandoffPoint, HandoffPointStore
 from backend.ozon.source_contracts import SellerWarehouse
 from backend.shipment.candidates import build_candidate_result, build_candidate_shipments, select_shipment_scope
 from backend.shipment.contracts import ShipmentMethod, ShipmentScenario
+from backend.supply import (
+    AllocationDecision,
+    AllocationObjective,
+    OperationalSupplyFact,
+    OptimizationResult,
+    PlacementZoneKind,
+    PlanFamily,
+    RestrictionCapacityKind,
+    RestrictionEligibility,
+    build_shippable_plan,
+)
 
 
 def scenario(clusters, methods=(ShipmentMethod.DIRECT,), preferred=20, maximum=20,
@@ -19,6 +32,40 @@ def test_scope_is_filter_only_and_never_redistributes(line_factory, plan_factory
     selected = select_shipment_scope(plan, ("Moscow", "Perm"))
     assert {(line.destination_cluster_id, line.shippable_qty) for line in selected} == {
         ("Moscow", 60), ("Perm", 24)}
+
+
+def test_candidate_excludes_allocation_when_no_whole_pack_fits_physical_capacity():
+    allocation = AllocationDecision(
+        "SKU-1", "A", 5, 5, Decimal("1"), Decimal("5"), True,
+        ("ELIGIBLE_FOR_ALLOCATION",), 1,
+    )
+    optimization = OptimizationResult(
+        "SKU-1", 100, 5, 95, 5, Decimal("5"), (allocation,), (),
+        PlanFamily.CALCULATED, AllocationObjective.MAX_MARGIN,
+    )
+    fact = OperationalSupplyFact(
+        "SKU-1", "ART-1", "A", 6, PlacementZoneKind.SINGLE, ("DEFAULT",),
+        RestrictionEligibility.ALLOWED, RestrictionCapacityKind.FINITE, 5,
+        date(2026, 9, 10), (),
+    )
+    plan = build_shippable_plan(
+        analysis_snapshot_id="analysis-1", source_mode=SourceMode.FILES,
+        source_snapshot_id=None, analysis_as_of=date(2026, 9, 10),
+        horizon_days=56, include_inbound=True,
+        objective=AllocationObjective.MAX_MARGIN,
+        calculated_allocations=(optimization,),
+        products=(ProductEconomicsInput(
+            "SKU-1", "ART-1", None, 100, None, None, Decimal("1")),),
+        supply_facts=(fact,),
+    )
+
+    assert plan.lines[0].shippable_qty == 0
+    result = build_candidate_result(
+        plan=plan, scenario=scenario(("A",)), seller_warehouses=(),
+        handoff_store=HandoffPointStore(),
+    )
+    assert result.candidates == ()
+    assert tuple(item.code for item in result.diagnostics) == ("EMPTY_SHIPMENT_SCOPE",)
 
 
 def test_direct_hard_limit_and_deterministic_identity(line_factory, plan_factory):
