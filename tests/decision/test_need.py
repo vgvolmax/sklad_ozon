@@ -146,3 +146,12 @@ def test_contracts_are_immutable_and_objectives_are_exactly_supported_set():
     assert set(AllocationObjective) == {
         AllocationObjective.MAX_PROFIT, AllocationObjective.MAX_MARGIN,
     }
+
+
+def test_incomplete_demand_source_preserves_signal_but_blocks_need():
+    result = need(demand_source_complete=False)
+    assert result.current_weekly_rate == BASE["weekly_rate"]
+    assert result.raw_demand_forecast is not None
+    assert result.calculated_need_qty is None
+    assert result.complete is False
+    assert result.blocker_codes == ("INCOMPLETE_DEMAND_SOURCE",)

@@ -95,6 +95,16 @@ def test_all_prohibited_unknown_missing_and_no_warehouse_fail_closed():
     assert (none.allowed, none.max_supply_qty, none.reasons) == (False, 0, ("NO_WAREHOUSES_FOR_CLUSTER",))
 
 
+def test_api_feasibility_is_unknown_pending_live_validation_not_allowed_capacity():
+    result = assess_feasibility(
+        "SKU-1", "Moscow", [], [], live_validation_pending=True)
+    assert result.allowed is None
+    assert result.physical_state.value == "unknown_pending_live_validation"
+    assert result.max_supply_qty is None
+    assert result.eligible_warehouses == ()
+    assert result.reasons == ("PHYSICAL_CAPACITY_PENDING_OZON_VALIDATION",)
+
+
 def test_sku_cluster_duplicate_and_conflict_isolation():
     warehouses = [WarehouseCapability("M", "Moscow"), WarehouseCapability("K", "Kazan")]
     rows = [

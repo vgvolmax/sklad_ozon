@@ -1,6 +1,5 @@
 """Causal orchestration for one immutable API source snapshot."""
 
-from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -114,10 +113,10 @@ def sync_ozon_source(client, *, progress_callback=None) -> OzonSourceSnapshot:
         evidence.append(EndpointEvidence(
             "placement_zones", datetime.now(timezone.utc).isoformat(), 0, False, (diagnostic,)))
 
-    inbound_by_key = {(row.sku, row.cluster): row.inbound_quantity for row in inbound}
-    availability = tuple(replace(row, inbound_quantity=inbound_by_key.get((row.sku, row.cluster))) for row in fbo)
-    known = {(row.sku, row.cluster) for row in availability}
-    availability += tuple(row for row in inbound if (row.sku, row.cluster) not in known)
+    # FBO is warehouse-grained while inbound is cluster-grained.  Preserve them
+    # as independent evidence rows so downstream Need aggregation counts each
+    # inbound quantity exactly once.
+    availability = tuple(fbo) + tuple(inbound)
     progress("complete")
     return OzonSourceSnapshot(
         uuid4().hex, now.isoformat(), as_of, SOURCE_TIMEZONE, window.history_from,

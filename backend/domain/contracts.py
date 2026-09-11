@@ -13,6 +13,20 @@ class SourceMode(str, Enum):
     FILES = "files"
 
 
+@dataclass(frozen=True, slots=True)
+class AnalysisSourceCoverage:
+    """Source-level evidence required by generic Need calculation."""
+
+    orders_fbo_complete: bool
+    orders_fbs_complete: bool
+    fbo_stock_complete: bool
+    inbound_complete: bool
+
+    @property
+    def demand_complete(self) -> bool:
+        return self.orders_fbo_complete and self.orders_fbs_complete
+
+
 class RestrictionCapacityKind(str, Enum):
     UNKNOWN = "unknown"
     ZERO = "zero"

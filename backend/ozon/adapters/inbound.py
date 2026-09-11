@@ -99,7 +99,22 @@ def _fetch_details(client: OzonClient, order_ids: list[int]) -> list[dict]:
     details = []
     for start in range(0, len(order_ids), DETAIL_BATCH_SIZE):
         response = client.post_json(SUPPLY_ORDER_GET_PATH, {"order_ids": order_ids[start:start + DETAIL_BATCH_SIZE]}, policy=READ)
-        details.extend(item for item in _items(response, "orders") if isinstance(item, dict))
+        batch = order_ids[start:start + DETAIL_BATCH_SIZE]
+        returned = [item for item in _items(response, "orders") if isinstance(item, dict)]
+        returned_ids = []
+        for item in returned:
+            value = item.get("order_id")
+            if isinstance(value, bool):
+                raise ValueError("invalid supply-order detail ID")
+            try:
+                returned_ids.append(int(value))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("invalid supply-order detail ID") from exc
+        if len(returned_ids) != len(set(returned_ids)):
+            raise ValueError("duplicate supply-order detail ID")
+        if set(returned_ids) != set(batch):
+            raise ValueError("supply-order details do not match requested IDs")
+        details.extend(returned)
     return details
 
 

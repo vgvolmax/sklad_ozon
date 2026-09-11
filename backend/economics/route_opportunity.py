@@ -120,7 +120,8 @@ def calculate_route_counterfactual(
             current.realization, False, ("LOCAL_FEASIBILITY_MISSING",))
     if local_feasibility.sku != sku or local_feasibility.cluster_id != destination_cluster_id:
         raise ValueError("feasibility identity must match route destination")
-    if not local_feasibility.allowed or local_feasibility.max_supply_qty == 0:
+    if (not local_feasibility.analytical_allocation_allowed
+            or local_feasibility.max_supply_qty == 0):
         return RouteCounterfactual(sku, origin_cluster_id, destination_cluster_id,
             current.expected_logistics, current_pct, current.profit_per_unit,
             current.margin_rate, None, None, None, None, None, None, current.price,

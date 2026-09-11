@@ -64,7 +64,8 @@ def _is_incomplete_row(row, placement, *, route_required, route_complete):
         or row.calculated_plan_qty is None
         or placement is None
         or not placement.economics.complete
-        or not placement.feasibility.allowed
+        or not getattr(placement.feasibility, "analytical_allocation_allowed",
+                       placement.feasibility.allowed)
         or (route_required and not route_complete)
     )
 

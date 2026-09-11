@@ -5,7 +5,8 @@ from collections.abc import Iterable
 
 from backend.ingestion.restrictions import RestrictionRecord, RestrictionState
 
-from .contracts import SupplyFeasibility, WarehouseCapability, _require_nonblank
+from .contracts import (PhysicalFeasibilityState, SupplyFeasibility,
+                        WarehouseCapability, _require_nonblank)
 
 
 _REASON_ORDER = (
@@ -18,6 +19,7 @@ _REASON_ORDER = (
     "CONSERVATIVE_WAREHOUSE_MAXIMUM",
     "ZERO_PHYSICAL_CEILING",
     "ELIGIBLE_WAREHOUSE_FOUND",
+    "PHYSICAL_CAPACITY_PENDING_OZON_VALIDATION",
 )
 
 
@@ -26,6 +28,7 @@ def assess_feasibility(
     cluster_id: str,
     restrictions: Iterable[RestrictionRecord],
     warehouses: Iterable[WarehouseCapability],
+    *, live_validation_pending: bool = False,
 ) -> SupplyFeasibility:
     """Assess a SKU only against explicitly mapped warehouses and restrictions."""
     _require_nonblank(sku, "sku")
@@ -42,6 +45,12 @@ def assess_feasibility(
             raise ValueError(f"Conflicting capabilities for warehouse {capability.warehouse!r}")
         cluster_warehouses[capability.warehouse] = capability
 
+    if live_validation_pending:
+        return SupplyFeasibility(
+            sku, cluster_id, None, None, (),
+            ("PHYSICAL_CAPACITY_PENDING_OZON_VALIDATION",),
+            PhysicalFeasibilityState.UNKNOWN_PENDING_LIVE_VALIDATION,
+        )
     if not cluster_warehouses:
         return SupplyFeasibility(sku, cluster_id, False, 0, (), ("NO_WAREHOUSES_FOR_CLUSTER",))
 

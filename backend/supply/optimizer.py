@@ -62,7 +62,7 @@ def _validate_thresholds(thresholds: object) -> OptimizerThresholds:
 
 
 def _ceiling(candidate: PlacementAssessment, plan_family: PlanFamily) -> int:
-    if not candidate.feasibility.allowed:
+    if not candidate.feasibility.analytical_allocation_allowed:
         return 0
     if candidate.calculated_need_qty is None:
         return 0
@@ -79,7 +79,7 @@ def _classify(candidate: PlacementAssessment, ceiling: int,
               thresholds: OptimizerThresholds,
               plan_family: PlanFamily) -> tuple[bool, set[str]]:
     reasons: set[str] = set()
-    if not candidate.feasibility.allowed:
+    if not candidate.feasibility.analytical_allocation_allowed:
         reasons.add("PHYSICALLY_INFEASIBLE")
     elif candidate.feasibility.max_supply_qty == 0:
         reasons.add("PHYSICAL_CEILING_ZERO")
