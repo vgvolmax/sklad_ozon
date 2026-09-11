@@ -97,21 +97,22 @@ class CredentialVault:
             return self.status()
 
     def status(self) -> VaultStatus:
-        configured = self._path.is_file()
-        suffix = None
-        if configured:
-            try:
-                value = json.loads(self._path.read_bytes()).get("masked_client_id_suffix")
-                suffix = value if isinstance(value, str) else None
-            except (OSError, json.JSONDecodeError, UnicodeError):
-                suffix = None
-        return VaultStatus(
-            configured=configured,
-            locked=self._credentials is None,
-            masked_client_id_suffix=suffix,
-            last_connection_check=self._last_connection_check,
-            credential_context_id=self.credential_context_id(),
-        )
+        with self._lock:
+            configured = self._path.is_file()
+            suffix = None
+            if configured:
+                try:
+                    value = json.loads(self._path.read_bytes()).get("masked_client_id_suffix")
+                    suffix = value if isinstance(value, str) else None
+                except (OSError, json.JSONDecodeError, UnicodeError):
+                    suffix = None
+            return VaultStatus(
+                configured=configured,
+                locked=self._credentials is None,
+                masked_client_id_suffix=suffix,
+                last_connection_check=self._last_connection_check,
+                credential_context_id=self.credential_context_id(),
+            )
 
     def credential_context_id(self) -> str | None:
         """Return an opaque identity derived only from the encrypted document."""
@@ -138,16 +139,18 @@ class CredentialVault:
 
     def record_connection_check(self, checked_at: datetime | None = None) -> VaultStatus:
         checked_at = checked_at or datetime.now(timezone.utc)
-        self._last_connection_check = checked_at.astimezone(timezone.utc).isoformat()
-        return self.status()
+        with self._lock:
+            self._last_connection_check = checked_at.astimezone(timezone.utc).isoformat()
+            return self.status()
 
     def reset(self) -> None:
-        self._credentials = None
-        self._last_connection_check = None
-        try:
-            self._path.unlink()
-        except FileNotFoundError:
-            pass
+        with self._lock:
+            self._credentials = None
+            self._last_connection_check = None
+            try:
+                self._path.unlink()
+            except FileNotFoundError:
+                pass
 
     @staticmethod
     def _password_bytes(password: str) -> bytes:
