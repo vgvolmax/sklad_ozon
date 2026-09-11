@@ -15,7 +15,16 @@ def explain_decision(*, need: NeedComparison, status_codes: tuple[str, ...],
     if "REGIME_DECLINE" in demand_codes and "REGIME_CONFIRMED" in demand_codes:
         messages.append("Снижение спроса подтверждается последней полной неделей.")
     if need.comparability is HorizonComparability.DIFFERENT_HORIZON:
-        messages.append(f"Горизонты различаются: Ozon {need.ozon_horizon_days} дней, наш расчёт {need.horizon_days} дней.")
+        messages.append(
+            "Safe Plan не рассчитан: рекомендация Ozon относится к горизонту "
+            f"{need.ozon_horizon_days} дней, а текущий сценарий — "
+            f"{need.horizon_days} дней."
+        )
+    if need.comparability is HorizonComparability.OZON_HORIZON_UNKNOWN:
+        messages.append(
+            "Safe Plan не рассчитан: горизонт рекомендации Ozon неизвестен, "
+            "поэтому её нельзя использовать как числовой потолок."
+        )
     blockers = set(need.blocker_codes)
     if "MISSING_DEMAND_ESTIMATE" in blockers:
         messages.append("Потребность не рассчитана: недостаточно истории спроса.")

@@ -9,7 +9,8 @@ from backend.analytics.flows import aggregate_clean_flows, aggregate_observed_fl
 from backend.domain.signals import SignalConfidence
 from .contracts import (AnalysisSnapshot, DataQualityPresentation, DecisionRow, DecisionSummary, DiagnosticView,
                         FlowContextSummary, FlowEconomicsAggregate, FlowLinkView,
-                        FlowMetricOverview, FlowView, FlowViewAggregates, RouteSkuBreakdown)
+                        FlowMetricOverview, FlowView, FlowViewAggregates,
+                        HorizonComparability, RouteSkuBreakdown)
 from .explanations import explain_decision
 from .impact import build_stockout_impact_presentation
 
@@ -68,6 +69,14 @@ def _is_incomplete_row(row, placement, *, route_required, route_complete):
                        placement.feasibility.allowed)
         or (route_required and not route_complete)
     )
+
+
+def _total_safe_plan_qty(rows):
+    """Aggregate only a complete Ozon-recommended Safe Plan scope."""
+    scope = tuple(row for row in rows if row.need.ozon_recommended_qty is not None)
+    if not scope or any(row.safe_plan_qty is None for row in scope):
+        return None
+    return sum(row.safe_plan_qty for row in scope)
 
 
 def _signal_status_codes(key, stockout_signals, distortion_signals):
@@ -325,6 +334,10 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
         codes.update(diagnostics_by_key.get(key, ()))
         codes.update(diagnostics_by_key.get((need.sku, None), ()))
         if s is None: codes.add("SAFE_PLAN_UNAVAILABLE")
+        if need.comparability is HorizonComparability.DIFFERENT_HORIZON:
+            codes.add("SAFE_PLAN_HORIZON_MISMATCH")
+        if need.comparability is HorizonComparability.OZON_HORIZON_UNKNOWN:
+            codes.add("SAFE_PLAN_OZON_HORIZON_UNKNOWN")
         if c is None: codes.add("CALCULATED_PLAN_UNAVAILABLE")
         if route_required and not route_complete: codes.add("ROUTE_ECONOMICS_INCOMPLETE")
         codes.update(_signal_status_codes(key, stockout_signals, distortion_signals))
@@ -346,10 +359,11 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
                 route_incomplete=route_required and not route_complete))
         rows.append(row)
     with localcontext(_CTX): profit=sum((x.objective_profit for x in calculated_allocations),Decimal("0"))
+    total_safe_plan_qty = _total_safe_plan_qty(rows)
     summary=DecisionSummary(len({r.sku for r in rows}),len(rows),
         sum(r.need.ozon_recommended_qty for r in rows if r.need.ozon_recommended_qty is not None),
         sum(r.need.calculated_need_qty for r in rows if r.need.calculated_need_qty is not None),
-        sum(r.safe_plan_qty for r in rows if r.safe_plan_qty is not None),
+        total_safe_plan_qty,
         sum(r.calculated_plan_qty for r in rows if r.calculated_plan_qty is not None),profit,
         sum(r.need.ozon_recommended_qty is not None and r.need.calculated_need_qty is not None and r.need.ozon_recommended_qty!=r.need.calculated_need_qty for r in rows),
         sum(_is_incomplete_row(

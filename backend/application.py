@@ -17,7 +17,7 @@ from backend.economics import (expected_logistics, LogisticsContext, RouteProfil
                                calculate_unit_economics, calculate_route_opportunity,
                                build_stockout_episode_impacts)
 from backend.project import EconomicsSettings, OptimizerThresholds
-from backend.decision import ScenarioSettings, calculate_need
+from backend.decision import HorizonComparability, ScenarioSettings, calculate_need
 from backend.domain.signals import SignalConfidence
 from backend.domain.contracts import AnalysisSourceCoverage, SourceMode
 from backend.supply import (AllocationObjective, PlanFamily, WarehouseCapability, PlacementInput, PlacementSource, RouteConfidence,
@@ -64,6 +64,17 @@ def build_analysis_summary(placements: tuple, allocations: tuple) -> AnalysisSum
         ozon_recommended_qty=sum(placement.ozon_recommended_qty for placement in placements),
         allocated_qty=sum(result.allocated_qty for result in allocations),
         objective_profit=objective_profit,
+    )
+
+
+def safe_plan_comparable(needs) -> bool:
+    """Return whether all Ozon-recommended rows for one SKU are comparable."""
+    recommended = tuple(
+        need for need in needs if need.ozon_recommended_qty is not None
+    )
+    return bool(recommended) and all(
+        need.comparability is HorizonComparability.SAME_HORIZON
+        for need in recommended
     )
 
 
@@ -275,15 +286,16 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         if product and stock is not None and group:
             # Safe is not calculable without the external Ozon ceiling.  The
             # Calculated family remains independent from that evidence.
+            sku_needs = tuple(item for item in needs if item.sku == sku)
             recommendations = {
                 item.destination_cluster_id: item.ozon_recommended_qty
-                for item in needs if item.sku == sku
+                for item in sku_needs
             }
             safe_group = tuple(
                 item for item in group
                 if recommendations.get(item.cluster_id) is not None
             )
-            if safe_group:
+            if safe_group and safe_plan_comparable(sku_needs):
                 safe_allocations.append(optimize_allocations(
                     safe_group, stock, optimizer_thresholds,
                     plan_family=PlanFamily.SAFE,
