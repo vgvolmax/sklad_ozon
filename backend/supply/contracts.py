@@ -61,6 +61,12 @@ class PlacementZoneKind(str, Enum):
     MULTIPLE = "multiple"
 
 
+class PhysicalFeasibilityState(str, Enum):
+    CONFIRMED_ALLOWED = "confirmed_allowed"
+    CONFIRMED_BLOCKED = "confirmed_blocked"
+    UNKNOWN_PENDING_LIVE_VALIDATION = "unknown_pending_live_validation"
+
+
 @dataclass(frozen=True, slots=True)
 class SupplyProductIdentity:
     sku: str
@@ -132,10 +138,22 @@ class WarehouseCapability:
 class SupplyFeasibility:
     sku: str
     cluster_id: str
-    allowed: bool
+    allowed: bool | None
     max_supply_qty: int | None
     eligible_warehouses: tuple[str, ...]
     reasons: tuple[str, ...]
+    physical_state: PhysicalFeasibilityState | None = None
+
+    def __post_init__(self) -> None:
+        if self.physical_state is None:
+            object.__setattr__(self, "physical_state", (
+                PhysicalFeasibilityState.CONFIRMED_ALLOWED if self.allowed
+                else PhysicalFeasibilityState.CONFIRMED_BLOCKED))
+
+    @property
+    def analytical_allocation_allowed(self) -> bool:
+        return (self.allowed is not False
+                and self.physical_state is not PhysicalFeasibilityState.CONFIRMED_BLOCKED)
 
 
 @dataclass(frozen=True, slots=True)

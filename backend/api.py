@@ -26,7 +26,8 @@ from backend.supply import (AllocationObjective, SupplyProductIdentity,
                             build_shippable_plan)
 from backend.supply.facts import build_operational_supply_facts
 from backend.ingestion.cluster_resolution import resolve_analysis_clusters
-from backend.domain.contracts import ImportResult, ReportMeta, ImportDiagnostic, SourceMode
+from backend.domain.contracts import (AnalysisSourceCoverage, ImportResult,
+                                      ReportMeta, ImportDiagnostic, SourceMode)
 from backend.ingestion.availability import import_availability
 from backend.ingestion.restrictions import import_restrictions
 from backend.ingestion.orders import import_orders
@@ -330,6 +331,7 @@ class PreparedAnalysisInputs:
     orders: ImportResult
     operational_availability: tuple
     placement_zone_evidence: tuple = ()
+    source_coverage: AnalysisSourceCoverage | None = None
 
 
 def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedAnalysisInputs:
@@ -343,6 +345,8 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
     restrictions = ImportResult((), (), restrictions_meta)
     diagnostics_by_endpoint = {evidence.name: tuple(evidence.diagnostics)
                                for evidence in snapshot.endpoint_evidence}
+    completeness = {evidence.name: evidence.complete
+                    for evidence in snapshot.endpoint_evidence}
     order_diagnostics = diagnostics_by_endpoint.get("orders_fbo", ()) + diagnostics_by_endpoint.get("orders_fbs", ())
     availability_diagnostics = diagnostics_by_endpoint.get("fbo_stock", ())
     if include_inbound:
@@ -353,6 +357,12 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
         ImportResult(tuple(snapshot.orders), order_diagnostics, orders_meta),
         tuple(snapshot.availability) + tuple(snapshot.operational_seller_stock),
         tuple(snapshot.placement_zones),
+        AnalysisSourceCoverage(
+            completeness.get("orders_fbo", False),
+            completeness.get("orders_fbs", False),
+            completeness.get("fbo_stock", False),
+            completeness.get("inbound", False),
+        ),
     )
 
 _IMPORTERS={"availability":import_availability,"restrictions":import_restrictions,"orders":import_orders,"tariffs":import_tariffs,"product-economics":import_product_economics}
@@ -597,7 +607,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     settings=EconomicsSettings(*(values[n] for n in DECIMAL_NAMES[:4]),tax,*(values[n] for n in DECIMAL_NAMES[4:7])); thresholds=OptimizerThresholds(*(values[n] for n in DECIMAL_NAMES[7:]))
     explicit_horizon,include_inbound,objective=scenario_request
     scenario=ScenarioSettings(explicit_horizon or availability.meta.recommendation_horizon_days or 56,include_inbound,objective)
-    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=operational_availability,ozon_horizon_days=availability.meta.recommendation_horizon_days,progress_callback=progress_callback,scenario_settings=scenario)
+    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=operational_availability,ozon_horizon_days=availability.meta.recommendation_horizon_days,source_mode=provenance[0],source_coverage=(source_inputs.source_coverage if source_inputs is not None else None),progress_callback=progress_callback,scenario_settings=scenario)
     progress("serialization")
     coverage={key:0 for key in ('complete','partial','none','no_profile')}
     for item in result.logistics:coverage[item.coverage_status.value]+=1

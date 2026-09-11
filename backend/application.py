@@ -19,6 +19,7 @@ from backend.economics import (expected_logistics, LogisticsContext, RouteProfil
 from backend.project import EconomicsSettings, OptimizerThresholds
 from backend.decision import ScenarioSettings, calculate_need
 from backend.domain.signals import SignalConfidence
+from backend.domain.contracts import AnalysisSourceCoverage, SourceMode
 from backend.supply import (AllocationObjective, PlanFamily, WarehouseCapability, PlacementInput, PlacementSource, RouteConfidence,
                             compare_placements, optimize_allocations)
 
@@ -40,6 +41,15 @@ class AnalysisSummary:
     ozon_recommended_qty: int
     allocated_qty: int
     objective_profit: Decimal
+
+
+def aggregate_api_need_availability(records, coverage: AnalysisSourceCoverage) -> tuple[int | None, int | None]:
+    """Aggregate warehouse FBO and cluster inbound as independent evidence."""
+    fbo_values = [row.fbo_quantity for row in records if row.fbo_quantity is not None]
+    inbound_values = [row.inbound_quantity for row in records if row.inbound_quantity is not None]
+    fbo = (sum(fbo_values) if fbo_values else 0) if coverage.fbo_stock_complete else None
+    inbound = (sum(inbound_values) if inbound_values else 0) if coverage.inbound_complete else None
+    return fbo, inbound
 
 
 def build_analysis_summary(placements: tuple, allocations: tuple) -> AnalysisSummary:
@@ -75,6 +85,8 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             economics_settings: EconomicsSettings, optimizer_thresholds: OptimizerThresholds,
             availability_fbs_authoritative: bool = False, operational_availability=None,
             ozon_horizon_days: int | None = None,
+            source_mode: SourceMode = SourceMode.FILES,
+            source_coverage: AnalysisSourceCoverage | None = None,
             progress_callback=None,
             scenario_settings: ScenarioSettings = _DEFAULT_SCENARIO) -> AnalysisResult:
     if not isinstance(scenario_settings, ScenarioSettings):
@@ -174,16 +186,25 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         for cluster in sorted(clusters):
             operational = availability_by_identity.get((sku, cluster), ())
             estimate = demand_estimates_by_identity.get((sku, cluster))
+            if source_coverage is None:
+                fbo_stock = conservative_quantity(operational, "fbo_quantity")
+                inbound_qty = conservative_quantity(operational, "inbound_quantity")
+                demand_complete = True
+            else:
+                fbo_stock, inbound_qty = aggregate_api_need_availability(
+                    operational, source_coverage)
+                demand_complete = source_coverage.demand_complete
             need = calculate_need(
                 sku=sku,
                 destination_cluster_id=cluster,
                 weekly_rate=(estimate.current_weekly_rate if estimate is not None else None),
                 horizon_days=scenario_settings.horizon_days,
-                fbo_stock=conservative_quantity(operational, "fbo_quantity"),
-                inbound_qty=conservative_quantity(operational, "inbound_quantity"),
+                fbo_stock=fbo_stock,
+                inbound_qty=inbound_qty,
                 include_inbound=scenario_settings.include_inbound,
                 ozon_recommended_qty=rec_values.get((sku, cluster)),
                 ozon_horizon_days=ozon_horizon_days,
+                demand_source_complete=demand_complete,
             )
             needs.append(need)
             sku_needs.append(need)
@@ -240,6 +261,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         placements_list.extend(compare_placements(
             candidates_by_sku.get(sku, ()), legacy_restrictions,
             tuple(dict.fromkeys(mapped)),
+            live_validation_pending=source_mode is SourceMode.API,
         ))
         progress("placements", sku_index, len(skus))
     placements=tuple(sorted(placements_list, key=lambda item: (item.sku, item.cluster_id)))

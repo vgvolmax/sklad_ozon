@@ -208,9 +208,14 @@ def test_api_files_parity_acceptance_preserves_demand_flow_need_and_seller_confl
 
     files_snapshot = files_payload["snapshot"]
     api_snapshot = api_payload["snapshot"]
-    for key in ("demand_estimates", "observed_routes", "clean_routes", "decision_rows",
+    for key in ("demand_estimates", "observed_routes", "clean_routes",
                 "safe_allocations", "calculated_allocations"):
         assert api_snapshot[key] == files_snapshot[key]
+    api_decision = api_snapshot["decision_rows"][0]
+    files_decision = files_snapshot["decision_rows"][0]
+    assert api_decision["need"] == files_decision["need"]
+    assert api_decision["feasibility"]["physical_state"] == "unknown_pending_live_validation"
+    assert files_decision["feasibility"]["physical_state"] == "confirmed_allowed"
     assert {item["code"] for item in api_payload["diagnostics"]} >= {"CONFLICTING_FBS_AVAILABLE_STOCK"}
     assert {item["code"] for item in files_payload["diagnostics"]} >= {"CONFLICTING_FBS_AVAILABLE_STOCK"}
     assert (api_snapshot["source_mode"], api_snapshot["source_snapshot_id"]) == ("api", "parity-api")

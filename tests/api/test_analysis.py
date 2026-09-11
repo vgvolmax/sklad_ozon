@@ -164,7 +164,12 @@ def _api_parity_fixture():
     return OzonSourceSnapshot(
         "parity-api", "2026-08-25T00:00:00+00:00", date(2026, 8, 25), "UTC+03:00",
         date(2026, 6, 1), date(2026, 8, 25), orders, availability, seller,
-        (), (), (), (), ())
+        (), (), (), (
+            EndpointEvidence("orders_fbo", "x", len(orders), True),
+            EndpointEvidence("orders_fbs", "x", 0, True),
+            EndpointEvidence("fbo_stock", "x", 2, True),
+            EndpointEvidence("inbound", "x", 1, True),
+        ), ())
 
 
 def _parity_files():
@@ -661,8 +666,15 @@ def test_api_and_files_typed_sources_are_business_equivalent_without_fabricated_
     assert api_response.status_code == 200, api_response.text
 
     files_payload, api_payload = files_response.json(), api_response.json()
-    for key in ("demand", "observed_routes", "clean_routes", "placements", "allocations", "safe_allocations"):
+    for key in ("demand", "observed_routes", "clean_routes", "allocations", "safe_allocations"):
         assert api_payload[key] == files_payload[key]
+    placement = _placement(api_payload, "Москва")
+    assert placement["feasibility"]["physical_state"] == "unknown_pending_live_validation"
+    assert placement["feasibility"]["allowed"] is None
+    assert placement["feasibility"]["max_supply_qty"] is None
+    assert placement["feasibility"]["reasons"] == ["PHYSICAL_CAPACITY_PENDING_OZON_VALIDATION"]
+    assert "NO_EXPLICIT_ALLOWED_WAREHOUSE" not in placement["feasibility"]["reasons"]
+    assert _allocation(api_payload, "Москва") > 0
     assert "CONFLICTING_FBS_AVAILABLE_STOCK" in {item["code"] for item in api_payload["diagnostics"]}
     assert "CONFLICTING_FBS_AVAILABLE_STOCK" in {item["code"] for item in files_payload["diagnostics"]}
     assert api_payload["snapshot"]["source_mode"] == "api"

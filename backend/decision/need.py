@@ -39,6 +39,7 @@ def calculate_need(
     horizon_days: int, fbo_stock: int | None, inbound_qty: int | None,
     include_inbound: bool, ozon_recommended_qty: int | None,
     ozon_horizon_days: int | None,
+    demand_source_complete: bool = True,
 ) -> NeedComparison:
     _validate_horizon(horizon_days)
     if not isinstance(include_inbound, bool):
@@ -46,7 +47,11 @@ def calculate_need(
 
     with localcontext(_BUSINESS_DECIMAL_CONTEXT):
         blockers = []
-        if weekly_rate is None:
+        if not demand_source_complete:
+            forecast = (forecast_horizon(weekly_rate, horizon_days)
+                        if weekly_rate is not None else None)
+            blockers.append("INCOMPLETE_DEMAND_SOURCE")
+        elif weekly_rate is None:
             forecast = None
             blockers.append("MISSING_DEMAND_ESTIMATE")
         else:

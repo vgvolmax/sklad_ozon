@@ -1,5 +1,5 @@
 import pytest
-from backend.ozon.adapters.inbound import SupplyState, _fetch_bundles, _fetch_order_ids, classify_supply_state, fetch_inbound, normalize_inbound
+from backend.ozon.adapters.inbound import SupplyState, _fetch_bundles, _fetch_details, _fetch_order_ids, classify_supply_state, fetch_inbound, normalize_inbound
 from backend.ozon.endpoints import SUPPLY_ORDER_BUNDLE_PATH, SUPPLY_ORDER_GET_PATH, SUPPLY_ORDER_LIST_PATH
 
 UUID="550e8400-e29b-41d4-a716-446655440000"
@@ -52,3 +52,17 @@ def test_supply_list_last_id_paginates():
         def __init__(self):self.calls=[]
         def post_json(self,path,payload,**kwargs):self.calls.append(payload);return {"order_ids":[len(self.calls)],"last_id":"next" if len(self.calls)==1 else ""}
     c=Paged(); assert _fetch_order_ids(c)==[1,2] and c.calls[1]["last_id"]=="next"
+
+
+@pytest.mark.parametrize("returned", [
+    [{"order_id": 7}],
+    [{"order_id": 7}, {"order_id": 7}],
+    [{"order_id": 7}, {"order_id": 9}],
+])
+def test_supply_details_must_exactly_match_requested_ids(returned):
+    class DetailsClient:
+        def post_json(self, _path, _payload, **_kwargs):
+            return {"orders": returned}
+
+    with pytest.raises(ValueError, match="detail|match|duplicate"):
+        _fetch_details(DetailsClient(), [7, 8])

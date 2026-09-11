@@ -12,6 +12,7 @@ def compare_placements(
     candidates: Iterable[PlacementInput],
     restrictions: Iterable[RestrictionRecord],
     warehouses: Iterable[WarehouseCapability],
+    *, live_validation_pending: bool = False,
 ) -> tuple[PlacementAssessment, ...]:
     """Return visible, deterministic assessments while preserving supplied economics."""
     candidate_items = tuple(candidates)
@@ -28,13 +29,14 @@ def compare_placements(
             raise ValueError(f"Duplicate candidate for SKU and cluster: {key!r}")
         seen.add(key)
         feasibility = assess_feasibility(
-            candidate.sku, candidate.cluster_id, restriction_items, warehouse_items)
+            candidate.sku, candidate.cluster_id, restriction_items, warehouse_items,
+            live_validation_pending=live_validation_pending)
         source_set = set(candidate.sources)
         statuses = tuple(code for condition, code in (
             (PlacementSource.OBSERVED in source_set, "OBSERVED_CANDIDATE"),
             (PlacementSource.RECOMMENDED in source_set, "RECOMMENDED_CANDIDATE"),
             (PlacementSource.COUNTERFACTUAL in source_set, "COUNTERFACTUAL_CANDIDATE"),
-            (not feasibility.allowed, "PHYSICALLY_INFEASIBLE"),
+            (not feasibility.analytical_allocation_allowed, "PHYSICALLY_INFEASIBLE"),
             (feasibility.max_supply_qty == 0, "PHYSICAL_CEILING_ZERO"),
             (not candidate.economics.complete, "ECONOMICS_INCOMPLETE"),
             (candidate.ozon_recommended_qty == 0, "AUTOMATIC_CEILING_ZERO"),
