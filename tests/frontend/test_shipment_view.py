@@ -29,6 +29,11 @@ def test_shipment_edit_invalidates_pending_run_and_preserves_old_plan():
     assert result['runId']==6 and result['busyStage'] is None and result['dirty'] is True
     assert result['plan']['shipment_plan_id']=='old'
 
+def test_source_mode_change_invalidates_pending_shipment_run():
+    result=node("(()=>{let s=SkladOzon.createInitialState();s={...s,snapshot:{snapshot_id:'A1'},shipmentView:{...s.shipmentView,runId:5,busyStage:'plan',dirty:false,plan:{shipment_plan_id:'old'}}};return SkladOzon.selectSourceMode(s,'files').shipmentView})()")
+    assert result['runId']==6 and result['busyStage'] is None and result['dirty'] is True
+    assert result['plan']['shipment_plan_id']=='old'
+
 def test_readiness_and_plan_freshness_follow_source_provenance():
     expression="""(()=>{let s=SkladOzon.createInitialState(),snap={snapshot_id:'A1',source_mode:'api',source_snapshot_id:'S1',shippable_plan:{shippable_plan_id:'SP1'}};s={...s,snapshot:snap,source:{...s.source,snapshotId:'S1'},ozonConnection:{...s.ozonConnection,locked:false},shipmentView:{...s.shipmentView,plan:{analysis_snapshot_id:'A1',source_snapshot_id:'S1',shippable_plan_id:'SP1'},dirty:false}};return {ready:SkladOzon.shipmentReadiness(s),current:SkladOzon.isShipmentPlanCurrent(s),afterSync:SkladOzon.shipmentReadiness(SkladOzon.applySourceSuccess(SkladOzon.beginSourceRun(s),1,{source:{source_snapshot_id:'S2'}}))};})()"""
     result=node(expression)
@@ -47,3 +52,28 @@ def test_native_controls_disclosure_and_no_success_claims():
     assert 'Реальные заявки на поставку не создаются.' in app
     for forbidden in ('Поставка создана','Окно забронировано','Заявка подтверждена'):
         assert forbidden not in app
+
+def test_handoff_search_and_keyboard_navigation_use_local_region_only():
+    app=(ROOT/'frontend/assets/js/app.js').read_text()
+    assert 'id="handoff-selector-region"' in app
+    search=app[app.index('async function searchHandoff'):app.index('async function runShipment')]
+    keyboard=app[app.index('function bindHandoff'):app.index('function queueHandoffSearch')]
+    assert 'renderHandoffSelector()' in search
+    assert 'renderPlan()' not in search
+    assert 'updateHandoffActiveState(root)' in keyboard
+    assert 'renderPlan()' not in keyboard
+    assert "input.addEventListener('compositionstart'" in keyboard
+    assert "input.addEventListener('compositionend'" in keyboard
+
+def test_manifest_renders_complete_operational_evidence():
+    app=(ROOT/'frontend/assets/js/app.js').read_text()
+    manifest=app[app.index('function manifestMarkup'):app.index('function shipmentResults')]
+    for label in ('Кластеры назначения','Зоны размещения','Время проверки',
+                  'Период отгрузки','Склад отправления','Точка отгрузки',
+                  'Доступные окна','Отклонённые позиции'):
+        assert label in manifest
+    for evidence in ('candidate.cluster_ids','placement_zones','checked_at_utc',
+                     'warehouse_evidence','travel_time_days','x.message','x.code'):
+        assert evidence in manifest
+    assert 'zones.size>1' in manifest
+    assert 'разделите грузоместа по зонам размещения' in manifest
