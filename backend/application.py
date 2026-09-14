@@ -44,12 +44,13 @@ class AnalysisSummary:
     objective_profit: Decimal
 
 
-def aggregate_api_need_availability(records, coverage: AnalysisSourceCoverage) -> tuple[int | None, int | None]:
+def aggregate_api_need_availability(
+        records, coverage: AnalysisSourceCoverage, *, sku: str) -> tuple[int | None, int | None]:
     """Aggregate warehouse FBO and cluster inbound as independent evidence."""
     fbo_values = [row.fbo_quantity for row in records if row.fbo_quantity is not None]
     inbound_values = [row.inbound_quantity for row in records if row.inbound_quantity is not None]
     fbo = (sum(fbo_values) if fbo_values else 0) if coverage.fbo_stock_complete else None
-    inbound = (sum(inbound_values) if inbound_values else 0) if coverage.inbound_complete else None
+    inbound = (sum(inbound_values) if inbound_values else 0) if coverage.inbound_complete_for(sku) else None
     return fbo, inbound
 
 
@@ -216,7 +217,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
                 demand_complete = demand.window.coverage_current and order_coverage_valid
             else:
                 fbo_stock, inbound_qty = aggregate_api_need_availability(
-                    operational, source_coverage)
+                    operational, source_coverage, sku=sku)
                 demand_complete = (
                     source_coverage.demand_complete_for(sku)
                     and demand.window.coverage_current

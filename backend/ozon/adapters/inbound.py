@@ -6,6 +6,7 @@ from backend.domain.contracts import ImportDiagnostic
 from backend.ingestion.availability import AvailabilityRecord
 from backend.ozon.client import OzonClient, OzonRequestPolicy
 from backend.ozon.endpoints import SUPPLY_ORDER_BUNDLE_PATH, SUPPLY_ORDER_GET_PATH, SUPPLY_ORDER_LIST_PATH
+from backend.ozon.source_contracts import OzonRecordQualityEvidence
 
 READ = OzonRequestPolicy(retry_safe=True)
 PAGE_SIZE = 100
@@ -15,17 +16,45 @@ DETAIL_BATCH_SIZE = 100
 class SupplyState(str, Enum):
     INBOUND = "inbound"
     FINAL = "final"
+    DISPUTED = "disputed"
     UNKNOWN = "unknown"
 
 
 _INBOUND = {"DATA_FILLING", "READY_TO_SUPPLY", "ACCEPTED_AT_SUPPLY_WAREHOUSE", "IN_TRANSIT",
             "ACCEPTANCE_AT_STORAGE_WAREHOUSE", "REPORTS_CONFIRMATION_AWAITING"}
 _FINAL = {"COMPLETED", "CANCELLED", "REJECTED_AT_SUPPLY_WAREHOUSE", "OVERDUE"}
+_DISPUTED = {"REPORT_REJECTED"}
 
 
 def classify_supply_state(value: object) -> SupplyState:
     normalized = str(value).strip().upper()
-    return SupplyState.INBOUND if normalized in _INBOUND else SupplyState.FINAL if normalized in _FINAL else SupplyState.UNKNOWN
+    if normalized in _INBOUND:
+        return SupplyState.INBOUND
+    if normalized in _FINAL:
+        return SupplyState.FINAL
+    if normalized in _DISPUTED:
+        return SupplyState.DISPUTED
+    return SupplyState.UNKNOWN
+
+
+def _resolve_supply_cluster(
+        supply: dict, clusters: dict[int, str],
+        warehouse_to_macrolocal: dict[int, int]) -> tuple[str | None, str | None]:
+    """Resolve canonical direct cluster evidence, falling back only when absent."""
+    direct = supply.get("macrolocal_cluster_id")
+    if direct is not None:
+        if isinstance(direct, bool) or not isinstance(direct, int) or direct <= 0:
+            return None, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"
+        cluster = clusters.get(direct)
+        return (cluster, None) if cluster is not None else (None, "UNRESOLVED_SUPPLY_CLUSTER")
+
+    storage = supply.get("storage_warehouse")
+    warehouse_id = storage.get("warehouse_id") if isinstance(storage, dict) else None
+    try:
+        cluster = clusters[warehouse_to_macrolocal[int(warehouse_id)]]
+    except (KeyError, TypeError, ValueError):
+        return None, "UNRESOLVED_SUPPLY_CLUSTER"
+    return cluster, None
 
 
 def _items(response: dict, key: str) -> list:
@@ -40,6 +69,8 @@ def normalize_inbound(details: list[dict], bundle_items: dict[str, list[dict]], 
                       warehouse_to_macrolocal: dict[int, int]):
     totals: dict[tuple[str, str], int] = {}
     diagnostics: list[ImportDiagnostic] = []
+    rejected_record_count = 0
+    incomplete_skus: set[str] = set()
     for order in details:
         order_id = int(order.get("order_id", 0))
         supplies = order.get("supplies")
@@ -52,27 +83,48 @@ def normalize_inbound(details: list[dict], bundle_items: dict[str, list[dict]], 
             if state is SupplyState.UNKNOWN:
                 diagnostics.append(ImportDiagnostic("error", "UNKNOWN_SUPPLY_STATE", f"Unknown state for supply order {order_id}."))
                 continue
-            storage = supply.get("storage_warehouse")
-            warehouse_id = storage.get("warehouse_id") if isinstance(storage, dict) else None
-            try:
-                cluster = clusters[warehouse_to_macrolocal[int(warehouse_id)]]
-            except (KeyError, TypeError, ValueError):
-                diagnostics.append(ImportDiagnostic("error", "UNRESOLVED_SUPPLY_CLUSTER", f"Supply order {order_id} has unmapped storage warehouse."))
-                continue
             bundle_id = str(supply.get("bundle_id") or "").strip()
             if not bundle_id:
                 diagnostics.append(ImportDiagnostic("error", "MISSING_SUPPLY_BUNDLE_ID", f"Supply order {order_id} has no bundle ID."))
                 continue
-            for item in bundle_items.get(bundle_id, ()):
+            items = bundle_items.get(bundle_id)
+            if not items:
+                diagnostics.append(ImportDiagnostic(
+                    "error", "MISSING_SUPPLY_BUNDLE_ITEMS",
+                    f"Supply order {order_id} has no bundle item evidence."))
+                continue
+            cluster = None
+            if state is SupplyState.INBOUND:
+                cluster, cluster_error = _resolve_supply_cluster(
+                    supply, clusters, warehouse_to_macrolocal)
+                if cluster_error is not None:
+                    message = (f"Supply order {order_id} has invalid macrolocal cluster ID."
+                               if cluster_error == "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"
+                               else f"Supply order {order_id} has unresolved placement cluster.")
+                    diagnostics.append(ImportDiagnostic("error", cluster_error, message))
+                    continue
+            valid_items: list[tuple[str, int]] = []
+            for item in items:
                 sku = str(item.get("sku", "")).strip()
                 quantity = item.get("quantity")
                 if not sku or isinstance(quantity, bool) or not isinstance(quantity, (int, float)) or quantity < 0 or int(quantity) != quantity:
                     diagnostics.append(ImportDiagnostic("error", "INVALID_SUPPLY_BUNDLE_ITEM", f"Bundle {bundle_id} contains invalid product evidence."))
                     continue
-                totals[(sku, cluster)] = totals.get((sku, cluster), 0) + int(quantity)
+                valid_items.append((sku, int(quantity)))
+            if state is SupplyState.DISPUTED:
+                rejected_record_count += len(valid_items)
+                incomplete_skus.update(sku for sku, _quantity in valid_items)
+                diagnostics.append(ImportDiagnostic(
+                    "warning", "REPORT_REJECTED_SUPPLY_STATE",
+                    f"Supply order {order_id} contains REPORT_REJECTED supply; inbound quantity for affected SKU is unknown."))
+                continue
+            for sku, quantity in valid_items:
+                totals[(sku, cluster)] = totals.get((sku, cluster), 0) + quantity
     records = tuple(AvailabilityRecord(sku, cluster, cluster, 0.0, None, fbo_quantity=None, inbound_quantity=quantity)
                     for (sku, cluster), quantity in sorted(totals.items()))
-    return records, tuple(diagnostics)
+    quality = OzonRecordQualityEvidence(
+        rejected_record_count, tuple(sorted(incomplete_skus)))
+    return records, tuple(diagnostics), quality
 
 
 def _fetch_order_ids(client: OzonClient) -> list[int]:

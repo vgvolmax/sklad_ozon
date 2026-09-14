@@ -20,6 +20,18 @@ def test_demand_completeness_can_be_scoped_to_sku():
     assert globally_failed.demand_complete_for("SKU-B") is False
 
 
+def test_inbound_completeness_can_be_scoped_to_sku():
+    scoped = AnalysisSourceCoverage(
+        True, True, True, True, inbound_incomplete_skus=("SKU-B",))
+    assert scoped.inbound_complete_for("SKU-A") is True
+    assert scoped.inbound_complete_for("SKU-B") is False
+
+    globally_failed = AnalysisSourceCoverage(
+        True, True, True, False, inbound_incomplete_skus=("SKU-B",))
+    assert globally_failed.inbound_complete_for("SKU-A") is False
+    assert globally_failed.inbound_complete_for("SKU-B") is False
+
+
 def row(warehouse, fbo_quantity=None, inbound_quantity=None):
     return AvailabilityRecord(
         "SKU", warehouse, "Москва", 0, None,
@@ -30,20 +42,28 @@ def test_cluster_inbound_is_counted_once_for_one_two_and_three_fbo_warehouses():
     for fbo_quantities in ((10,), (5, 5), (2, 3, 5)):
         records = tuple(row(f"W{index}", quantity) for index, quantity in enumerate(fbo_quantities))
         records += (row("Москва", inbound_quantity=3),)
-        assert aggregate_api_need_availability(records, coverage()) == (10, 3)
+        assert aggregate_api_need_availability(records, coverage(), sku="SKU") == (10, 3)
 
 
 def test_complete_empty_inbound_is_zero_but_incomplete_empty_inbound_is_unknown():
     records = (row("W", 10),)
-    assert aggregate_api_need_availability(records, coverage(inbound=True)) == (10, 0)
-    assert aggregate_api_need_availability(records, coverage(inbound=False)) == (10, None)
+    assert aggregate_api_need_availability(records, coverage(inbound=True), sku="SKU") == (10, 0)
+    assert aggregate_api_need_availability(records, coverage(inbound=False), sku="SKU") == (10, None)
 
 
 def test_incomplete_empty_fbo_is_unknown_not_zero():
-    assert aggregate_api_need_availability((), coverage(fbo=False)) == (None, 0)
+    assert aggregate_api_need_availability((), coverage(fbo=False), sku="SKU") == (None, 0)
 
 
 def test_partial_rows_do_not_make_an_incomplete_endpoint_complete():
     records = (row("W", 10), row("Москва", inbound_quantity=4))
-    assert aggregate_api_need_availability(records, coverage(fbo=False)) == (None, 4)
-    assert aggregate_api_need_availability(records, coverage(inbound=False)) == (10, None)
+    assert aggregate_api_need_availability(records, coverage(fbo=False), sku="SKU") == (None, 4)
+    assert aggregate_api_need_availability(records, coverage(inbound=False), sku="SKU") == (10, None)
+
+
+def test_scoped_inbound_gap_overrides_partial_numeric_observation():
+    records = (row("W", 10), row("Москва", inbound_quantity=4))
+    scoped = AnalysisSourceCoverage(
+        True, True, True, True, inbound_incomplete_skus=("SKU-A",))
+    assert aggregate_api_need_availability(records, scoped, sku="SKU-A") == (10, None)
+    assert aggregate_api_need_availability(records, scoped, sku="SKU-B") == (10, 4)

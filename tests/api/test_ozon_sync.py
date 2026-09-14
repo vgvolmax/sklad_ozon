@@ -119,6 +119,47 @@ def test_localized_order_quality_does_not_stop_backfill(monkeypatch):
     assert capability_matrix(source)["demand_flow"]["complete"] is True
 
 
+def test_localized_inbound_quality_is_preserved_without_global_failure(monkeypatch):
+    import backend.ozon.sync as module
+
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        _orders(end, 8) if path == FBO_POSTINGS_PATH else (), ()))
+    _patch_non_history(monkeypatch)
+    warning = ImportDiagnostic(
+        "warning", "REPORT_REJECTED_SUPPLY_STATE", "Scoped inbound gap.")
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: (
+        (), (warning,), OzonRecordQualityEvidence(1, ("SKU-B",))))
+
+    source = sync_ozon_source(object())
+    inbound_evidence = next(
+        item for item in source.endpoint_evidence if item.name == "inbound")
+    assert inbound_evidence.complete is True
+    assert inbound_evidence.record_quality == OzonRecordQualityEvidence(
+        1, ("SKU-B",))
+    assert capability_matrix(source)["need_inbound"]["complete"] is True
+
+
+def test_missing_supply_bundle_items_makes_inbound_globally_incomplete(monkeypatch):
+    import backend.ozon.sync as module
+
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        _orders(end, 8) if path == FBO_POSTINGS_PATH else (), ()))
+    _patch_non_history(monkeypatch)
+    error = ImportDiagnostic(
+        "error", "MISSING_SUPPLY_BUNDLE_ITEMS",
+        "Supply order 7 has no bundle item evidence.")
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: (
+        (), (error,), OzonRecordQualityEvidence()))
+
+    source = sync_ozon_source(object())
+    inbound = next(
+        item for item in source.endpoint_evidence if item.name == "inbound")
+
+    assert inbound.complete is False
+    assert inbound.record_quality == OzonRecordQualityEvidence()
+    assert capability_matrix(source)["need_inbound"]["complete"] is False
+
+
 def test_global_order_error_stops_backfill(monkeypatch):
     import backend.ozon.sync as module
     calls = []

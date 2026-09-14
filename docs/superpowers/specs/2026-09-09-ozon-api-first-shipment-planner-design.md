@@ -288,8 +288,20 @@ POST /v1/supply-order/bundle
 
 Only states not yet available as FBO stock contribute. Completed/cancelled/rejected/final states do not. Unknown states are diagnostic/incomplete. Tests must prove no double subtraction with current FBO stock.
 Supply `bundle_id` is an opaque string. Bundle contents use top-level `items` and
-per-bundle `last_id` pagination. Destination resolves strictly from
-`storage_warehouse.warehouse_id` through the v1 warehouse mapping.
+per-bundle `last_id` pagination. `supply.macrolocal_cluster_id` is the canonical
+placement-cluster identity. The `storage_warehouse.warehouse_id` → v1 warehouse
+mapping is a compatibility fallback only when `macrolocal_cluster_id` is absent.
+An explicit but invalid or unresolvable `macrolocal_cluster_id` is not overridden
+by the fallback.
+
+`REPORT_REJECTED` is a disputed/ambiguous state. Its bundle quantities are not
+counted as inbound and are not coerced to zero. Known affected SKU are marked
+inbound-incomplete: when `include_inbound=true`, Need for those SKU remains
+unknown; when `include_inbound=false`, disputed inbound does not block Need.
+Unknown future supply states remain global fail-closed evidence.
+For any non-final supply, an identified bundle with no product-item evidence is
+globally incomplete; absence of bundle rows is never interpreted as zero inbound
+and cannot be scoped without proven SKU identities.
 
 ### 5.4 Seller/FBS stock
 
@@ -311,7 +323,9 @@ POST /v1/cluster/list
 ```
 
 `/v2` owns canonical `macrolocal_cluster_id` and macro display name. `/v1` maps
-`logistic_clusters[].warehouses[].warehouse_id` to `macrolocal_cluster_id`.
+`logistic_clusters[].warehouses[].warehouse_id` to `macrolocal_cluster_id` as
+legacy compatibility evidence; it is not the canonical owner of an inbound
+supply destination when the supply carries `macrolocal_cluster_id` directly.
 Display names never become identity by fuzzy matching.
 
 ### 5.6 Seller warehouses
