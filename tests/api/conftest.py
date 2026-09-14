@@ -5,10 +5,12 @@ from dataclasses import replace
 import pytest
 
 import backend.api as api_module
+from backend.security import LOCAL_SESSION_HEADER, current_local_session_token
 from backend.ozon.client import OzonClient
 from backend.ozon.contracts import OzonCredentials
 from backend.ozon.draft_validation import DraftValidationService
 from backend.ozon.vault import CredentialVault
+from starlette.testclient import TestClient
 
 
 TEST_CLIENT_ID = "api-test-client"
@@ -68,3 +70,19 @@ def isolated_api_credential_context(tmp_path, monkeypatch):
     api_module.HANDOFF_STORE.clear()
     api_module.ANALYSIS_STORE.clear()
     api_module.SHIPMENT_PLAN_STORE.clear()
+
+
+@pytest.fixture(autouse=True)
+def authorized_local_test_client(monkeypatch):
+    """Give legacy API tests the headers sent by the real local frontend."""
+
+    original_request = TestClient.request
+
+    def request(client, method, url, **kwargs):
+        headers = dict(kwargs.pop("headers", {}) or {})
+        headers.setdefault("Host", "127.0.0.1:17843")
+        if method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+            headers.setdefault(LOCAL_SESSION_HEADER, current_local_session_token())
+        return original_request(client, method, url, headers=headers, **kwargs)
+
+    monkeypatch.setattr(TestClient, "request", request)
