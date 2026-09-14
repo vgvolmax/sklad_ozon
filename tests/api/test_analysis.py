@@ -94,6 +94,7 @@ def _two_sku_analysis_files():
 def _analysis_data(**overrides):
     values = {
         "as_of": "2026-08-25", "acquiring_rate": "0.01", "advertising_rate": "0.01",
+        "orders_period_from": "2026-06-29", "orders_period_to": "2026-08-23",
         "buyout_rate": "1", "fixed_fbo_fee": "0", "tax_system": "usn_income",
         "income_tax_rate": "0.06", "vat_rate": "0", "co_invest_rate": "0",
         "min_profit_per_unit": "0", "min_margin_rate": "0", "min_roi": "0",
@@ -692,11 +693,15 @@ def test_pii_is_discarded_from_entire_analysis_response():
 
 
 def test_api_and_files_typed_sources_are_business_equivalent_without_fabricated_restrictions():
+    snapshot = _api_parity_fixture()
+    parity_data = _analysis_data(
+        orders_period_from=snapshot.history_from.isoformat(),
+        orders_period_to=snapshot.history_to.isoformat(),
+    )
     files = _parity_files()
-    files_response = _post_analysis(files=files, data=_analysis_data())
+    files_response = _post_analysis(files=files, data=parity_data)
     assert files_response.status_code == 200, files_response.text
 
-    snapshot = _api_parity_fixture()
     api_module.OZON_SOURCE_STORE.put(snapshot)
     api_files = {name: files[name] for name in ("tariffs_file", "product_economics_file")}
     api_response = CLIENT.post("/api/analysis", files=api_files, data=_analysis_data(

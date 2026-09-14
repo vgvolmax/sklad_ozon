@@ -123,7 +123,7 @@ def estimate_destination_demand(demand: DemandResult) -> tuple[DemandEstimate, .
         identity = cell.sku, cell.destination_cluster_id
         week = cell.iso_year, cell.iso_week
         first_observed[identity] = min(week, first_observed.get(identity, week))
-    return tuple(
+    estimates = tuple(
         _estimate(
             sku,
             destination,
@@ -134,4 +134,16 @@ def estimate_destination_demand(demand: DemandResult) -> tuple[DemandEstimate, .
             ],
         )
         for sku, destination in identities
+    )
+    if demand.window.coverage_start is None or demand.window.coverage_current:
+        return estimates
+    return tuple(
+        DemandEstimate(
+            item.sku, item.destination_cluster_id, item.eligible_week_count,
+            item.m1, item.m2, item.latest_week_qty, DemandRegime.INCOMPLETE,
+            None, item.raw_adjustment, item.applied_adjustment,
+            item.current_weekly_rate, SignalConfidence.LOW,
+            item.explanation_codes + ("DEMAND_COVERAGE_NOT_CURRENT",),
+        )
+        for item in estimates
     )

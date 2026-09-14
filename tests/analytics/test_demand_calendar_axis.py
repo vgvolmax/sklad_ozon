@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from backend.analytics.demand import aggregate_demand
+from backend.analytics import ObservationCoverage
 from backend.analytics.demand_estimate import estimate_destination_demand
 from backend.domain.contracts import OrderLifecycle, OrderRecord
 
@@ -39,7 +40,15 @@ def order_at(
 
 
 def estimate_for(orders, *, sku="SKU-A", destination="Москва", as_of=AS_OF):
-    demand = aggregate_demand(orders, as_of)
+    first_day = min(date.fromisoformat(item.accepted_at) for item in orders)
+    current = as_of.isocalendar()
+    coverage = ObservationCoverage(
+        date.fromisocalendar(*first_day.isocalendar()[:2], 1),
+        date.fromisocalendar(current.year, current.week, 1).fromordinal(
+            date.fromisocalendar(current.year, current.week, 1).toordinal() - 1
+        ),
+    )
+    demand = aggregate_demand(orders, as_of, coverage=coverage)
     estimate = next(
         item
         for item in estimate_destination_demand(demand)
@@ -96,7 +105,12 @@ def test_new_sku_starts_at_its_own_first_observed_week_but_keeps_later_zero_week
         order(sku="SKU-NEW", iso_week=33, quantity=10),
     )
 
-    demand = aggregate_demand(orders, AS_OF)
+    demand = aggregate_demand(
+        orders, AS_OF,
+        coverage=ObservationCoverage(
+            date.fromisocalendar(2026, 27, 1), date.fromisocalendar(2026, 34, 7)
+        ),
+    )
     estimate = next(item for item in estimate_destination_demand(demand) if item.sku == "SKU-NEW")
 
     assert demand.window.included_weeks[0] == (2026, 27)
@@ -156,3 +170,25 @@ def test_calendar_axis_preserves_real_iso_week_53():
     )
     assert estimate.eligible_week_count == 3
     assert estimate.latest_week_qty == Decimal("0")
+
+
+def test_calendar_never_extends_beyond_proven_order_coverage():
+    orders = tuple(
+        order_at(iso_year=2026, iso_week=week, quantity=100)
+        for week in range(27, 35)
+    )
+
+    coverage = ObservationCoverage(
+        date.fromisocalendar(2026, 27, 1), date.fromisocalendar(2026, 34, 7)
+    )
+    demand = aggregate_demand(
+        orders, date.fromisocalendar(2026, 39, 1), coverage=coverage
+    )
+
+    # The declared report coverage ends on the Sunday of W34. Weeks W35-W38
+    # are unknown, rather than observed zero-demand weeks.
+    assert demand.window.included_weeks == tuple(
+        (2026, week) for week in range(27, 35)
+    )
+    estimate = estimate_destination_demand(demand)[0]
+    assert estimate.current_weekly_rate != Decimal("0")

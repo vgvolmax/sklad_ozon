@@ -30,7 +30,9 @@ from backend.domain.contracts import (AnalysisSourceCoverage, ImportResult,
                                       ReportMeta, ImportDiagnostic, SourceMode)
 from backend.ingestion.availability import import_availability
 from backend.ingestion.restrictions import import_restrictions
-from backend.ingestion.orders import import_orders
+from backend.ingestion.orders import import_orders, scope_orders_to_coverage
+from backend.analytics._weeks import (ObservationCoverage,
+                                      fully_covered_completed_iso_weeks)
 from backend.ingestion.tariffs import import_tariffs
 from backend.ingestion.product_economics import import_product_economics
 from backend.ingestion.unitka import import_unitka_bundle
@@ -92,7 +94,13 @@ def wire(value):
     return value
 
 def error(status,code,message,field): return JSONResponse({"api_version":1,"error":{"code":code,"message":message,"field":field}},status_code=status)
-def meta(upload): return ReportMeta(PurePath(upload.filename or 'upload').name,datetime.now(timezone.utc).isoformat())
+def meta(upload, *, coverage=None):
+    return ReportMeta(
+        PurePath(upload.filename or 'upload').name,
+        datetime.now(timezone.utc).isoformat(),
+        period_start=coverage.period_start.isoformat() if coverage else None,
+        period_end=coverage.period_end.isoformat() if coverage else None,
+    )
 async def read(upload,field,request_id="http"):
     started=perf_counter()
     data=await upload.read(MAX_UPLOAD_BYTES+1)
@@ -460,7 +468,7 @@ async def prepare_analysis(request:Request, request_id="http"):
     if raw_objective != AllocationObjective.MAX_MARGIN.value:
         return error(400,"INVALID_OPTIMIZATION_OBJECTIVE","Unsupported optimization objective.","optimization_objective")
     objective=AllocationObjective.MAX_MARGIN
-    snapshot=None; credential_context_id=None
+    snapshot=None; credential_context_id=None; order_coverage=None
     if source_mode is SourceMode.API:
         if any(form.get(field) is not None for field in common):
             return error(400,'MIXED_SOURCE_MODE','API source cannot be combined with Ozon report files.',None)
@@ -486,6 +494,37 @@ async def prepare_analysis(request:Request, request_id="http"):
     else:
         try: as_of=date.fromisoformat(str(form.get('as_of','')))
         except ValueError:return error(400,'INVALID_DATE','Expected YYYY-MM-DD.','as_of')
+        parsed_period = {}
+        for field in ('orders_period_from', 'orders_period_to'):
+            raw_period = str(form.get(field, '')).strip()
+            if not raw_period:
+                return error(400, 'ORDERS_PERIOD_REQUIRED',
+                             'Orders report period is required.', field)
+            try:
+                parsed = date.fromisoformat(raw_period)
+                if len(raw_period) != 10 or parsed.isoformat() != raw_period:
+                    raise ValueError
+            except ValueError:
+                return error(400, 'INVALID_ORDERS_PERIOD',
+                             'Expected YYYY-MM-DD.', field)
+            parsed_period[field] = parsed
+        try:
+            order_coverage = ObservationCoverage(
+                parsed_period['orders_period_from'], parsed_period['orders_period_to'])
+        except ValueError:
+            return error(400, 'INVALID_ORDERS_PERIOD',
+                         'Report period start must not follow its end.',
+                         'orders_period_to')
+        if order_coverage.period_start > as_of:
+            return error(400, 'ORDERS_PERIOD_AFTER_AS_OF',
+                         'Orders report period begins after the analysis date.',
+                         'orders_period_from')
+        if not fully_covered_completed_iso_weeks(
+            coverage=order_coverage, as_of=as_of
+        ):
+            return error(400, 'ORDERS_PERIOD_HAS_NO_COMPLETED_WEEKS',
+                         'Orders report period contains no fully covered completed ISO week.',
+                         'orders_period_from')
     values={}
     for name in DECIMAL_NAMES:
         try:
@@ -500,6 +539,7 @@ async def prepare_analysis(request:Request, request_id="http"):
     raw=[]; source_inputs=None
     if source_mode is SourceMode.API:
         source_inputs=_api_prepared_inputs(snapshot, include_inbound=raw_inbound == "true")
+        order_coverage=ObservationCoverage(snapshot.history_from, snapshot.history_to)
         economic_files=(['unitka_file'] if unitka is not None else ['tariffs_file','product_economics_file'])
         for field in economic_files:
             try: raw.append((form[field],await read(form[field],field,request_id)))
@@ -509,7 +549,7 @@ async def prepare_analysis(request:Request, request_id="http"):
             try: raw.append((form[field],await read(form[field],field,request_id)))
             except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.',field)
     provenance=(source_mode,snapshot.source_snapshot_id if snapshot else None,credential_context_id)
-    return raw, unitka, files, values, tax, as_of, (explicit_horizon,raw_inbound=="true",objective), provenance, source_inputs
+    return raw, unitka, files, values, tax, as_of, (explicit_horizon,raw_inbound=="true",objective), provenance, source_inputs, order_coverage
 
 @router.post('/api/analysis')
 async def analysis(request:Request):
@@ -580,7 +620,7 @@ class AnalysisCancelled(Exception):
     """Internal cooperative cancellation at progress boundaries."""
 
 
-def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_request=(None,True,AllocationObjective.MAX_MARGIN), provenance=(SourceMode.FILES,None,None), source_inputs=None, *, progress_callback=None, request_id="http"):
+def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_request=(None,True,AllocationObjective.MAX_MARGIN), provenance=(SourceMode.FILES,None,None), source_inputs=None, order_coverage=None, *, progress_callback=None, request_id="http"):
     """Run imports, joins, domain analysis and serialization for both transports."""
     def progress(stage, current=None, total=None, detail=None):
         if progress_callback is not None:
@@ -599,7 +639,8 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         progress("reports",2,4,"restrictions")
         restrictions=timed("restrictions_import",import_restrictions,raw[1][1],meta(raw[1][0]))
         progress("reports",3,4,"orders")
-        orders=timed("orders_import",import_orders,raw[2][1],meta(raw[2][0]))
+        orders=timed("orders_import",import_orders,raw[2][1],meta(raw[2][0], coverage=order_coverage))
+        orders=scope_orders_to_coverage(orders, order_coverage)
         economics_offset=3
         operational_availability=availability.records
     else:
@@ -608,6 +649,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         restrictions=source_inputs.restrictions
         progress("reports",3,4,"orders")
         orders=source_inputs.orders
+        orders=scope_orders_to_coverage(orders, order_coverage)
         economics_offset=0
         operational_availability=source_inputs.operational_availability
     progress("reports",4,4,"unitka" if unitka is not None else "economics")
@@ -669,7 +711,12 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     settings=EconomicsSettings(*(values[n] for n in DECIMAL_NAMES[:4]),tax,*(values[n] for n in DECIMAL_NAMES[4:7])); thresholds=OptimizerThresholds(*(values[n] for n in DECIMAL_NAMES[7:]))
     explicit_horizon,include_inbound,objective=scenario_request
     scenario=ScenarioSettings(explicit_horizon or availability.meta.recommendation_horizon_days or 56,include_inbound,objective)
-    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=operational_availability,ozon_horizon_days=availability.meta.recommendation_horizon_days,source_mode=provenance[0],source_coverage=(source_inputs.source_coverage if source_inputs is not None else None),progress_callback=progress_callback,scenario_settings=scenario)
+    order_coverage_valid = not any(
+        diagnostic.code == "ORDER_OUTSIDE_DECLARED_PERIOD"
+        and diagnostic.severity == "error"
+        for diagnostic in orders.diagnostics
+    )
+    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=operational_availability,ozon_horizon_days=availability.meta.recommendation_horizon_days,source_mode=provenance[0],source_coverage=(source_inputs.source_coverage if source_inputs is not None else None),order_coverage=order_coverage,order_coverage_valid=order_coverage_valid,progress_callback=progress_callback,scenario_settings=scenario)
     progress("serialization")
     coverage={key:0 for key in ('complete','partial','none','no_profile')}
     for item in result.logistics:coverage[item.coverage_status.value]+=1
@@ -686,6 +733,12 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         for name,value in input_statuses.items()}
     diagnostic_views=tuple(DiagnosticView(d.severity,d.code,d.message,getattr(d,"sku",None),getattr(d,"cluster_id",None),getattr(d,"destination_cluster_id",None)) for d in diagnostics)
     warnings=[]
+    if not result.demand.window.coverage_current:
+        warnings.append(
+            f"История заказов подтверждена только по {order_coverage.period_end.isoformat()}. "
+            "Более поздние недели не считаются нулевыми. "
+            "Расчёт потребности заблокирован до актуального покрытия."
+        )
     if availability.meta.recommendation_horizon_days is None and explicit_horizon is None:
         warnings.append("Горизонт рекомендации Ozon неизвестен; для сценария по умолчанию использовано 56 дней.")
     elif availability.meta.recommendation_horizon_days is None:
@@ -774,7 +827,8 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         diagnostics=diagnostic_views,data_quality=data_quality,freshness_warnings=tuple(warnings),
         product_identities=product_identities, daily_locality=result.daily_locality,
         stockout_episode_impacts=result.stockout_episode_impacts,analysis_as_of=as_of,
-        source_mode=provenance[0],source_snapshot_id=provenance[1])
+        source_mode=provenance[0],source_snapshot_id=provenance[1],
+        demand_window=result.demand.window)
     cluster_ids=tuple(sorted({row.destination_cluster_id for row in snapshot.decision_rows}))
     supply_facts=build_operational_supply_facts(
         products=(SupplyProductIdentity(product.sku, product.article)

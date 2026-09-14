@@ -1,6 +1,7 @@
 """Directional Ozon orders importer with a strict canonical-field whitelist."""
 
 from backend.domain.contracts import ImportResult, OrderRecord, ReportMeta
+from backend.analytics._weeks import ObservationCoverage, parse_source_date
 from ._common import _diag, parse_non_negative_number, read_source_rows
 from .lifecycle import classify_order_lifecycle
 from .normalization import normalize_cluster_label, normalize_text
@@ -50,3 +51,30 @@ def import_orders(data: bytes, report_context: ReportMeta) -> ImportResult[Order
             origin_warehouse=normalize_text(row.get("склад отгрузки")) or None,
         )); sources.append(row_number)
     return ImportResult(tuple(records), tuple(diagnostics), report_context, tuple(sources))
+
+
+def scope_orders_to_coverage(
+    imported: ImportResult[OrderRecord], coverage: ObservationCoverage,
+) -> ImportResult[OrderRecord]:
+    """Exclude dated rows contradicting the explicitly declared report period."""
+    records: list[OrderRecord] = []
+    sources: list[int] = []
+    diagnostics = list(imported.diagnostics)
+    source_rows = imported.record_sources or (None,) * len(imported.records)
+    for record, source_row in zip(imported.records, source_rows):
+        accepted = parse_source_date(record.accepted_at)
+        if accepted is not None and not (
+            coverage.period_start <= accepted <= coverage.period_end
+        ):
+            diagnostics.append(_diag(
+                "ORDER_OUTSIDE_DECLARED_PERIOD",
+                "Order date falls outside the declared report period.",
+                severity="error", row=source_row,
+            ))
+            continue
+        records.append(record)
+        if source_row is not None:
+            sources.append(source_row)
+    return ImportResult(
+        tuple(records), tuple(diagnostics), imported.meta, tuple(sources)
+    )

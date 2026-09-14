@@ -292,7 +292,7 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
                       placements, safe_allocations, calculated_allocations,
                       products, diagnostics, data_quality: DataQualityPresentation | None = None, freshness_warnings=(), product_identities=None,
                       daily_locality=(), stockout_episode_impacts=(), analysis_as_of=None,
-                      source_mode=None, source_snapshot_id=None):
+                      source_mode=None, source_snapshot_id=None, demand_window=None):
     from backend.domain.contracts import SourceMode
     source_mode = source_mode or SourceMode.FILES
     if not isinstance(analysis_as_of, date):
@@ -393,7 +393,7 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
         tuple(sorted(diagnostics,key=lambda x:(x.sku or "",x.cluster_id or "",
                                                 x.destination_cluster_id or "",
                                                 x.code,x.message))),
-        analysis_as_of,source_mode,source_snapshot_id)
+        analysis_as_of,source_mode,source_snapshot_id,None,demand_window)
 
 
 def _external_share(observed, key):
