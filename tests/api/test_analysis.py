@@ -787,6 +787,75 @@ def test_api_prepared_inputs_unions_fbo_and_fbs_incomplete_skus():
         "SKU-A", "SKU-B", "SKU-SHARED")
 
 
+def test_api_prepared_inputs_keeps_inbound_incomplete_skus_separate():
+    snapshot = _api_parity_fixture()
+    evidence = tuple(
+        replace(item, record_quality=OzonRecordQualityEvidence(
+            1, ("SKU-INBOUND",)))
+        if item.name == "inbound" else item
+        for item in snapshot.endpoint_evidence)
+    prepared = api_module._api_prepared_inputs(
+        replace(snapshot, endpoint_evidence=evidence))
+    assert prepared.source_coverage.demand_incomplete_skus == ()
+    assert prepared.source_coverage.inbound_incomplete_skus == ("SKU-INBOUND",)
+
+
+def test_api_analysis_scopes_disputed_inbound_only_when_inbound_is_included():
+    base = _api_parity_fixture()
+    disputed_sku = "SKU-DISPUTED"
+    disputed_orders = tuple(
+        replace(order, sku=disputed_sku, article="ART-DISPUTED")
+        for order in base.orders)
+    disputed_availability = tuple(
+        replace(item, sku=disputed_sku, article="ART-DISPUTED")
+        for item in base.availability)
+    disputed_seller = tuple(
+        replace(item, sku=disputed_sku, article="ART-DISPUTED")
+        for item in base.operational_seller_stock)
+    evidence = tuple(
+        replace(item, record_quality=OzonRecordQualityEvidence(
+            1, (disputed_sku,)))
+        if item.name == "inbound" else item
+        for item in base.endpoint_evidence)
+    snapshot = replace(
+        base, source_snapshot_id="scoped-inbound-quality",
+        orders=base.orders + disputed_orders,
+        availability=base.availability + disputed_availability,
+        operational_seller_stock=base.operational_seller_stock + disputed_seller,
+        endpoint_evidence=evidence)
+    api_module.OZON_SOURCE_STORE.put(snapshot)
+    files = _parity_files()
+    api_files = {
+        "tariffs_file": files["tariffs_file"],
+        "product_economics_file": ("products.xlsx", make_xlsx(
+            headers=PRODUCT_HEADERS,
+            rows=[
+                ["SKU-1", "ART-1", 100, 99, 1000, "10%", 1],
+                [disputed_sku, "ART-DISPUTED", 100, 99, 1000, "10%", 1],
+            ])),
+    }
+
+    with_inbound = CLIENT.post("/api/analysis", files=api_files, data=_analysis_data(
+        source_mode="api", source_snapshot_id=snapshot.source_snapshot_id,
+        include_inbound="true"))
+    without_inbound = CLIENT.post("/api/analysis", files=api_files, data=_analysis_data(
+        source_mode="api", source_snapshot_id=snapshot.source_snapshot_id,
+        include_inbound="false"))
+    assert with_inbound.status_code == 200, with_inbound.text
+    assert without_inbound.status_code == 200, without_inbound.text
+    included_rows = {
+        item["sku"]: item for item in with_inbound.json()["snapshot"]["decision_rows"]}
+    excluded_rows = {
+        item["sku"]: item for item in without_inbound.json()["snapshot"]["decision_rows"]}
+    assert included_rows["SKU-1"]["need"]["complete"] is True
+    assert included_rows["SKU-1"]["need"]["calculated_need_qty"] is not None
+    assert included_rows[disputed_sku]["need"]["complete"] is False
+    assert included_rows[disputed_sku]["need"]["calculated_need_qty"] is None
+    assert "MISSING_INBOUND_QTY" in included_rows[disputed_sku]["need"]["blocker_codes"]
+    assert excluded_rows[disputed_sku]["need"]["complete"] is True
+    assert "MISSING_INBOUND_QTY" not in excluded_rows[disputed_sku]["need"]["blocker_codes"]
+
+
 def test_api_prepared_inputs_route_diagnostics_by_analytical_domain():
     snapshot = _api_parity_fixture()
     order_error = ImportDiagnostic("error", "ORDER_FAILED", "orders")

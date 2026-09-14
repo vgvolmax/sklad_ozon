@@ -26,7 +26,7 @@ class OzonApiErrorEvidence:
 
 @dataclass(frozen=True, slots=True)
 class OzonRecordQualityEvidence:
-    """PII-safe evidence about order rows quarantined by the adapter."""
+    """PII-safe evidence about endpoint records excluded from complete analytical evidence."""
 
     rejected_record_count: int = 0
     incomplete_skus: tuple[str, ...] = ()
