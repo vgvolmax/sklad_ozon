@@ -14,6 +14,7 @@ from backend.ozon.endpoints import (
     SUPPLY_ORDER_GET_PATH,
     SUPPLY_ORDER_LIST_PATH,
 )
+from backend.ozon.source_contracts import OzonRecordQualityEvidence
 
 UUID = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -131,6 +132,73 @@ def test_disputed_without_bundle_and_unknown_state_remain_global_errors():
         ("MISSING_SUPPLY_BUNDLE_ID", "error"),
         ("UNKNOWN_SUPPLY_STATE", "error"),
     }
+
+
+def test_disputed_supply_with_empty_bundle_fails_closed():
+    rows, diagnostics, quality = _normalize([{
+        "state": "REPORT_REJECTED", "macrolocal_cluster_id": 10,
+        "bundle_id": UUID,
+    }], {UUID: []})
+
+    assert rows == ()
+    assert quality.incomplete_skus == ()
+    assert quality.rejected_record_count == 0
+    assert any(
+        item.code == "MISSING_SUPPLY_BUNDLE_ITEMS" and item.severity == "error"
+        for item in diagnostics
+    )
+    assert not any(
+        item.code == "REPORT_REJECTED_SUPPLY_STATE"
+        for item in diagnostics
+    )
+
+
+def test_inbound_supply_with_empty_bundle_fails_closed():
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": 10,
+        "bundle_id": UUID,
+    }], {UUID: []})
+
+    assert rows == ()
+    assert quality.incomplete_skus == ()
+    assert any(
+        item.code == "MISSING_SUPPLY_BUNDLE_ITEMS" and item.severity == "error"
+        for item in diagnostics
+    )
+
+
+def test_inbound_supply_with_missing_bundle_mapping_fails_closed():
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": 10,
+        "bundle_id": UUID,
+    }], {})
+
+    assert rows == ()
+    assert quality.incomplete_skus == ()
+    assert [(item.code, item.severity) for item in diagnostics] == [
+        ("MISSING_SUPPLY_BUNDLE_ITEMS", "error")]
+
+
+def test_final_supply_with_empty_bundle_is_ignored():
+    rows, diagnostics, quality = _normalize([{
+        "state": "COMPLETED", "bundle_id": UUID,
+    }], {UUID: []})
+
+    assert rows == ()
+    assert diagnostics == ()
+    assert quality == OzonRecordQualityEvidence()
+
+
+def test_nonempty_invalid_bundle_keeps_invalid_item_diagnostic():
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": 10,
+        "bundle_id": UUID,
+    }], {UUID: [{"sku": "", "quantity": 3}]})
+
+    assert rows == ()
+    assert quality == OzonRecordQualityEvidence()
+    assert [(item.code, item.severity) for item in diagnostics] == [
+        ("INVALID_SUPPLY_BUNDLE_ITEM", "error")]
 
 
 class Client:
