@@ -1,6 +1,11 @@
+from dataclasses import replace
 from datetime import date, timedelta
 
-from backend.domain.contracts import OrderLifecycle, OrderRecord
+from fastapi.testclient import TestClient
+
+import backend.api as api_module
+from backend.domain.contracts import ImportDiagnostic, OrderLifecycle, OrderRecord
+from backend.main import app
 from backend.ingestion.availability import AvailabilityRecord
 from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_STOCK_PATH, PRODUCT_LIST_PATH
 from backend.ozon.adapters.catalog import ClusterCatalogResult
@@ -207,3 +212,36 @@ def test_malformed_product_list_sku_blocks_dependent_capabilities(monkeypatch):
     assert evidence["placement_zones"].complete is False
     assert capability_matrix(source)["need_fbo"]["complete"] is False
     assert capability_matrix(source)["shipment_compatibility"]["complete"] is False
+
+
+def test_partial_sync_response_does_not_evict_or_mask_last_healthy_source(monkeypatch):
+    context_id = api_module.OZON_VAULT.credential_context_id()
+    healthy = replace(snap("healthy-source"), credential_context_id=context_id)
+    api_module.OZON_SOURCE_STORE.put(healthy)
+    attempts = iter(range(1, 5))
+
+    def partial_sync(_client, *, credential_context_id):
+        number = next(attempts)
+        diagnostic = ImportDiagnostic(
+            "error",
+            "OZON_FBO_STOCK_FAILED",
+            "Ozon fbo_stock evidence unavailable: RuntimeError",
+        )
+        return replace(
+            snap(f"partial-source-{number}", healthy=False),
+            diagnostics=(diagnostic,),
+            credential_context_id=credential_context_id,
+        )
+
+    monkeypatch.setattr(api_module, "sync_ozon_source", partial_sync)
+    client = TestClient(app)
+    responses = [client.post("/api/ozon/sync") for _ in range(4)]
+
+    assert all(response.status_code == 200 for response in responses)
+    latest = responses[-1].json()
+    assert latest["source"]["source_snapshot_id"] == "partial-source-4"
+    assert latest["source"]["endpoint_evidence"][0]["complete"] is False
+    assert latest["source"]["diagnostics"][0]["code"] == "OZON_FBO_STOCK_FAILED"
+    assert api_module.OZON_SOURCE_STORE.get("healthy-source") is not None
+    assert api_module.OZON_SOURCE_STORE.last_healthy() == healthy
+    assert len(api_module.OZON_SOURCE_STORE) == 3
