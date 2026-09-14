@@ -1,4 +1,4 @@
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import date, timedelta
 
 from fastapi.testclient import TestClient
@@ -8,6 +8,8 @@ from backend.domain.contracts import ImportDiagnostic, OrderLifecycle, OrderReco
 from backend.main import app
 from backend.ingestion.availability import AvailabilityRecord
 from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_STOCK_PATH, PRODUCT_LIST_PATH
+from backend.ozon.client import OzonClientError
+from backend.ozon.contracts import OzonErrorCode
 from backend.ozon.adapters.catalog import ClusterCatalogResult
 from backend.ozon.source_contracts import Cluster, SellerWarehouse
 from backend.ozon.sync import capability_matrix, sync_ozon_source
@@ -116,6 +118,54 @@ def test_fbo_and_seller_stock_failures_are_isolated(monkeypatch):
     matrix = capability_matrix(sync_ozon_source(object()))
     assert matrix["need_fbo"]["complete"] is False
     assert matrix["operational_allocation"]["complete"] is True
+
+
+def test_sync_preserves_structured_ozon_api_error_evidence(monkeypatch):
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        _orders(end, 8) if path == FBO_POSTINGS_PATH else (), ()))
+    _patch_non_history(monkeypatch)
+    monkeypatch.setattr(module, "fetch_seller_stock", lambda _client, _skus: (_ for _ in ()).throw(
+        OzonClientError(
+            OzonErrorCode.PERMISSION_DENIED,
+            "Ozon API denied access to endpoint",
+            endpoint=FBS_STOCK_PATH,
+            status=403,
+            vendor_code="PERMISSION_DENIED",
+            vendor_message="Access denied",
+            request_id="trace-403",
+        )))
+
+    source = sync_ozon_source(object())
+    evidence = next(item for item in source.endpoint_evidence if item.name == "seller_stock")
+
+    assert evidence.complete is False
+    assert evidence.record_count == 0
+    assert evidence.api_error.code == "OZON_PERMISSION_DENIED"
+    assert evidence.api_error.endpoint == FBS_STOCK_PATH
+    assert evidence.api_error.http_status == 403
+    assert evidence.api_error.vendor_code == "PERMISSION_DENIED"
+    assert evidence.api_error.vendor_message == "Access denied"
+    assert evidence.api_error.request_id == "trace-403"
+    assert capability_matrix(source)["operational_allocation"]["complete"] is False
+    serialized = repr(asdict(evidence))
+    assert "Client-Id" not in serialized
+    assert "Api-Key" not in serialized
+    assert "details" not in serialized
+
+
+def test_generic_sync_exception_has_no_ozon_api_error(monkeypatch):
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        _orders(end, 8) if path == FBO_POSTINGS_PATH else (), ()))
+    _patch_non_history(monkeypatch)
+    monkeypatch.setattr(module, "fetch_seller_stock", lambda _client, _skus: (_ for _ in ()).throw(
+        RuntimeError("boom")))
+
+    source = sync_ozon_source(object())
+    evidence = next(item for item in source.endpoint_evidence if item.name == "seller_stock")
+    assert evidence.complete is False
+    assert evidence.api_error is None
 
 
 def test_cluster_and_seller_warehouse_failures_are_isolated(monkeypatch):

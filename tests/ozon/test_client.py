@@ -4,7 +4,8 @@ import logging
 import pytest
 
 from backend.ozon.client import (
-    OzonClient, OzonClientError, OzonRequestPolicy, TransportResponse,
+    MAX_VENDOR_MESSAGE_CHARS, OzonClient, OzonClientError, OzonRequestPolicy,
+    TransportResponse,
 )
 from backend.ozon.contracts import OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import OZON_API_BASE
@@ -59,10 +60,96 @@ def test_arbitrary_or_invalid_paths_are_rejected_without_transport(path):
 
 
 def test_malformed_json_is_normalized():
-    client = OzonClient(VaultStub(), transport=FakeTransport([response(body=b"not-json")]))
+    client = OzonClient(VaultStub(), transport=FakeTransport([
+        response(body=b"not-json", headers={"X-Request-ID": " response-trace "}),
+    ]))
     with pytest.raises(OzonClientError) as error:
         client.post_json("/v1/test", {}, policy=OzonRequestPolicy(False))
     assert error.value.code is OzonErrorCode.INVALID_RESPONSE
+    assert error.value.endpoint == "/v1/test"
+    assert error.value.status == 200
+    assert error.value.request_id == "response-trace"
+
+
+def test_http_400_preserves_only_allowlisted_safe_evidence():
+    body = b'''{
+        "code": 3,
+        "message": "sku or offer_id is required",
+        "details": [{"debug": "MUST_NOT_SURVIVE"}]
+    }'''
+    client = OzonClient(VaultStub(), transport=FakeTransport([
+        response(400, body, {"X-O3-Trace-Id": "trace-123"}),
+    ]))
+
+    with pytest.raises(OzonClientError) as error:
+        client.post_json(
+            "/v2/product/info/stocks-by-warehouse/fbs",
+            {"limit": 1000},
+            policy=OzonRequestPolicy(False),
+        )
+
+    assert error.value.code is OzonErrorCode.INVALID_RESPONSE
+    assert error.value.endpoint == "/v2/product/info/stocks-by-warehouse/fbs"
+    assert error.value.status == 400
+    assert error.value.vendor_code == "3"
+    assert error.value.vendor_message == "sku or offer_id is required"
+    assert error.value.request_id == "trace-123"
+    assert not hasattr(error.value, "details")
+    assert "MUST_NOT_SURVIVE" not in repr(error.value)
+    assert "MUST_NOT_SURVIVE" not in str(error.value)
+
+
+@pytest.mark.parametrize("status,expected", [
+    (401, OzonErrorCode.AUTH_FAILED),
+    (403, OzonErrorCode.PERMISSION_DENIED),
+])
+def test_unauthorized_and_forbidden_have_distinct_classifications(status, expected):
+    transport = FakeTransport([response(status, b"{}")])
+    client = OzonClient(VaultStub(), transport=transport)
+    with pytest.raises(OzonClientError) as error:
+        client.post_json("/v1/test", {}, policy=OzonRequestPolicy(False))
+    assert error.value.code is expected
+    assert error.value.status == status
+
+
+def test_malformed_error_json_keeps_response_metadata():
+    client = OzonClient(VaultStub(), transport=FakeTransport([
+        response(400, b"not-json", {"x-O3-tRaCe-Id": "trace-x"}),
+    ]))
+    with pytest.raises(OzonClientError) as error:
+        client.post_json("/v1/test", {}, policy=OzonRequestPolicy(False))
+    assert error.value.code is OzonErrorCode.INVALID_RESPONSE
+    assert error.value.endpoint == "/v1/test"
+    assert error.value.status == 400
+    assert error.value.request_id == "trace-x"
+    assert error.value.vendor_code is None
+    assert error.value.vendor_message is None
+
+
+def test_nested_vendor_error_fields_are_not_retained():
+    client = OzonClient(VaultStub(), transport=FakeTransport([
+        response(400, b'{"code":{"unexpected":1},"message":{"unexpected":2},"details":["raw"]}'),
+    ]))
+    with pytest.raises(OzonClientError) as error:
+        client.post_json("/v1/test", {}, policy=OzonRequestPolicy(False))
+    assert error.value.vendor_code is None
+    assert error.value.vendor_message is None
+
+
+def test_vendor_message_is_normalized_bounded_and_credentials_safe(caplog):
+    raw_message = " \n sensitive-client\t sensitive-api-key " + ("x" * 500)
+    body = json.dumps({"code": "BAD", "message": raw_message, "details": "raw-body-secret"}).encode()
+    client = OzonClient(VaultStub(), transport=FakeTransport([response(400, body)]))
+    with caplog.at_level(logging.DEBUG), pytest.raises(OzonClientError) as error:
+        client.post_json("/v1/test", {}, policy=OzonRequestPolicy(False))
+
+    rendered = " ".join((str(error.value), repr(error.value), error.value.vendor_message or "",
+                         *(record.getMessage() for record in caplog.records)))
+    assert "sensitive-client" not in rendered
+    assert "sensitive-api-key" not in rendered
+    assert "raw-body-secret" not in rendered
+    assert len(error.value.vendor_message) <= MAX_VENDOR_MESSAGE_CHARS
+    assert "\n" not in error.value.vendor_message
 
 
 def test_retry_safe_is_bounded_and_respects_numeric_retry_after():
@@ -79,7 +166,8 @@ def test_retry_safe_is_bounded_and_respects_numeric_retry_after():
 
 def test_retry_after_above_wait_budget_stops_without_early_retry():
     transport = FakeTransport([
-        response(429, b"{}", {"Retry-After": "120"}), response(),
+        response(429, b'{"code":"TOO_MANY","message":"slow down"}',
+                 {"Retry-After": "120", "X-O3-Trace-ID": "trace-budget"}), response(),
     ])
     sleeps = []
     client = OzonClient(VaultStub(), transport=transport, sleeper=sleeps.append)
@@ -88,6 +176,11 @@ def test_retry_after_above_wait_budget_stops_without_early_retry():
         client.post_json("/v1/test", {}, policy=OzonRequestPolicy(True, max_attempts=3))
 
     assert error.value.code is OzonErrorCode.RATE_LIMITED
+    assert error.value.status == 429
+    assert error.value.endpoint == "/v1/test"
+    assert error.value.request_id == "trace-budget"
+    assert error.value.vendor_code == "TOO_MANY"
+    assert error.value.vendor_message == "slow down"
     assert len(transport.calls) == 1
     assert sleeps == []
 
@@ -101,6 +194,21 @@ def test_non_retry_safe_policy_makes_exactly_one_attempt():
     assert len(transport.calls) == 1
 
 
+def test_exhausted_retries_preserve_final_response_evidence():
+    transport = FakeTransport([
+        response(503, b"{}", {"X-O3-Trace-ID": "trace-first"}),
+        response(503, b"{}", {"X-O3-Trace-ID": "trace-second"}),
+        response(503, b"{}", {"X-O3-Trace-ID": "trace-third"}),
+    ])
+    client = OzonClient(VaultStub(), transport=transport, sleeper=lambda _delay: None)
+    with pytest.raises(OzonClientError) as error:
+        client.post_json("/v1/test", {}, policy=OzonRequestPolicy(True))
+    assert len(transport.calls) == 3
+    assert error.value.status == 503
+    assert error.value.endpoint == "/v1/test"
+    assert error.value.request_id == "trace-third"
+
+
 def test_errors_and_logs_do_not_expose_credentials(caplog):
     transport = FakeTransport([RuntimeError("sensitive-client sensitive-api-key")])
     client = OzonClient(VaultStub(), transport=transport)
@@ -110,6 +218,11 @@ def test_errors_and_logs_do_not_expose_credentials(caplog):
     assert "sensitive-client" not in rendered
     assert "sensitive-api-key" not in rendered
     assert error.value.code is OzonErrorCode.UNAVAILABLE
+    assert error.value.endpoint == "/v1/test"
+    assert error.value.status is None
+    assert error.value.vendor_code is None
+    assert error.value.vendor_message is None
+    assert error.value.request_id is None
 
 
 @pytest.mark.parametrize("max_attempts", [0, -1, 1.5, True])
@@ -153,4 +266,5 @@ def test_bound_client_rejects_changed_context_before_transport(tmp_path):
         bound.post_json("/v1/test", {}, policy=OzonRequestPolicy(False))
 
     assert error.value.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED
+    assert error.value.endpoint == "/v1/test"
     assert transport.calls == []
