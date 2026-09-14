@@ -299,6 +299,9 @@ counted as inbound and are not coerced to zero. Known affected SKU are marked
 inbound-incomplete: when `include_inbound=true`, Need for those SKU remains
 unknown; when `include_inbound=false`, disputed inbound does not block Need.
 Unknown future supply states remain global fail-closed evidence.
+For any non-final supply, an identified bundle with no product-item evidence is
+globally incomplete; absence of bundle rows is never interpreted as zero inbound
+and cannot be scoped without proven SKU identities.
 
 ### 5.4 Seller/FBS stock
 

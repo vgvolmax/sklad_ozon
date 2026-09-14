@@ -87,6 +87,12 @@ def normalize_inbound(details: list[dict], bundle_items: dict[str, list[dict]], 
             if not bundle_id:
                 diagnostics.append(ImportDiagnostic("error", "MISSING_SUPPLY_BUNDLE_ID", f"Supply order {order_id} has no bundle ID."))
                 continue
+            items = bundle_items.get(bundle_id)
+            if not items:
+                diagnostics.append(ImportDiagnostic(
+                    "error", "MISSING_SUPPLY_BUNDLE_ITEMS",
+                    f"Supply order {order_id} has no bundle item evidence."))
+                continue
             cluster = None
             if state is SupplyState.INBOUND:
                 cluster, cluster_error = _resolve_supply_cluster(
@@ -98,7 +104,7 @@ def normalize_inbound(details: list[dict], bundle_items: dict[str, list[dict]], 
                     diagnostics.append(ImportDiagnostic("error", cluster_error, message))
                     continue
             valid_items: list[tuple[str, int]] = []
-            for item in bundle_items.get(bundle_id, ()):
+            for item in items:
                 sku = str(item.get("sku", "")).strip()
                 quantity = item.get("quantity")
                 if not sku or isinstance(quantity, bool) or not isinstance(quantity, (int, float)) or quantity < 0 or int(quantity) != quantity:
