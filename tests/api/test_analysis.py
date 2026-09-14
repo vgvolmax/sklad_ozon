@@ -693,11 +693,15 @@ def test_pii_is_discarded_from_entire_analysis_response():
 
 
 def test_api_and_files_typed_sources_are_business_equivalent_without_fabricated_restrictions():
+    snapshot = _api_parity_fixture()
+    parity_data = _analysis_data(
+        orders_period_from=snapshot.history_from.isoformat(),
+        orders_period_to=snapshot.history_to.isoformat(),
+    )
     files = _parity_files()
-    files_response = _post_analysis(files=files, data=_analysis_data())
+    files_response = _post_analysis(files=files, data=parity_data)
     assert files_response.status_code == 200, files_response.text
 
-    snapshot = _api_parity_fixture()
     api_module.OZON_SOURCE_STORE.put(snapshot)
     api_files = {name: files[name] for name in ("tariffs_file", "product_economics_file")}
     api_response = CLIENT.post("/api/analysis", files=api_files, data=_analysis_data(
