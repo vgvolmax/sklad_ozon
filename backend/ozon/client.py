@@ -8,6 +8,7 @@ import logging
 import math
 import time
 from typing import Callable, Mapping, Protocol
+import unicodedata
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -20,6 +21,7 @@ from .vault import CredentialVault
 logger = logging.getLogger(__name__)
 _TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
 _MAX_SERVER_RETRY_AFTER_SECONDS = 60.0
+MAX_VENDOR_MESSAGE_CHARS = 300
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,9 +48,23 @@ class Transport(Protocol):
 
 
 class OzonClientError(Exception):
-    def __init__(self, code: OzonErrorCode, message: str, *, status: int | None = None) -> None:
+    def __init__(
+        self,
+        code: OzonErrorCode,
+        message: str,
+        *,
+        endpoint: str | None = None,
+        status: int | None = None,
+        vendor_code: str | None = None,
+        vendor_message: str | None = None,
+        request_id: str | None = None,
+    ) -> None:
         self.code = code
+        self.endpoint = endpoint
         self.status = status
+        self.vendor_code = vendor_code
+        self.vendor_message = vendor_message
+        self.request_id = request_id
         super().__init__(message)
 
 
@@ -102,6 +118,7 @@ class OzonClient:
                 raise OzonClientError(
                     OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED,
                     "Ozon credential context changed",
+                    endpoint=path,
                 )
             try:
                 response = self._transport(request, self._timeout)
@@ -110,20 +127,32 @@ class OzonClient:
                 if policy.retry_safe and attempt < attempts:
                     self._sleep(self._backoff(attempt))
                     continue
-                raise OzonClientError(OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable") from None
+                raise OzonClientError(
+                    OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable", endpoint=path,
+                ) from None
             if response.status in _TRANSIENT_STATUSES and policy.retry_safe and attempt < attempts:
-                self._sleep(self._retry_delay(response, attempt))
+                self._sleep(self._retry_delay(
+                    response, attempt, endpoint=path, credentials=credentials,
+                ))
                 continue
             if response.status >= 400:
-                raise self._http_error(response.status)
+                raise self._http_error(response, endpoint=path, credentials=credentials)
             try:
                 decoded = json.loads(response.body)
                 if not isinstance(decoded, dict):
                     raise ValueError
                 return decoded
             except (UnicodeError, json.JSONDecodeError, ValueError):
-                raise OzonClientError(OzonErrorCode.INVALID_RESPONSE, "Ozon API returned invalid JSON") from None
-        raise OzonClientError(OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable")
+                raise OzonClientError(
+                    OzonErrorCode.INVALID_RESPONSE,
+                    "Ozon API returned invalid JSON",
+                    endpoint=path,
+                    status=response.status,
+                    request_id=self._request_id(response),
+                ) from None
+        raise OzonClientError(
+            OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable", endpoint=path,
+        )
 
 
     @staticmethod
@@ -139,7 +168,14 @@ class OzonClient:
     def _backoff(attempt: int) -> float:
         return min(0.5 * (2 ** (attempt - 1)), 5.0)
 
-    def _retry_delay(self, response: TransportResponse, attempt: int) -> float:
+    def _retry_delay(
+        self,
+        response: TransportResponse,
+        attempt: int,
+        *,
+        endpoint: str,
+        credentials: OzonCredentials,
+    ) -> float:
         retry_after = next((value for key, value in response.headers.items() if key.lower() == "retry-after"), None)
         if retry_after is not None:
             try:
@@ -147,24 +183,84 @@ class OzonClient:
                 if math.isfinite(value) and 0 <= value <= _MAX_SERVER_RETRY_AFTER_SECONDS:
                     return value
                 if math.isfinite(value) and value > _MAX_SERVER_RETRY_AFTER_SECONDS:
+                    error = self._http_error(
+                        response, endpoint=endpoint, credentials=credentials,
+                    )
                     raise OzonClientError(
                         OzonErrorCode.RATE_LIMITED,
                         "Ozon API rate limit exceeds the client wait budget",
-                        status=response.status,
+                        endpoint=error.endpoint,
+                        status=error.status,
+                        vendor_code=error.vendor_code,
+                        vendor_message=error.vendor_message,
+                        request_id=error.request_id,
                     )
             except (TypeError, ValueError):
                 pass
         return self._backoff(attempt)
 
-    @staticmethod
-    def _http_error(status: int) -> OzonClientError:
-        if status in {401, 403}:
-            return OzonClientError(OzonErrorCode.AUTH_FAILED, "Ozon API rejected credentials", status=status)
+    def _http_error(
+        self,
+        response: TransportResponse,
+        *,
+        endpoint: str,
+        credentials: OzonCredentials,
+    ) -> OzonClientError:
+        status = response.status
+        vendor_code, vendor_message = self._vendor_error(response.body, credentials)
+        common = {
+            "endpoint": endpoint,
+            "status": status,
+            "vendor_code": vendor_code,
+            "vendor_message": vendor_message,
+            "request_id": self._request_id(response),
+        }
+        if status == 401:
+            return OzonClientError(OzonErrorCode.AUTH_FAILED, "Ozon API rejected credentials", **common)
+        if status == 403:
+            return OzonClientError(
+                OzonErrorCode.PERMISSION_DENIED, "Ozon API denied access to endpoint", **common,
+            )
         if status == 429:
-            return OzonClientError(OzonErrorCode.RATE_LIMITED, "Ozon API rate limit reached", status=status)
+            return OzonClientError(OzonErrorCode.RATE_LIMITED, "Ozon API rate limit reached", **common)
         if status >= 500:
-            return OzonClientError(OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable", status=status)
-        return OzonClientError(OzonErrorCode.INVALID_RESPONSE, "Ozon API rejected the request", status=status)
+            return OzonClientError(OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable", **common)
+        return OzonClientError(OzonErrorCode.INVALID_RESPONSE, "Ozon API rejected the request", **common)
+
+    @staticmethod
+    def _request_id(response: TransportResponse) -> str | None:
+        headers = {key.lower(): value for key, value in response.headers.items()}
+        for name in ("x-o3-trace-id", "x-request-id"):
+            value = headers.get(name)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _vendor_error(
+        body: bytes, credentials: OzonCredentials,
+    ) -> tuple[str | None, str | None]:
+        try:
+            decoded = json.loads(body)
+        except (UnicodeError, json.JSONDecodeError, TypeError):
+            return None, None
+        if not isinstance(decoded, dict):
+            return None, None
+        raw_code = decoded.get("code")
+        vendor_code = str(raw_code) if type(raw_code) in {str, int} else None
+        raw_message = decoded.get("message")
+        if not isinstance(raw_message, str):
+            return vendor_code, None
+        normalized = "".join(
+            " " if character.isspace() or unicodedata.category(character).startswith("C") else character
+            for character in raw_message
+        )
+        normalized = " ".join(normalized.split())
+        for secret in sorted(
+            (credentials.client_id, credentials.api_key), key=len, reverse=True,
+        ):
+            normalized = normalized.replace(secret, "[REDACTED]")
+        return vendor_code, normalized[:MAX_VENDOR_MESSAGE_CHARS]
 
 
 @dataclass(frozen=True, slots=True)

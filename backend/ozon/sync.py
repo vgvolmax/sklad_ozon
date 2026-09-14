@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from backend.domain.contracts import ImportDiagnostic, OrderLifecycle
+from backend.ozon.client import OzonClientError
 from backend.ozon.adapters.catalog import fetch_clusters, fetch_seller_warehouses
 from backend.ozon.adapters.inbound import fetch_inbound
 from backend.ozon.adapters.orders import fetch_postings
@@ -12,7 +13,10 @@ from backend.ozon.adapters.products import fetch_product_skus
 from backend.ozon.adapters.stocks import fetch_fbo_stock, fetch_seller_stock
 from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_POSTINGS_PATH
 from backend.ozon.history import history_window, next_backfill, usable_completed_weeks
-from backend.ozon.source_contracts import EndpointEvidence, OzonSourceSnapshot, SOURCE_TIMEZONE, source_business_date
+from backend.ozon.source_contracts import (
+    EndpointEvidence, OzonApiErrorEvidence, OzonSourceSnapshot, SOURCE_TIMEZONE,
+    source_business_date,
+)
 
 
 def capability_matrix(snapshot: OzonSourceSnapshot, *, include_inbound: bool = True) -> dict[str, dict[str, object]]:
@@ -60,6 +64,23 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
             complete = not any(item.severity == "error" for item in item_diagnostics)
             evidence.append(EndpointEvidence(name, started, len(records), complete, item_diagnostics))
             return value if name == "clusters" else records
+        except OzonClientError as exc:
+            diagnostic = ImportDiagnostic(
+                "error", f"OZON_{name.upper()}_FAILED",
+                f"Ozon {name} request failed: {exc.code.value}.")
+            diagnostics.append(diagnostic)
+            api_error = OzonApiErrorEvidence(
+                code=exc.code.value,
+                endpoint=exc.endpoint,
+                http_status=exc.status,
+                vendor_code=exc.vendor_code,
+                vendor_message=exc.vendor_message,
+                request_id=exc.request_id,
+            )
+            evidence.append(EndpointEvidence(
+                name, started, 0, False, (diagnostic,), api_error,
+            ))
+            return default
         except Exception as exc:
             diagnostic = ImportDiagnostic(
                 "error", f"OZON_{name.upper()}_FAILED",

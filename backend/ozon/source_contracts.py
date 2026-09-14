@@ -15,12 +15,23 @@ def source_business_date(synced_at_utc: datetime) -> date:
 
 
 @dataclass(frozen=True, slots=True)
+class OzonApiErrorEvidence:
+    code: str
+    endpoint: str | None
+    http_status: int | None
+    vendor_code: str | None
+    vendor_message: str | None
+    request_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class EndpointEvidence:
     name: str
     fetched_at_utc: str
     record_count: int
     complete: bool
     diagnostics: tuple[Any, ...] = ()
+    api_error: OzonApiErrorEvidence | None = None
 
 
 @dataclass(frozen=True, slots=True)

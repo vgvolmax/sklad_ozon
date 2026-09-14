@@ -188,7 +188,7 @@ def ozon_connection_test():
         return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
     except OzonClientError as exc:
         if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error()
-        statuses={OzonErrorCode.AUTH_FAILED:401,OzonErrorCode.RATE_LIMITED:429,
+        statuses={OzonErrorCode.AUTH_FAILED:401,OzonErrorCode.PERMISSION_DENIED:403,OzonErrorCode.RATE_LIMITED:429,
                   OzonErrorCode.UNAVAILABLE:503,OzonErrorCode.INVALID_RESPONSE:502}
         return error(statuses.get(exc.code,502),exc.code.value,str(exc),None)
     except ShipmentPreparationError as exc:
