@@ -41,7 +41,7 @@ def _patch_non_history(monkeypatch, *, fbo_failure=False, cluster_failure=False)
     else:
         monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client, _skus: ((), ()))
     monkeypatch.setattr(module, "fetch_product_skus", lambda _client: ("OLD",))
-    monkeypatch.setattr(module, "fetch_seller_stock", lambda _client: (
+    monkeypatch.setattr(module, "fetch_seller_stock", lambda _client, _skus: (
         (AvailabilityRecord("OLD", "Seller", "", 3, fbs_quantity=3),), ()))
     monkeypatch.setattr(module, "fetch_inbound", lambda _client, _clusters, _mapping: ((), ()))
     monkeypatch.setattr(module, "fetch_placement_zones", lambda _client, _skus: ((), ()))
@@ -160,13 +160,19 @@ def test_product_list_failure_skips_dependent_stock_and_placement(monkeypatch):
     dependent_calls = []
     monkeypatch.setattr(module, "fetch_product_skus", lambda _client: (_ for _ in ()).throw(RuntimeError("products")))
     monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: dependent_calls.append("fbo"))
+    monkeypatch.setattr(module, "fetch_seller_stock", lambda *_args: dependent_calls.append("seller"))
     monkeypatch.setattr(module, "fetch_placement_zones", lambda *_args: dependent_calls.append("zones"))
 
     source = sync_ozon_source(object())
 
     assert dependent_calls == []
     assert capability_matrix(source)["need_fbo"]["complete"] is False
+    assert capability_matrix(source)["operational_allocation"]["complete"] is False
     assert capability_matrix(source)["shipment_compatibility"]["complete"] is False
+    evidence = {item.name: item for item in source.endpoint_evidence}
+    assert evidence["products"].complete is False
+    assert evidence["seller_stock"].complete is False
+    assert evidence["seller_stock"].diagnostics[0].code == "OZON_SELLER_STOCK_FAILED"
 
 
 def test_known_empty_product_universe_allows_complete_empty_dependencies(monkeypatch):
@@ -177,13 +183,29 @@ def test_known_empty_product_universe_allows_complete_empty_dependencies(monkeyp
     calls = []
     monkeypatch.setattr(module, "fetch_product_skus", lambda _client: ())
     monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client, skus: (calls.append(("fbo", skus)) or (), ()))
+    monkeypatch.setattr(module, "fetch_seller_stock", lambda _client, skus: (calls.append(("seller", skus)) or (), ()))
     monkeypatch.setattr(module, "fetch_placement_zones", lambda _client, skus: (calls.append(("zones", skus)) or (), ()))
 
     source = sync_ozon_source(object())
 
-    assert calls == [("fbo", ()), ("zones", ())]
+    assert calls == [("fbo", ()), ("seller", ()), ("zones", ())]
     assert capability_matrix(source)["need_fbo"]["complete"] is True
+    assert capability_matrix(source)["operational_allocation"]["complete"] is True
     assert capability_matrix(source)["shipment_compatibility"]["complete"] is True
+
+
+def test_seller_stock_receives_canonical_product_universe(monkeypatch):
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        _orders(end, 8) if path == FBO_POSTINGS_PATH else (), ()))
+    _patch_non_history(monkeypatch)
+    calls = []
+    monkeypatch.setattr(module, "fetch_product_skus", lambda _client: ("OLD", "NEW"))
+    monkeypatch.setattr(module, "fetch_seller_stock", lambda _client, skus: (calls.append(skus) or (), ()))
+
+    sync_ozon_source(object())
+
+    assert calls == [("OLD", "NEW")]
 
 
 def test_malformed_product_list_sku_blocks_dependent_capabilities(monkeypatch):
@@ -201,6 +223,7 @@ def test_malformed_product_list_sku_blocks_dependent_capabilities(monkeypatch):
     dependent_calls = []
     monkeypatch.setattr(module, "fetch_product_skus", fetch_product_skus)
     monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: dependent_calls.append("fbo"))
+    monkeypatch.setattr(module, "fetch_seller_stock", lambda *_args: dependent_calls.append("seller"))
     monkeypatch.setattr(module, "fetch_placement_zones", lambda *_args: dependent_calls.append("zones"))
 
     source = sync_ozon_source(Client())
@@ -209,8 +232,10 @@ def test_malformed_product_list_sku_blocks_dependent_capabilities(monkeypatch):
     assert dependent_calls == []
     assert evidence["products"].complete is False
     assert evidence["fbo_stock"].complete is False
+    assert evidence["seller_stock"].complete is False
     assert evidence["placement_zones"].complete is False
     assert capability_matrix(source)["need_fbo"]["complete"] is False
+    assert capability_matrix(source)["operational_allocation"]["complete"] is False
     assert capability_matrix(source)["shipment_compatibility"]["complete"] is False
 
 

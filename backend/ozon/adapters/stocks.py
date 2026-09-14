@@ -65,25 +65,27 @@ def fetch_fbo_stock(client: OzonClient, skus: tuple[str, ...],
     return tuple(records), tuple(diagnostics)
 
 
-def fetch_seller_stock(client: OzonClient):
+def fetch_seller_stock(client: OzonClient, skus: tuple[str, ...]):
     records = []
     diagnostics = []
-    cursor = ""
-    seen = {cursor}
-    while True:
-        payload = {"limit": 1000}
-        if cursor:
-            payload["cursor"] = cursor
-        response = client.post_json(FBS_STOCK_PATH, payload, policy=READ)
-        page, page_diagnostics = normalize_fbs_stock(response)
-        records.extend(page)
-        diagnostics.extend(page_diagnostics)
-        next_cursor = str(response.get("cursor") or "")
-        has_next = bool(response.get("has_next"))
-        if not has_next:
-            break
-        if not next_cursor or next_cursor in seen:
-            raise ValueError("non-progressing seller-stock cursor")
-        seen.add(next_cursor)
-        cursor = next_cursor
+    for start in range(0, len(skus), 1000):
+        batch = skus[start:start + 1000]
+        cursor = ""
+        seen = {cursor}
+        while True:
+            payload = {"limit": 1000, "sku": list(batch)}
+            if cursor:
+                payload["cursor"] = cursor
+            response = client.post_json(FBS_STOCK_PATH, payload, policy=READ)
+            page, page_diagnostics = normalize_fbs_stock(response)
+            records.extend(page)
+            diagnostics.extend(page_diagnostics)
+            next_cursor = str(response.get("cursor") or "")
+            has_next = bool(response.get("has_next"))
+            if not has_next:
+                break
+            if not next_cursor or next_cursor in seen:
+                raise ValueError("non-progressing seller-stock cursor")
+            seen.add(next_cursor)
+            cursor = next_cursor
     return tuple(records), tuple(diagnostics)
