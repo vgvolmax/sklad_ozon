@@ -25,6 +25,14 @@ class OzonApiErrorEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class OzonRecordQualityEvidence:
+    """PII-safe evidence about order rows quarantined by the adapter."""
+
+    rejected_record_count: int = 0
+    incomplete_skus: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class EndpointEvidence:
     name: str
     fetched_at_utc: str
@@ -32,6 +40,7 @@ class EndpointEvidence:
     complete: bool
     diagnostics: tuple[Any, ...] = ()
     api_error: OzonApiErrorEvidence | None = None
+    record_quality: OzonRecordQualityEvidence | None = None
 
 
 @dataclass(frozen=True, slots=True)

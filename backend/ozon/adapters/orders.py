@@ -9,7 +9,7 @@ from datetime import date, datetime, time, timezone
 from backend.domain.contracts import ImportDiagnostic, OrderLifecycle, OrderRecord
 from backend.ozon.client import OzonClient, OzonRequestPolicy
 from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_POSTINGS_PATH
-from backend.ozon.source_contracts import MOSCOW_BUSINESS_TZ
+from backend.ozon.source_contracts import MOSCOW_BUSINESS_TZ, OzonRecordQualityEvidence
 
 READ = OzonRequestPolicy(retry_safe=True)
 PAGE_SIZE = 1000
@@ -55,7 +55,8 @@ def _business_timestamp(value: object, field: str, diagnostics: list[ImportDiagn
     return parsed.astimezone(MOSCOW_BUSINESS_TZ).isoformat()
 
 
-def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[tuple[OrderRecord, ...], tuple[ImportDiagnostic, ...]]:
+def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
+        tuple[OrderRecord, ...], tuple[ImportDiagnostic, ...], OzonRecordQualityEvidence]:
     """Normalize only documented endpoint fields and discard all PII."""
     status = _text(posting.get("status_alias" if fbs else "status"))
     analytics = posting.get("analytics_data")
@@ -76,11 +77,6 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[tuple[OrderRecord, 
         posting.get("delivering_date"), "handed_to_delivery_at", diagnostics)
     delivered = _business_timestamp(posting.get("delivered_at"), "delivered_at", diagnostics)
     posting_number = _text(posting.get("posting_number"))
-    if not destination:
-        diagnostics.append(ImportDiagnostic(
-            "error", "UNRESOLVED_DESTINATION_CLUSTER",
-            f"Posting {posting_number or '<unknown>'} has no cluster_to evidence.",
-            field="cluster_to"))
     if lifecycle is OrderLifecycle.UNKNOWN:
         diagnostics.append(ImportDiagnostic(
             "warning", "UNKNOWN_ORDER_STATUS",
@@ -88,6 +84,8 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[tuple[OrderRecord, 
             field="status"))
 
     records: list[OrderRecord] = []
+    rejected_record_count = 0
+    incomplete_skus: set[str] = set()
     products = posting.get("products")
     for product in products if isinstance(products, list) else ():
         if not isinstance(product, dict):
@@ -97,6 +95,11 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[tuple[OrderRecord, 
         if (not sku or isinstance(quantity, bool) or
                 not isinstance(quantity, (int, float)) or quantity <= 0 or int(quantity) != quantity):
             diagnostics.append(ImportDiagnostic("error", "INVALID_ORDER_PRODUCT", "Invalid posting product evidence."))
+            continue
+        if not destination:
+            rejected_record_count += 1
+            if lifecycle in {OrderLifecycle.FULFILLED, OrderLifecycle.IN_PROGRESS}:
+                incomplete_skus.add(sku)
             continue
         records.append(OrderRecord(
             sku=sku, quantity=int(quantity), origin_cluster=origin_cluster,
@@ -108,7 +111,17 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[tuple[OrderRecord, 
             product_name=_text(product.get("product_name" if fbs else "name")), origin_warehouse=origin_warehouse,
             seller_price=float(product.get("price") or 0),
         ))
-    return tuple(records), tuple(diagnostics)
+    if not destination and lifecycle in {OrderLifecycle.FULFILLED, OrderLifecycle.IN_PROGRESS}:
+        diagnostics.append(ImportDiagnostic(
+            "warning" if incomplete_skus else "error",
+            "UNRESOLVED_DESTINATION_CLUSTER",
+            f"Posting {posting_number or '<unknown>'} has no cluster_to evidence.",
+            field="cluster_to"))
+    return (
+        tuple(records),
+        tuple(diagnostics),
+        OzonRecordQualityEvidence(rejected_record_count, tuple(sorted(incomplete_skus))),
+    )
 
 
 def normalize_fbo_posting(posting: dict):
@@ -131,6 +144,8 @@ def fetch_postings(client: OzonClient, path: str, history_from: date, history_to
     until = datetime.combine(history_to, time.max, MOSCOW_BUSINESS_TZ).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     records: list[OrderRecord] = []
     diagnostics: list[ImportDiagnostic] = []
+    rejected_record_count = 0
+    incomplete_skus: set[str] = set()
     cursor = ""
     seen = {cursor}
     while True:
@@ -147,9 +162,11 @@ def fetch_postings(client: OzonClient, path: str, history_from: date, history_to
         for posting in postings:
             if isinstance(posting, dict):
                 normalizer = normalize_fbs_posting if path == FBS_POSTINGS_PATH else normalize_fbo_posting
-                normalized, page_diagnostics = normalizer(posting)
+                normalized, page_diagnostics, page_quality = normalizer(posting)
                 records.extend(normalized)
                 diagnostics.extend(page_diagnostics)
+                rejected_record_count += page_quality.rejected_record_count
+                incomplete_skus.update(page_quality.incomplete_skus)
         next_cursor = _text(result.get("cursor"))
         has_next = bool(result.get("has_next"))
         if not has_next:
@@ -161,14 +178,16 @@ def fetch_postings(client: OzonClient, path: str, history_from: date, history_to
             break
         seen.add(next_cursor)
         cursor = next_cursor
-    return tuple(records), tuple(diagnostics)
+    return (tuple(records), tuple(diagnostics),
+            OzonRecordQualityEvidence(rejected_record_count, tuple(sorted(incomplete_skus))))
 
 
 def fetch_orders(client: OzonClient, history_from: date, history_to: date):
     records: list[OrderRecord] = []
     diagnostics: list[ImportDiagnostic] = []
     for path in (FBO_POSTINGS_PATH, FBS_POSTINGS_PATH):
-        endpoint_records, endpoint_diagnostics = fetch_postings(client, path, history_from, history_to)
+        endpoint_records, endpoint_diagnostics, _quality = fetch_postings(
+            client, path, history_from, history_to)
         records.extend(endpoint_records)
         diagnostics.extend(endpoint_diagnostics)
     return tuple(records), tuple(diagnostics)

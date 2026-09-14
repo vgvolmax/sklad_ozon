@@ -245,6 +245,13 @@ FBO and FBS use endpoint-specific normalizers: both take origin/destination only
 from `financial_data.cluster_from/cluster_to`; FBO requests analytics and
 financial blocks, while v4 FBS maps `product_id`, `product_offer_id`,
 `product_name`, and `status_alias`. Region/city are never destination substitutes.
+Endpoint availability/completeness and row-level quality are separate. A posting
+without `financial_data.cluster_to` is never assigned a synthetic destination.
+When the affected net-demand SKU identities are known, its valid product rows are
+quarantined and only those SKU become demand-incomplete. When no affected SKU
+identity can be proven, order-history completeness fails closed globally. Clean
+rows for an affected SKU remain observable historical evidence, but cannot make
+Calculated Need complete while that SKU's destination history is incomplete.
 History date boundaries and retained posting event timestamps use the fixed
 UTC+03:00 business calendar. Business-day boundaries are converted to their UTC
 instants for Ozon requests; offset-aware response instants are represented in

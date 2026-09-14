@@ -20,6 +20,7 @@ from backend.domain.contracts import ImportDiagnostic, OrderLifecycle, OrderReco
 from backend.ingestion.availability import AvailabilityRecord
 from backend.main import app
 from backend.ozon.source_contracts import (EndpointEvidence, OzonSourceSnapshot,
+                                           OzonRecordQualityEvidence,
                                            PlacementZoneEvidence)
 from tests.helpers.xlsx_fixtures import make_multisheet_xlsx, make_real_unitka, make_xlsx
 
@@ -727,6 +728,63 @@ def test_api_and_files_typed_sources_are_business_equivalent_without_fabricated_
     assert files_payload["snapshot"]["source_snapshot_id"] is None
     assert "Разрешено" not in repr(api_module._api_prepared_inputs(snapshot))
     assert api_payload["snapshot"]["shippable_plan"]["source_snapshot_id"] == "parity-api"
+
+
+def test_api_analysis_blocks_only_sku_with_quarantined_order_history():
+    base = _api_parity_fixture()
+    bad_orders = tuple(replace(order, sku="SKU-BAD", article="ART-BAD")
+                       for order in base.orders)
+    availability = base.availability + tuple(
+        replace(item, sku="SKU-BAD", article="ART-BAD")
+        for item in base.availability)
+    seller = base.operational_seller_stock + tuple(
+        replace(item, sku="SKU-BAD", article="ART-BAD")
+        for item in base.operational_seller_stock)
+    evidence = tuple(
+        replace(item, record_quality=OzonRecordQualityEvidence(1, ("SKU-BAD",)))
+        if item.name == "orders_fbo" else item
+        for item in base.endpoint_evidence)
+    snapshot = replace(
+        base, source_snapshot_id="scoped-order-quality", orders=base.orders + bad_orders,
+        availability=availability, operational_seller_stock=seller,
+        endpoint_evidence=evidence)
+    api_module.OZON_SOURCE_STORE.put(snapshot)
+    files = _parity_files()
+    api_files = {
+        "tariffs_file": files["tariffs_file"],
+        "product_economics_file": ("products.xlsx", make_xlsx(
+            headers=PRODUCT_HEADERS,
+            rows=[
+                ["SKU-1", "ART-1", 100, 99, 1000, "10%", 1],
+                ["SKU-BAD", "ART-BAD", 100, 99, 1000, "10%", 1],
+            ])),
+    }
+    response = CLIENT.post("/api/analysis", files=api_files, data=_analysis_data(
+        source_mode="api", source_snapshot_id=snapshot.source_snapshot_id))
+    assert response.status_code == 200, response.text
+    rows = {item["sku"]: item for item in response.json()["snapshot"]["decision_rows"]}
+    assert rows["SKU-1"]["need"]["complete"] is True
+    assert rows["SKU-1"]["need"]["calculated_need_qty"] is not None
+    assert "INCOMPLETE_DEMAND_SOURCE" not in rows["SKU-1"]["need"]["blocker_codes"]
+    assert rows["SKU-BAD"]["need"]["complete"] is False
+    assert rows["SKU-BAD"]["need"]["calculated_need_qty"] is None
+    assert "INCOMPLETE_DEMAND_SOURCE" in rows["SKU-BAD"]["need"]["blocker_codes"]
+
+
+def test_api_prepared_inputs_unions_fbo_and_fbs_incomplete_skus():
+    snapshot = _api_parity_fixture()
+    evidence = tuple(
+        replace(item, record_quality=OzonRecordQualityEvidence(
+            1, ("SKU-B", "SKU-SHARED")))
+        if item.name == "orders_fbo" else
+        replace(item, record_quality=OzonRecordQualityEvidence(
+            2, ("SKU-A", "SKU-SHARED")))
+        if item.name == "orders_fbs" else item
+        for item in snapshot.endpoint_evidence)
+    prepared = api_module._api_prepared_inputs(
+        replace(snapshot, endpoint_evidence=evidence))
+    assert prepared.source_coverage.demand_incomplete_skus == (
+        "SKU-A", "SKU-B", "SKU-SHARED")
 
 
 def test_api_prepared_inputs_route_diagnostics_by_analytical_domain():

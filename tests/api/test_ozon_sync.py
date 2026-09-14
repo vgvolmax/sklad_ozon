@@ -11,7 +11,9 @@ from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_STOCK_PATH, PRODUCT_LI
 from backend.ozon.client import OzonClientError
 from backend.ozon.contracts import OzonErrorCode
 from backend.ozon.adapters.catalog import ClusterCatalogResult
-from backend.ozon.source_contracts import Cluster, SellerWarehouse
+from backend.ozon.source_contracts import (
+    Cluster, OzonRecordQualityEvidence, SellerWarehouse,
+)
 from backend.ozon.sync import capability_matrix, sync_ozon_source
 from tests.ozon.test_source_store import snap
 
@@ -88,6 +90,50 @@ def test_source_wide_six_weeks_backfills_four_then_stops_at_eight(monkeypatch):
     source = sync_ozon_source(object())
     assert len(windows) == 2
     assert (source.history_to - source.history_from).days >= 16 * 7
+
+
+def test_localized_order_quality_does_not_stop_backfill(monkeypatch):
+    import backend.ozon.sync as module
+    windows = []
+
+    def postings(_client, path, start, end):
+        if start not in windows:
+            windows.append(start)
+        weeks = 6 if len(windows) == 1 else 8
+        records = _orders(end, weeks) if path == FBO_POSTINGS_PATH else ()
+        quality = (OzonRecordQualityEvidence(1, ("SKU-B",))
+                   if path == FBO_POSTINGS_PATH else OzonRecordQualityEvidence())
+        diagnostics = ((ImportDiagnostic(
+            "warning", "UNRESOLVED_DESTINATION_CLUSTER", "Scoped row gap."),)
+                       if path == FBO_POSTINGS_PATH else ())
+        return records, diagnostics, quality
+
+    monkeypatch.setattr(module, "fetch_postings", postings)
+    _patch_non_history(monkeypatch)
+    source = sync_ozon_source(object())
+    order_evidence = next(item for item in source.endpoint_evidence
+                          if item.name == "orders_fbo")
+    assert len(windows) == 2
+    assert order_evidence.complete is True
+    assert order_evidence.record_quality == OzonRecordQualityEvidence(1, ("SKU-B",))
+    assert capability_matrix(source)["demand_flow"]["complete"] is True
+
+
+def test_global_order_error_stops_backfill(monkeypatch):
+    import backend.ozon.sync as module
+    calls = []
+
+    def postings(_client, path, start, end):
+        calls.append((path, start))
+        diagnostic = ImportDiagnostic(
+            "error", "NON_PROGRESSING_POSTINGS_CURSOR", "Cursor did not progress.")
+        return (), (diagnostic,), OzonRecordQualityEvidence()
+
+    monkeypatch.setattr(module, "fetch_postings", postings)
+    _patch_non_history(monkeypatch)
+    source = sync_ozon_source(object())
+    assert len(calls) == 2
+    assert capability_matrix(source)["demand_flow"]["complete"] is False
 
 
 def test_backfill_never_exceeds_fifty_two_weeks(monkeypatch):

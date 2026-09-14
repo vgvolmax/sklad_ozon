@@ -14,7 +14,8 @@ from backend.ozon.adapters.stocks import fetch_fbo_stock, fetch_seller_stock
 from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_POSTINGS_PATH
 from backend.ozon.history import history_window, next_backfill, usable_completed_weeks
 from backend.ozon.source_contracts import (
-    EndpointEvidence, OzonApiErrorEvidence, OzonSourceSnapshot, SOURCE_TIMEZONE,
+    EndpointEvidence, OzonApiErrorEvidence, OzonRecordQualityEvidence,
+    OzonSourceSnapshot, SOURCE_TIMEZONE,
     source_business_date,
 )
 
@@ -56,13 +57,22 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
         started = datetime.now(timezone.utc).isoformat()
         try:
             value = function()
+            record_quality = None
             if name == "clusters":
                 records, item_diagnostics = value.clusters, value.diagnostics
+            elif name in {"orders_fbo", "orders_fbs"}:
+                if len(value) == 3:
+                    records, item_diagnostics, record_quality = value
+                else:  # Compatibility for injected legacy adapter doubles.
+                    records, item_diagnostics = value
+                    record_quality = OzonRecordQualityEvidence()
             else:
                 records, item_diagnostics = value
             diagnostics.extend(item_diagnostics)
             complete = not any(item.severity == "error" for item in item_diagnostics)
-            evidence.append(EndpointEvidence(name, started, len(records), complete, item_diagnostics))
+            evidence.append(EndpointEvidence(
+                name, started, len(records), complete, item_diagnostics,
+                record_quality=record_quality))
             return value if name == "clusters" else records
         except OzonClientError as exc:
             diagnostic = ImportDiagnostic(

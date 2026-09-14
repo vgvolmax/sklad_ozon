@@ -31,7 +31,7 @@ class Client:
 def test_real_cursor_contract_and_financial_data_request(path, factory):
     client=Client([{"result":{"postings":[factory("1")],"has_next":True,"cursor":"next"}},
                    {"result":{"postings":[factory("2")],"has_next":False,"cursor":"done"}}])
-    records, diagnostics=fetch_postings(client,path,date(2026,7,1),date(2026,8,1))
+    records, diagnostics, quality=fetch_postings(client,path,date(2026,7,1),date(2026,8,1))
     assert len(records)==2 and not diagnostics
     assert client.calls[0][1]["with"]=={"analytics_data":True,"financial_data":True}
     assert "legal_info" not in client.calls[0][1]["with"]
@@ -39,7 +39,7 @@ def test_real_cursor_contract_and_financial_data_request(path, factory):
 
 
 def test_endpoint_specific_wire_fields_and_pii_are_discarded():
-    fbo_rows,_=normalize_fbo_posting(fbo()); fbs_rows,_=normalize_fbs_posting(fbs())
+    fbo_rows,_,_=normalize_fbo_posting(fbo()); fbs_rows,_,_=normalize_fbs_posting(fbs())
     assert (fbo_rows[0].origin_cluster,fbo_rows[0].destination_cluster)==("Казань","Москва")
     assert (fbs_rows[0].origin_cluster,fbs_rows[0].destination_cluster)==("Урал","Сибирь")
     assert (fbs_rows[0].sku,fbs_rows[0].article,fbs_rows[0].product_name)==("456","FBS-ART","FBS product")
@@ -48,19 +48,20 @@ def test_endpoint_specific_wire_fields_and_pii_are_discarded():
 
 @pytest.mark.parametrize(("normalizer", "value"), [(normalize_fbo_posting, fbo(destination=None)), (normalize_fbs_posting, fbs(destination=None))])
 def test_region_and_city_never_substitute_destination(normalizer,value):
-    rows, diagnostics=normalizer(value)
-    assert rows[0].destination_cluster==""
+    rows, diagnostics, quality=normalizer(value)
+    assert rows == ()
+    assert quality.rejected_record_count == 1
     assert {d.code for d in diagnostics}=={"UNRESOLVED_DESTINATION_CLUSTER"}
 
 
 def test_unknown_lifecycle_remains_unknown():
-    rows, diagnostics=normalize_fbo_posting(fbo(status="future"))
+    rows, diagnostics, _=normalize_fbo_posting(fbo(status="future"))
     assert rows[0].lifecycle is OrderLifecycle.UNKNOWN and diagnostics[-1].code=="UNKNOWN_ORDER_STATUS"
 
 
 def test_repeated_cursor_stops():
     client=Client([{"result":{"postings":[fbo()],"has_next":True,"cursor":"same"}}]*2)
-    rows, diagnostics=fetch_postings(client,FBO_POSTINGS_PATH,date(2026,7,1),date(2026,8,1))
+    rows, diagnostics, quality=fetch_postings(client,FBO_POSTINGS_PATH,date(2026,7,1),date(2026,8,1))
     assert len(rows)==2 and len(client.calls)==2 and diagnostics[-1].code=="NON_PROGRESSING_POSTINGS_CURSOR"
 
 
@@ -70,8 +71,8 @@ def test_business_calendar_normalizes_event_instants_across_sunday_boundary():
     before = fbo()
     before["in_process_at"] = "2026-09-06T20:30:00Z"
 
-    after_rows, _ = normalize_fbo_posting(after)
-    before_rows, _ = normalize_fbo_posting(before)
+    after_rows, _, _ = normalize_fbo_posting(after)
+    before_rows, _, _ = normalize_fbo_posting(before)
 
     assert after_rows[0].accepted_at == "2026-09-07T01:30:00+03:00"
     assert before_rows[0].accepted_at == "2026-09-06T23:30:00+03:00"
@@ -92,7 +93,51 @@ def test_invalid_nonblank_event_timestamp_is_diagnostic_and_unknown():
     posting = fbo()
     posting["in_process_at"] = "not-a-timestamp"
 
-    rows, diagnostics = normalize_fbo_posting(posting)
+    rows, diagnostics, _ = normalize_fbo_posting(posting)
 
     assert rows[0].accepted_at == ""
     assert any(item.code == "INVALID_ORDER_TIMESTAMP" for item in diagnostics)
+
+@pytest.mark.parametrize(("normalizer", "value", "sku"), [
+    (normalize_fbo_posting, fbo(destination=None), "123"),
+    (normalize_fbs_posting, fbs(destination=None), "456"),
+])
+def test_missing_destination_quarantines_affected_sku(normalizer, value, sku):
+    rows, diagnostics, quality = normalizer(value)
+    assert rows == ()
+    assert quality.rejected_record_count == 1
+    assert quality.incomplete_skus == (sku,)
+    assert any(item.code == "UNRESOLVED_DESTINATION_CLUSTER" and item.severity == "warning"
+               for item in diagnostics)
+
+
+def test_missing_destination_quality_is_unique_sorted_and_counts_rows():
+    posting = fbo(destination=None)
+    posting["products"] = [
+        {"sku": "SKU-B", "quantity": 1},
+        {"sku": "SKU-A", "quantity": 2},
+        {"sku": "SKU-B", "quantity": 3},
+    ]
+    rows, _, quality = normalize_fbo_posting(posting)
+    assert rows == ()
+    assert quality.rejected_record_count == 3
+    assert quality.incomplete_skus == ("SKU-A", "SKU-B")
+
+
+def test_cancelled_missing_destination_is_quarantined_without_demand_blocker():
+    rows, diagnostics, quality = normalize_fbo_posting(
+        fbo(destination=None, status="cancelled"))
+    assert rows == () and diagnostics == ()
+    assert quality.rejected_record_count == 1
+    assert quality.incomplete_skus == ()
+
+
+def test_unscoped_missing_destination_remains_blocking():
+    posting = fbo(destination=None)
+    posting["products"] = [{"sku": "", "quantity": 1}]
+    rows, diagnostics, quality = normalize_fbo_posting(posting)
+    assert rows == () and quality.incomplete_skus == ()
+    assert {item.code for item in diagnostics} == {
+        "INVALID_ORDER_PRODUCT", "UNRESOLVED_DESTINATION_CLUSTER"}
+    assert any(item.code == "UNRESOLVED_DESTINATION_CLUSTER" and item.severity == "error"
+               for item in diagnostics)
