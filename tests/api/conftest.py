@@ -72,9 +72,15 @@ def isolated_api_credential_context(tmp_path, monkeypatch):
     api_module.SHIPMENT_PLAN_STORE.clear()
 
 
-@pytest.fixture(autouse=True)
-def authorized_local_test_client(monkeypatch):
-    """Give legacy API tests the headers sent by the real local frontend."""
+@pytest.fixture(scope="module", autouse=True)
+def authorized_local_test_client():
+    """Give every API-module request the headers sent by the real local UI.
+
+    Module scope is intentional: some acceptance payloads are built by
+    module-scoped fixtures before function-scoped fixtures are entered.
+    Security tests live outside ``tests/api`` and therefore do not receive
+    this test-only convenience layer.
+    """
 
     original_request = TestClient.request
 
@@ -85,4 +91,9 @@ def authorized_local_test_client(monkeypatch):
             headers.setdefault(LOCAL_SESSION_HEADER, current_local_session_token())
         return original_request(client, method, url, headers=headers, **kwargs)
 
-    monkeypatch.setattr(TestClient, "request", request)
+    patcher = pytest.MonkeyPatch()
+    patcher.setattr(TestClient, "request", request)
+    try:
+        yield
+    finally:
+        patcher.undo()
