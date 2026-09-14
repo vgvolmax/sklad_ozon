@@ -7,6 +7,7 @@ from enum import Enum
 
 from backend.supply.contracts import AllocationObjective
 from backend.analytics.clean_routes import CleanRouteResult
+from backend.analytics._weeks import AnalyticsWindow
 from backend.analytics.demand_estimate import DemandEstimate
 from backend.analytics.routes import RouteProfile
 from backend.domain.contracts import ReportMeta, SourceMode
@@ -343,3 +344,4 @@ class AnalysisSnapshot:
     source_mode: SourceMode = SourceMode.FILES
     source_snapshot_id: str | None = None
     shippable_plan: ShippablePlan | None = None
+    demand_window: AnalyticsWindow | None = None

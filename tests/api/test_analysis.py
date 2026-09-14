@@ -94,6 +94,7 @@ def _two_sku_analysis_files():
 def _analysis_data(**overrides):
     values = {
         "as_of": "2026-08-25", "acquiring_rate": "0.01", "advertising_rate": "0.01",
+        "orders_period_from": "2026-06-29", "orders_period_to": "2026-08-23",
         "buyout_rate": "1", "fixed_fbo_fee": "0", "tax_system": "usn_income",
         "income_tax_rate": "0.06", "vat_rate": "0", "co_invest_rate": "0",
         "min_profit_per_unit": "0", "min_margin_rate": "0", "min_roi": "0",

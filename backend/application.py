@@ -5,6 +5,7 @@ from datetime import date
 from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
 from backend.analytics.daily import DailyOrderFacts, build_daily_order_facts
 from backend.analytics.demand import aggregate_weekly_demand, DemandResult
+from backend.analytics._weeks import ObservationCoverage
 from backend.analytics.demand_estimate import estimate_destination_demand
 from backend.analytics.routes import build_weekly_route_profile, RouteProfile
 from backend.analytics.stockout import detect_stockouts
@@ -98,6 +99,8 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             ozon_horizon_days: int | None = None,
             source_mode: SourceMode = SourceMode.FILES,
             source_coverage: AnalysisSourceCoverage | None = None,
+            order_coverage: ObservationCoverage | None = None,
+            order_coverage_valid: bool = True,
             progress_callback=None,
             scenario_settings: ScenarioSettings = _DEFAULT_SCENARIO) -> AnalysisResult:
     if not isinstance(scenario_settings, ScenarioSettings):
@@ -108,7 +111,11 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
 
     progress("demand")
     daily_facts = build_daily_order_facts(orders, as_of)
-    demand = aggregate_weekly_demand(daily_facts.demand, as_of)
+    if order_coverage is None:
+        raise ValueError("order_coverage is required for production analysis")
+    demand = aggregate_weekly_demand(
+        daily_facts.demand, as_of, coverage=order_coverage
+    )
     demand_estimates = estimate_destination_demand(demand)
     demand_estimates_by_identity = {
         (item.sku, item.destination_cluster_id): item for item in demand_estimates
@@ -124,6 +131,12 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         observed, daily_facts.fulfillment, stockout_episodes
     )
     diagnostics = []
+    if not demand.window.coverage_current:
+        diagnostics.append(AnalysisDiagnostic(
+            "error", "DEMAND_COVERAGE_NOT_CURRENT",
+            f"Order history is proven only through {order_coverage.period_end.isoformat()}. "
+            "Later weeks are not treated as zero demand; Need calculation is blocked.",
+        ))
     rec_values = {}
     conflicts = set()
     for record in availability:
@@ -200,11 +213,15 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             if source_coverage is None:
                 fbo_stock = conservative_quantity(operational, "fbo_quantity")
                 inbound_qty = conservative_quantity(operational, "inbound_quantity")
-                demand_complete = True
+                demand_complete = demand.window.coverage_current and order_coverage_valid
             else:
                 fbo_stock, inbound_qty = aggregate_api_need_availability(
                     operational, source_coverage)
-                demand_complete = source_coverage.demand_complete
+                demand_complete = (
+                    source_coverage.demand_complete
+                    and demand.window.coverage_current
+                    and order_coverage_valid
+                )
             need = calculate_need(
                 sku=sku,
                 destination_cluster_id=cluster,

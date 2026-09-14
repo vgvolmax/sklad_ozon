@@ -101,7 +101,8 @@ def test_application_uses_one_daily_build_for_demand_and_routes():
     source = (ROOT / "backend/application.py").read_text(encoding="utf-8")
 
     assert "build_daily_order_facts(orders, as_of)" in source
-    assert "aggregate_weekly_demand(daily_facts.demand, as_of)" in source
+    assert "aggregate_weekly_demand(" in source
+    assert "daily_facts.demand, as_of, coverage=order_coverage" in source
     assert "build_weekly_route_profile(daily_facts.fulfillment, as_of)" in source
     assert "demand = aggregate_demand(orders, as_of)" not in source
     assert "observed = build_route_profile(orders, as_of)" not in source

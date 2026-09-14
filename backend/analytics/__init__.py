@@ -1,6 +1,8 @@
 """Pure demand and fulfilled-route analytics."""
 
-from ._weeks import AnalyticsWindow, WeekPolicy
+from ._weeks import (AnalyticsWindow, ObservationCoverage, WeekPolicy,
+                     coverage_includes_latest_completed_week,
+                     fully_covered_completed_iso_weeks)
 from .daily import (
     DailyDemandCell,
     DailyDemandResult,
@@ -35,6 +37,9 @@ from .clean_routes import (
 
 __all__ = (
     "AnalyticsWindow",
+    "ObservationCoverage",
+    "coverage_includes_latest_completed_week",
+    "fully_covered_completed_iso_weeks",
     "detect_stockout_episodes",
     "build_episode_clean_route_profile",
     "build_daily_locality_series",

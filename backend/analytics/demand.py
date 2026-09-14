@@ -10,8 +10,9 @@ from .daily import DailyDemandResult, build_daily_order_facts
 
 from ._weeks import (
     AnalyticsWindow,
+    ObservationCoverage,
     WeekPolicy,
-    completed_iso_week_axis,
+    fully_covered_completed_iso_weeks,
     make_window,
     require_completed_iso_weeks,
 )
@@ -37,11 +38,13 @@ def aggregate_weekly_demand(
     daily: DailyDemandResult,
     as_of: date,
     week_policy: WeekPolicy = WeekPolicy.COMPLETED_ISO_WEEKS,
+    *,
+    coverage: ObservationCoverage | None = None,
 ) -> DemandResult:
     require_completed_iso_weeks(week_policy)
     current_week = as_of.isocalendar()[:2]
     totals: dict[tuple[int, int, str, str], list[int]] = {}
-    earliest_completed_week: tuple[int, int] | None = None
+    observed_completed_weeks: set[tuple[int, int]] = set()
     excluded_current = 0
 
     for cell in daily.cells:
@@ -50,8 +53,7 @@ def aggregate_weekly_demand(
         if week == current_week:
             excluded_current += cell.observation_count
             continue
-        if earliest_completed_week is None or week < earliest_completed_week:
-            earliest_completed_week = week
+        observed_completed_weeks.add(week)
         key = (iso.year, iso.week, cell.sku, cell.destination_cluster_id)
         aggregate = totals.setdefault(key, [0, 0])
         aggregate[0] += cell.quantity
@@ -68,9 +70,9 @@ def aggregate_weekly_demand(
         )
         for (year, week, sku, destination), (quantity, count) in sorted(totals.items())
     )
-    calendar_weeks = completed_iso_week_axis(
-        first_week=earliest_completed_week,
-        as_of=as_of,
+    calendar_weeks = (
+        fully_covered_completed_iso_weeks(coverage=coverage, as_of=as_of)
+        if coverage is not None else tuple(sorted(observed_completed_weeks))
     )
     return DemandResult(
         cells=cells,
@@ -80,6 +82,7 @@ def aggregate_weekly_demand(
             excluded_current=excluded_current,
             excluded_future=daily.excluded_future_observations,
             excluded_undated=daily.excluded_undated_observations,
+            coverage=coverage,
         ),
     )
 
@@ -88,6 +91,8 @@ def aggregate_demand(
     orders: Iterable[OrderRecord],
     as_of: date,
     week_policy: WeekPolicy = WeekPolicy.COMPLETED_ISO_WEEKS,
+    *,
+    coverage: ObservationCoverage | None = None,
 ) -> DemandResult:
     daily = build_daily_order_facts(orders, as_of)
-    return aggregate_weekly_demand(daily.demand, as_of, week_policy)
+    return aggregate_weekly_demand(daily.demand, as_of, week_policy, coverage=coverage)
