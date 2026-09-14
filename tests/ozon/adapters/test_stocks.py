@@ -30,6 +30,64 @@ def test_seller_stock_top_level_cursor_pagination():
         def post_json(self,path,payload,**kwargs):
             self.calls.append((path,payload)); n=len(self.calls)
             return {"products":[{"sku":1,"warehouse_id":n,"free_stock":n}],"has_next":n==1,"cursor":"next" if n==1 else "done"}
-    client=Client(); rows,diagnostics=fetch_seller_stock(client)
+    client=Client(); rows,diagnostics=fetch_seller_stock(client, ("1", "2"))
     assert not diagnostics and [r.fbs_quantity for r in rows]==[1,2]
-    assert client.calls==[(FBS_STOCK_PATH,{"limit":1000}),(FBS_STOCK_PATH,{"limit":1000,"cursor":"next"})]
+    assert client.calls==[
+        (FBS_STOCK_PATH,{"limit":1000,"sku":["1", "2"]}),
+        (FBS_STOCK_PATH,{"limit":1000,"sku":["1", "2"],"cursor":"next"}),
+    ]
+
+
+def test_seller_stock_batches_at_one_thousand_skus():
+    class Client:
+        def __init__(self): self.calls=[]
+        def post_json(self,path,payload,**kwargs):
+            self.calls.append((path,payload)); return {"products":[],"has_next":False}
+    client=Client(); fetch_seller_stock(client, tuple(str(i) for i in range(1001)))
+    assert [len(payload["sku"]) for _,payload in client.calls] == [1000, 1]
+    assert all(path == FBS_STOCK_PATH and len(payload["sku"]) <= 1000
+               for path,payload in client.calls)
+
+
+def test_seller_stock_resets_cursor_for_each_sku_batch():
+    responses = iter([
+        {"products":[],"has_next":True,"cursor":"batch-1-next"},
+        {"products":[],"has_next":False,"cursor":"done"},
+        {"products":[],"has_next":False,"cursor":"done"},
+    ])
+    class Client:
+        def __init__(self): self.calls=[]
+        def post_json(self,path,payload,**kwargs):
+            self.calls.append((path,payload)); return next(responses)
+    client=Client(); fetch_seller_stock(client, tuple(str(i) for i in range(1001)))
+    assert "cursor" not in client.calls[0][1]
+    assert client.calls[1][1]["cursor"] == "batch-1-next"
+    assert "cursor" not in client.calls[2][1]
+
+
+def test_seller_stock_empty_sku_universe_does_not_call_api():
+    class Client:
+        def __init__(self): self.calls=[]
+        def post_json(self,path,payload,**kwargs): self.calls.append((path,payload))
+    client=Client(); rows,diagnostics=fetch_seller_stock(client, ())
+    assert rows == ()
+    assert diagnostics == ()
+    assert client.calls == []
+
+
+def test_seller_stock_non_progressing_cursor_fails_closed():
+    class Client:
+        def post_json(self,path,payload,**kwargs):
+            return {"products":[],"has_next":True,"cursor":""}
+    import pytest
+    with pytest.raises(ValueError, match="non-progressing seller-stock cursor"):
+        fetch_seller_stock(Client(), ("1",))
+
+
+def test_seller_stock_duplicate_cursor_fails_closed():
+    class Client:
+        def post_json(self,path,payload,**kwargs):
+            return {"products":[],"has_next":True,"cursor":"next"}
+    import pytest
+    with pytest.raises(ValueError, match="non-progressing seller-stock cursor"):
+        fetch_seller_stock(Client(), ("1",))

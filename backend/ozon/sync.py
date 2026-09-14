@@ -101,7 +101,16 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
             diagnostic = ImportDiagnostic("error", "OZON_FBO_STOCK_FAILED", "FBO stock unavailable without complete SKU universe.")
             diagnostics.append(diagnostic)
             evidence.append(EndpointEvidence("fbo_stock", datetime.now(timezone.utc).isoformat(), 0, False, (diagnostic,)))
-    seller_stock = run("seller_stock", lambda: fetch_seller_stock(client), ())
+    if product_evidence.complete:
+        seller_stock = run("seller_stock", lambda: fetch_seller_stock(client, product_skus), ())
+    else:
+        seller_stock = ()
+        diagnostic = ImportDiagnostic(
+            "error", "OZON_SELLER_STOCK_FAILED",
+            "Seller stock unavailable without complete SKU universe.")
+        diagnostics.append(diagnostic)
+        evidence.append(EndpointEvidence(
+            "seller_stock", datetime.now(timezone.utc).isoformat(), 0, False, (diagnostic,)))
     inbound = run("inbound", lambda: fetch_inbound(client, cluster_by_id, warehouse_to_macrolocal), ())
     if product_evidence.complete:
         zones = run("placement_zones", lambda: fetch_placement_zones(client, product_skus), ())
