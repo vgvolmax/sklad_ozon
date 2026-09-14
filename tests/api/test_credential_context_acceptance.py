@@ -274,6 +274,20 @@ def test_credentials_replacement_makes_existing_shipment_plan_unexportable():
     assert response.json()["error"]["code"] == "SHIPMENT_PLAN_NOT_FOUND"
 
 
+def test_credentials_replacement_clears_last_healthy_source_fallback():
+    context_id = api_module.OZON_VAULT.credential_context_id()
+    source = replace(snap("healthy-source-a"), credential_context_id=context_id)
+    api_module.OZON_SOURCE_STORE.put(source)
+    assert api_module.OZON_SOURCE_STORE.last_healthy() == source
+
+    setup = _setup_request()
+
+    assert setup.status_code == 200
+    assert api_module.OZON_SOURCE_STORE.last_healthy() is None
+    assert api_module.OZON_SOURCE_STORE.get("healthy-source-a") is None
+    assert len(api_module.OZON_SOURCE_STORE) == 0
+
+
 def test_lock_unlock_preserves_current_source_context():
     context_id = api_module.OZON_VAULT.credential_context_id()
     source = replace(snap("source-a"), credential_context_id=context_id)
