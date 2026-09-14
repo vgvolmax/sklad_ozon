@@ -6,14 +6,22 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from backend.api import router
+from backend.security import enforce_local_request_security, local_session_response
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
 
 app = FastAPI(title="sklad_ozon", docs_url=None, redoc_url=None)
 
+app.middleware("http")(enforce_local_request_security)
+
 
 app.include_router(router)
+
+
+@app.get("/api/local-session")
+def local_session():
+    return local_session_response()
 
 @app.get("/api/health")
 def health() -> dict[str, object]:

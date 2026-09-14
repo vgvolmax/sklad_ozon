@@ -41,7 +41,7 @@ def test_readiness_and_plan_freshness_follow_source_provenance():
     assert result['afterSync']['ready'] is False
 def test_main_flow_is_candidates_then_plan_without_frontend_trimming_or_validate():
     app=(ROOT/'frontend/assets/js/app.js').read_text()
-    assert app.index("fetch('/api/shipment/candidates'") < app.index("fetch('/api/shipment/plan'")
+    assert app.index("apiFetch('/api/shipment/candidates'") < app.index("apiFetch('/api/shipment/plan'")
     assert '/api/shipment/validate' not in app
     assert '.slice(0,6)' not in app and '.slice(0, 6)' not in app
     assert 'candidateIds=candidates.map' in app

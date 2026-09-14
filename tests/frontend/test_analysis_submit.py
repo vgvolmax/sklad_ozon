@@ -40,7 +40,7 @@ def test_submit_captures_body_then_enters_busy_state_renders_and_fetches():
     capture = lifecycle.index("S.buildAnalysisRequestBody(")
     busy = lifecycle.index("analysisActive=true")
     render = lifecycle.index("render();", busy)
-    fetch = lifecycle.index("fetch('/api/analysis/stream", render)
+    fetch = lifecycle.index("apiFetch('/api/analysis/stream", render)
     assert capture < busy < render < fetch
     assert lifecycle.startswith("async function runAnalysis(form=document.querySelector('#analysis-form')){if(analysisActive)return;")
     assert "finally{clearInterval(timer);if(id===runSequence){analysisActive=false;render();}}" in lifecycle

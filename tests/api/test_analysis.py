@@ -875,7 +875,11 @@ def test_upload_limit_is_enforced(monkeypatch):
 
 
 def test_missing_field_and_invalid_date_are_controlled_errors():
-    missing = CLIENT.post("/api/analysis", data=_analysis_data())
+    missing = CLIENT.post(
+        "/api/analysis",
+        data=_analysis_data(),
+        files={"transport_probe": ("probe.txt", b"probe")},
+    )
     assert missing.status_code == 400 and missing.json()["error"]["code"] == "MISSING_FIELD"
     invalid = _post_analysis(data=_analysis_data(as_of="not-a-date"))
     assert invalid.status_code == 400 and invalid.json()["error"] | {} == {"code": "INVALID_DATE", "message": "Expected YYYY-MM-DD.", "field": "as_of"}
@@ -927,7 +931,10 @@ def test_upload_limit_and_thin_frontend_contract():
     app_source = Path("frontend/assets/js/app.js").read_text(encoding="utf-8")
     core_source = Path("frontend/assets/js/core.js").read_text(encoding="utf-8")
     frontend_source = app_source + "\n" + core_source
-    assert "fetch(" in app_source
+    assert "apiFetch(" in app_source
+    assert "createLocalApiClient" in core_source
+    assert "fetch('/api/" not in app_source
+    assert 'fetch("/api/' not in app_source
     assert "/api/" in app_source
     assert "S.buildAnalysisRequestBody(" in app_source
     assert "new FormData" not in app_source

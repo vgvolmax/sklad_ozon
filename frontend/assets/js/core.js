@@ -4,6 +4,43 @@
   const sections = new Set(['plan', 'flows', 'economics', 'data']);
   const filters = new Set(['all','disagreement','probable_stockout','expensive_logistics','incomplete_economics','blocked']);
   S.PREFERENCES_KEY = 'skladOzon.preferences.v1';
+  S.createLocalApiClient = function(fetchImpl) {
+    const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+    let sessionToken = null;
+    let sessionRequest = null;
+    async function getSessionToken() {
+      if (sessionToken) return sessionToken;
+      if (!sessionRequest) sessionRequest = (async () => {
+        const response = await fetchImpl('/api/local-session');
+        if (!response.ok) throw new Error('Unable to start local API session.');
+        const payload = await response.json();
+        if (typeof payload.session_token !== 'string' || !payload.session_token) {
+          throw new Error('Local API session response is invalid.');
+        }
+        sessionToken = payload.session_token;
+        return sessionToken;
+      })().finally(() => { sessionRequest = null; });
+      return sessionRequest;
+    }
+    async function send(input, init, token) {
+      const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+      headers.set('X-Sklad-Ozon-Session', token);
+      return fetchImpl(input, {...init, headers});
+    }
+    return async function localApiFetch(input, init={}) {
+      const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (!unsafeMethods.has(method)) return fetchImpl(input, init);
+      let token = await getSessionToken();
+      const response = await send(input, init, token);
+      if (response.status !== 403) return response;
+      let payload;
+      try { payload = await response.clone().json(); } catch (_) { return response; }
+      if (payload?.error?.code !== 'LOCAL_SESSION_INVALID') return response;
+      if (sessionToken === token) sessionToken = null;
+      token = await getSessionToken();
+      return send(input, init, token);
+    };
+  };
   S.createInitialState = function () { return {snapshot:null,staleSnapshot:false,inputRevision:0,snapshotInputRevision:null,analysisError:null,section:'plan',scenario:{horizonDays:56,includeInbound:true},scenarioDraft:{horizonDays:'56',error:null},planView:{search:'',quickFilter:'all',sort:null,page:1,pageSize:50,columns:[]},savedMappings:{},mappingDraftRows:[],mappingDirty:false,nextMappingDraftId:1,selectedDecisionKey:null,flowView:{mode:'destination',metric:'units',evidence:'clean',selectedKey:null,selectedRoute:null,selectedEpisodeId:null,selectorQuery:'',selectorPage:1,routeQuery:'',routePage:1,dailyPage:1,episodePage:1,skuQuery:'',skuPage:1,showAllRoutes:false},economicsView:{mode:'unit',search:'',status:'all',sort:null,page:1,pageSize:50,columns:[]}}; };
   S.AppState = S.createInitialState();
   S.deepFreezeSnapshot = function freeze(value) { if (value && typeof value === 'object' && !Object.isFrozen(value)) { Object.freeze(value); Object.values(value).forEach(freeze); } return value; };
