@@ -218,7 +218,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
                 fbo_stock, inbound_qty = aggregate_api_need_availability(
                     operational, source_coverage)
                 demand_complete = (
-                    source_coverage.demand_complete
+                    source_coverage.demand_complete_for(sku)
                     and demand.window.coverage_current
                     and order_coverage_valid
                 )

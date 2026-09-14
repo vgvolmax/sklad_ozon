@@ -44,13 +44,14 @@ def test_unresolved_records_fail_closed_without_fuzzy_matching():
 
 
 def test_known_destination_with_blank_origin_keeps_demand_and_excludes_flow():
-    rows, adapter_diagnostics = normalize_fbs_posting({
+    rows, adapter_diagnostics, quality = normalize_fbs_posting({
         "posting_number": "FBS-1",
         "status_alias": "delivered",
         "in_process_at": "2026-09-06T22:30:00Z",
         "financial_data": {"cluster_from": "", "cluster_to": "Москва"},
         "products": [{"product_id": "S", "quantity": 5}],
     })
+    assert quality.rejected_record_count == 0
 
     result = resolve_analysis_clusters([], [], rows, [tariff()], {})
     facts = build_daily_order_facts(result.orders, date(2026, 9, 7))

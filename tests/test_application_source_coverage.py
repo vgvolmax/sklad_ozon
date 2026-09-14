@@ -7,6 +7,19 @@ def coverage(*, fbo=True, inbound=True):
     return AnalysisSourceCoverage(True, True, fbo, inbound)
 
 
+def test_demand_completeness_can_be_scoped_to_sku():
+    scoped = AnalysisSourceCoverage(
+        True, True, True, True, demand_incomplete_skus=("SKU-B",))
+    assert scoped.demand_complete is True
+    assert scoped.demand_complete_for("SKU-A") is True
+    assert scoped.demand_complete_for("SKU-B") is False
+
+    globally_failed = AnalysisSourceCoverage(
+        False, True, True, True, demand_incomplete_skus=("SKU-B",))
+    assert globally_failed.demand_complete_for("SKU-A") is False
+    assert globally_failed.demand_complete_for("SKU-B") is False
+
+
 def row(warehouse, fbo_quantity=None, inbound_quantity=None):
     return AvailabilityRecord(
         "SKU", warehouse, "Москва", 0, None,

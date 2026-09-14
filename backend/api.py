@@ -410,6 +410,12 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
                                for evidence in snapshot.endpoint_evidence}
     completeness = {evidence.name: evidence.complete
                     for evidence in snapshot.endpoint_evidence}
+    demand_incomplete_skus = tuple(sorted({
+        sku
+        for evidence in snapshot.endpoint_evidence
+        if evidence.name in {"orders_fbo", "orders_fbs"} and evidence.record_quality is not None
+        for sku in evidence.record_quality.incomplete_skus
+    }))
     order_diagnostics = diagnostics_by_endpoint.get("orders_fbo", ()) + diagnostics_by_endpoint.get("orders_fbs", ())
     availability_diagnostics = diagnostics_by_endpoint.get("fbo_stock", ())
     if include_inbound:
@@ -425,6 +431,7 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
             completeness.get("orders_fbs", False),
             completeness.get("fbo_stock", False),
             completeness.get("inbound", False),
+            demand_incomplete_skus,
         ),
     )
 
