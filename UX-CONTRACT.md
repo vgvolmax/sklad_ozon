@@ -143,6 +143,10 @@ Keep distinct:
 
 API `source_as_of` is backend-owned and read-only in UI. API history depth is backend policy, not an everyday UI control.
 
+Source failures expose a correction-oriented cause when safe structured evidence exists. Scoped SKU incompleteness is distinguishable from global endpoint failure: globally available evidence with affected SKU identities is shown as partial, not fully available or globally failed.
+
+A failed refresh keeps the previous successful source evidence separate from diagnostics for the failed attempt. The project cluster-mapping editor remains reachable from `Данные` in both API and FILES modes.
+
 ## Ozon connection/vault UX
 
 First setup collects Client-Id, masked API-Key, vault password and confirmation. Saved API key is never shown again. Restart asks only for vault password.

@@ -251,6 +251,10 @@ API history range is backend-owned. Do not add an everyday control for the 12-we
 
 Failed refresh keeps previous successful snapshot visible and marks new refresh failure without silently entering FILES mode.
 
+Business-domain status is causal, not binary. A globally complete endpoint with scoped record-quality evidence is presented as `Частично` rather than fully available, while a global endpoint failure remains incomplete. A failed refresh keeps the previous successful source evidence separate from causal diagnostics for the failed attempt.
+
+Endpoint details may expose only safe normalized evidence: relative endpoint, HTTP status, internal/vendor code, bounded vendor message, request ID, accepted/rejected record counts and affected SKU identities. Raw response bodies, `details`, headers, request payloads and credentials are never rendered. The project cluster-mapping editor remains part of the canonical `Данные` screen in both API and FILES modes.
+
 ## 7. FILES fallback
 
 Primary surface uses an action such as:
