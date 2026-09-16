@@ -120,18 +120,11 @@ def test_disputed_multiple_items_have_deterministic_unique_skus():
     assert quality.incomplete_skus == ("A", "B")
 
 
-def test_disputed_without_bundle_and_unknown_state_remain_global_errors():
-    rows, diagnostics, quality = _normalize([
-        {"state": "REPORT_REJECTED", "macrolocal_cluster_id": 10},
-        {"state": "SUPPLY_TELEPORTED", "macrolocal_cluster_id": 10,
-         "bundle_id": UUID},
-    ], {UUID: [{"sku": "S", "quantity": 1}]})
-    assert rows == ()
-    assert quality.incomplete_skus == ()
-    assert {(item.code, item.severity) for item in diagnostics} == {
-        ("MISSING_SUPPLY_BUNDLE_ID", "error"),
-        ("UNKNOWN_SUPPLY_STATE", "error"),
-    }
+def test_disputed_without_bundle_is_global_failure():
+    with pytest.raises(ValueError, match="bundle ID"):
+        _normalize([{
+            "state": "REPORT_REJECTED", "macrolocal_cluster_id": 10,
+        }], {})
 
 
 def test_disputed_supply_with_empty_bundle_fails_closed():
@@ -189,16 +182,12 @@ def test_final_supply_with_empty_bundle_is_ignored():
     assert quality == OzonRecordQualityEvidence()
 
 
-def test_nonempty_invalid_bundle_keeps_invalid_item_diagnostic():
-    rows, diagnostics, quality = _normalize([{
-        "state": "IN_TRANSIT", "macrolocal_cluster_id": 10,
-        "bundle_id": UUID,
-    }], {UUID: [{"sku": "", "quantity": 3}]})
-
-    assert rows == ()
-    assert quality == OzonRecordQualityEvidence()
-    assert [(item.code, item.severity) for item in diagnostics] == [
-        ("INVALID_SUPPLY_BUNDLE_ITEM", "error")]
+def test_nonempty_bundle_with_unknown_sku_is_global_failure():
+    with pytest.raises(ValueError, match="SKU"):
+        _normalize([{
+            "state": "IN_TRANSIT", "macrolocal_cluster_id": 10,
+            "bundle_id": UUID,
+        }], {UUID: [{"sku": "", "quantity": 3}]})
 
 
 class Client:
@@ -275,3 +264,229 @@ def test_supply_details_must_exactly_match_requested_ids(returned):
 
     with pytest.raises(ValueError, match="detail|match|duplicate"):
         _fetch_details(DetailsClient(), [7, 8])
+
+
+class StaticClient:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+
+    def post_json(self, _path, _payload, **_kwargs):
+        return next(self.responses)
+
+
+@pytest.mark.parametrize("response", [
+    {}, {"order_ids": None}, {"order_ids": {}}, {"order_ids": "7"},
+])
+def test_supply_list_requires_order_ids_array(response):
+    with pytest.raises(ValueError, match="order_ids"):
+        _fetch_order_ids(StaticClient([response]))
+
+
+def test_supply_list_explicit_empty_is_valid():
+    assert _fetch_order_ids(StaticClient([{"order_ids": []}])) == []
+
+
+@pytest.mark.parametrize("value", [True, 1.5, "7", {}, [], 0, -1])
+def test_supply_list_requires_strict_positive_integer_ids(value):
+    with pytest.raises(ValueError, match="order ID"):
+        _fetch_order_ids(StaticClient([{"order_ids": [value]}]))
+
+
+def test_supply_list_rejects_duplicate_ids_across_pages():
+    client = StaticClient([
+        {"order_ids": [7], "last_id": "next"},
+        {"order_ids": [7], "last_id": ""},
+    ])
+    with pytest.raises(ValueError, match="duplicate"):
+        _fetch_order_ids(client)
+
+
+@pytest.mark.parametrize("cursor", [True, 1, [], {}])
+def test_supply_list_rejects_wrong_type_cursor(cursor):
+    with pytest.raises(ValueError, match="cursor"):
+        _fetch_order_ids(StaticClient([{"order_ids": [], "last_id": cursor}]))
+
+
+def test_supply_list_rejects_repeated_cursor():
+    client = StaticClient([
+        {"order_ids": [7], "last_id": "next"},
+        {"order_ids": [8], "last_id": "next"},
+    ])
+    with pytest.raises(ValueError, match="cursor"):
+        _fetch_order_ids(client)
+
+
+@pytest.mark.parametrize("response", [
+    {}, {"orders": None}, {"orders": {}}, {"orders": "bad"},
+])
+def test_details_require_orders_array(response):
+    with pytest.raises(ValueError, match="orders"):
+        _fetch_details(StaticClient([response]), [7])
+
+
+@pytest.mark.parametrize("orders", [
+    [None], [{"order_id": True}], [{"order_id": 7.0}],
+    [{"order_id": "7"}], [{"order_id": 0}],
+])
+def test_details_require_objects_and_strict_ids(orders):
+    with pytest.raises(ValueError, match="detail|order ID"):
+        _fetch_details(StaticClient([{"orders": orders}]), [7])
+
+
+@pytest.mark.parametrize("supplies", [pytest.param(None, id="null"), {}, "bad", 123])
+def test_normalize_requires_supplies_array(supplies):
+    with pytest.raises(ValueError, match="supplies"):
+        normalize_inbound([{"order_id": 7, "supplies": supplies}], {}, {}, {})
+
+
+def test_normalize_rejects_missing_supplies_and_non_object_supply():
+    with pytest.raises(ValueError, match="supplies"):
+        normalize_inbound([{"order_id": 7}], {}, {}, {})
+    with pytest.raises(ValueError, match="supply"):
+        _normalize([None], {})
+
+
+def test_explicit_empty_supplies_is_valid():
+    assert _normalize([], {}) == ((), (), OzonRecordQualityEvidence())
+
+
+@pytest.mark.parametrize("response", [
+    {}, {"items": None, "has_next": False},
+    {"items": {}, "has_next": False}, {"items": "bad", "has_next": False},
+    {"items": [None], "has_next": False},
+])
+def test_bundle_requires_items_array_of_objects(response):
+    with pytest.raises(ValueError, match="items|item"):
+        _fetch_bundles(StaticClient([response]), [UUID])
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "false", {}, []])
+def test_bundle_requires_boolean_has_next(value):
+    response = {"items": [], "has_next": value}
+    if value is None:
+        response.pop("has_next")
+    with pytest.raises(ValueError, match="has_next"):
+        _fetch_bundles(StaticClient([response]), [UUID])
+
+
+@pytest.mark.parametrize("cursor", [None, "", "   ", True, 1, [], {}])
+def test_bundle_next_page_requires_strict_nonblank_cursor(cursor):
+    response = {"items": [{"sku": "S", "quantity": 1}],
+                "has_next": True, "last_id": cursor}
+    with pytest.raises(ValueError, match="cursor"):
+        _fetch_bundles(StaticClient([response]), [UUID])
+
+
+def test_bundle_rejects_repeated_cursor():
+    page = {"items": [{"sku": "S", "quantity": 1}],
+            "has_next": True, "last_id": "next"}
+    with pytest.raises(ValueError, match="cursor"):
+        _fetch_bundles(StaticClient([page, page]), [UUID])
+
+
+def test_bundle_validates_total_count_across_pages_and_at_terminal_page():
+    valid = StaticClient([
+        {"items": [{"sku": "A", "quantity": 1}], "total_count": 2,
+         "has_next": True, "last_id": "next"},
+        {"items": [{"sku": "B", "quantity": 2}], "total_count": 2,
+         "has_next": False},
+    ])
+    assert len(_fetch_bundles(valid, [UUID])[UUID]) == 2
+
+    inconsistent = StaticClient([
+        {"items": [{"sku": "A", "quantity": 1}], "total_count": 2,
+         "has_next": True, "last_id": "next"},
+        {"items": [{"sku": "B", "quantity": 2}], "total_count": 3,
+         "has_next": False},
+    ])
+    with pytest.raises(ValueError, match="total_count"):
+        _fetch_bundles(inconsistent, [UUID])
+
+    mismatch = StaticClient([{
+        "items": [{"sku": "A", "quantity": 1}], "total_count": 2,
+        "has_next": False,
+    }])
+    with pytest.raises(ValueError, match="total_count"):
+        _fetch_bundles(mismatch, [UUID])
+
+
+@pytest.mark.parametrize("total", [True, -1, 1.5, "1", {}, []])
+def test_bundle_total_count_is_nonnegative_integer_when_present(total):
+    with pytest.raises(ValueError, match="total_count"):
+        _fetch_bundles(StaticClient([{
+            "items": [], "total_count": total, "has_next": False,
+        }]), [UUID])
+
+
+@pytest.mark.parametrize("sku", [None, "", "   ", True, 0, -1, 1.5, {}, []])
+def test_bundle_item_requires_usable_sku(sku):
+    with pytest.raises(ValueError, match="SKU"):
+        _normalize([{
+            "state": "IN_TRANSIT", "macrolocal_cluster_id": 10,
+            "bundle_id": UUID,
+        }], {UUID: [{"sku": sku, "quantity": 1}]})
+
+
+@pytest.mark.parametrize("sku", [7, "SKU-7"])
+def test_bundle_item_accepts_positive_integer_or_nonblank_string_sku(sku):
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": 10,
+        "bundle_id": UUID,
+    }], {UUID: [{"sku": sku, "quantity": 0}]})
+    assert [(row.sku, row.inbound_quantity) for row in rows] == [(str(sku), 0)]
+    assert diagnostics == () and quality == OzonRecordQualityEvidence()
+
+
+def test_invalid_quantity_is_scoped_to_known_sku():
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": 10,
+        "bundle_id": UUID,
+    }], {UUID: [
+        {"sku": "SKU-A", "quantity": 2},
+        {"sku": "SKU-B", "quantity": None},
+    ]})
+    assert [(row.sku, row.inbound_quantity) for row in rows] == [("SKU-A", 2)]
+    assert quality == OzonRecordQualityEvidence(1, ("SKU-B",))
+    assert [(item.code, item.severity) for item in diagnostics] == [
+        ("INVALID_SUPPLY_BUNDLE_ITEM", "warning")]
+
+
+def test_unknown_state_and_unresolved_cluster_are_sku_scoped():
+    rows, diagnostics, quality = _normalize([
+        {"state": "SUPPLY_TELEPORTED", "bundle_id": "future"},
+        {"state": "IN_TRANSIT", "macrolocal_cluster_id": {},
+         "bundle_id": "unplaced"},
+    ], {
+        "future": [{"sku": "SKU-B", "quantity": 1}],
+        "unplaced": [{"sku": "SKU-C", "quantity": 1}],
+    })
+    assert rows == ()
+    assert quality == OzonRecordQualityEvidence(2, ("SKU-B", "SKU-C"))
+    assert {(item.code, item.severity) for item in diagnostics} == {
+        ("UNKNOWN_SUPPLY_STATE", "warning"),
+        ("INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID", "warning"),
+    }
+
+
+def test_one_item_with_multiple_scoped_failures_is_rejected_once():
+    rows, diagnostics, quality = _normalize([{
+        "state": "SUPPLY_TELEPORTED", "macrolocal_cluster_id": 999,
+        "bundle_id": UUID,
+    }], {UUID: [{"sku": "SKU-B", "quantity": None}]})
+    assert rows == ()
+    assert quality == OzonRecordQualityEvidence(1, ("SKU-B",))
+    assert {item.code for item in diagnostics} == {
+        "UNKNOWN_SUPPLY_STATE", "INVALID_SUPPLY_BUNDLE_ITEM"}
+
+
+@pytest.mark.parametrize("warehouse_id", ["501", True, 1.5, {}, []])
+def test_wrong_type_warehouse_fallback_is_sku_scoped(warehouse_id):
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT",
+        "storage_warehouse": {"warehouse_id": warehouse_id},
+        "bundle_id": UUID,
+    }], {UUID: [{"sku": "SKU-B", "quantity": 1}]}, mapping={501: 10})
+    assert rows == ()
+    assert quality == OzonRecordQualityEvidence(1, ("SKU-B",))
+    assert [(item.code, item.severity) for item in diagnostics] == [
+        ("UNRESOLVED_SUPPLY_CLUSTER", "warning")]

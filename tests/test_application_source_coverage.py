@@ -7,7 +7,12 @@ from backend.decision.need import calculate_need
 from backend.domain.contracts import AnalysisSourceCoverage
 from backend.ingestion.availability import AvailabilityRecord
 from backend.ozon.adapters.catalog import ClusterCatalogResult
-from backend.ozon.endpoints import FBO_POSTINGS_PATH
+from backend.ozon.endpoints import (
+    FBO_POSTINGS_PATH,
+    SUPPLY_ORDER_BUNDLE_PATH,
+    SUPPLY_ORDER_GET_PATH,
+    SUPPLY_ORDER_LIST_PATH,
+)
 from backend.ozon.source_contracts import Cluster, SellerWarehouse
 from backend.ozon.sync import sync_ozon_source
 
@@ -153,3 +158,87 @@ def test_scoped_wire_corruption_propagates_adapter_snapshot_coverage_and_need(mo
     assert prepared.source_coverage.demand_complete_for("SKU-B") is False
     assert _need("SKU-A", prepared.source_coverage).calculated_need_qty == 10
     assert _need("SKU-B", prepared.source_coverage).calculated_need_qty is None
+
+
+def _patch_inbound_acceptance_dependencies(monkeypatch):
+    monkeypatch.setattr(sync_module, "next_backfill", lambda _window: None)
+    monkeypatch.setattr(sync_module, "fetch_postings", lambda *_args: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_clusters", lambda _client: ClusterCatalogResult(
+        (Cluster(10, "Москва"),), {501: 10}, ()))
+    monkeypatch.setattr(sync_module, "fetch_seller_warehouses", lambda _client: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_product_skus", lambda _client: ("SKU-A", "SKU-B"))
+    monkeypatch.setattr(sync_module, "fetch_fbo_stock", lambda _client, _skus: (
+        (AvailabilityRecord("SKU-A", "W", "Москва", 0, None, fbo_quantity=3),
+         AvailabilityRecord("SKU-B", "W", "Москва", 0, None, fbo_quantity=3)), ()))
+    monkeypatch.setattr(sync_module, "fetch_seller_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_placement_zones", lambda *_args: ((), ()))
+
+
+def _calculated_need_from_source(source, sku, *, include_inbound=True):
+    prepared = api_module._api_prepared_inputs(source)
+    fbo, inbound = aggregate_api_need_availability(
+        source.availability, prepared.source_coverage, sku=sku)
+    return prepared.source_coverage, inbound, calculate_need(
+        sku=sku, destination_cluster_id="Москва", weekly_rate=Decimal("7"),
+        horizon_days=14, fbo_stock=fbo, inbound_qty=inbound,
+        include_inbound=include_inbound, ozon_recommended_qty=None,
+        ozon_horizon_days=None, demand_source_complete=True)
+
+
+def test_scoped_inbound_wire_corruption_blocks_only_affected_sku_need(monkeypatch):
+    _patch_inbound_acceptance_dependencies(monkeypatch)
+
+    class Client:
+        def post_json(self, path, _payload, **_kwargs):
+            if path == SUPPLY_ORDER_LIST_PATH:
+                return {"order_ids": [7]}
+            if path == SUPPLY_ORDER_GET_PATH:
+                return {"orders": [{"order_id": 7, "supplies": [{
+                    "state": "IN_TRANSIT", "macrolocal_cluster_id": 10,
+                    "bundle_id": "bundle",
+                }]}]}
+            if path == SUPPLY_ORDER_BUNDLE_PATH:
+                return {"items": [
+                    {"sku": "SKU-A", "quantity": 2},
+                    {"sku": "SKU-B", "quantity": None},
+                ], "has_next": False, "total_count": 2}
+            raise AssertionError(path)
+
+    source = sync_ozon_source(Client())
+    inbound_evidence = next(
+        item for item in source.endpoint_evidence if item.name == "inbound")
+    coverage_a, inbound_a, need_a = _calculated_need_from_source(source, "SKU-A")
+    coverage_b, inbound_b, need_b = _calculated_need_from_source(source, "SKU-B")
+
+    assert inbound_evidence.complete is True
+    assert inbound_evidence.record_quality.incomplete_skus == ("SKU-B",)
+    assert coverage_a.inbound_complete_for("SKU-A") is True
+    assert inbound_a == 2 and need_a.calculated_need_qty is not None
+    assert coverage_b.inbound_complete_for("SKU-B") is False
+    assert inbound_b is None and need_b.calculated_need_qty is None
+    assert "MISSING_INBOUND_QTY" in need_b.blocker_codes
+
+
+def test_global_inbound_wire_corruption_blocks_all_skus_but_not_disabled_inbound(monkeypatch):
+    _patch_inbound_acceptance_dependencies(monkeypatch)
+
+    class Client:
+        def post_json(self, path, _payload, **_kwargs):
+            if path == SUPPLY_ORDER_LIST_PATH:
+                return {"order_ids": None}
+            raise AssertionError(path)
+
+    source = sync_ozon_source(Client())
+    inbound_evidence = next(
+        item for item in source.endpoint_evidence if item.name == "inbound")
+    assert inbound_evidence.complete is False
+
+    for sku in ("SKU-A", "SKU-B"):
+        source_coverage, inbound, need = _calculated_need_from_source(source, sku)
+        assert source_coverage.inbound_complete_for(sku) is False
+        assert inbound is None and need.calculated_need_qty is None
+        assert "MISSING_INBOUND_QTY" in need.blocker_codes
+        _coverage, _inbound, without_inbound = _calculated_need_from_source(
+            source, sku, include_inbound=False)
+        assert without_inbound.calculated_need_qty is not None
+        assert "MISSING_INBOUND_QTY" not in without_inbound.blocker_codes

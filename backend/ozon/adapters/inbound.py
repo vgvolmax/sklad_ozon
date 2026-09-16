@@ -37,32 +37,54 @@ def classify_supply_state(value: object) -> SupplyState:
     return SupplyState.UNKNOWN
 
 
+def _root(response: object, endpoint: str) -> dict:
+    if not isinstance(response, dict):
+        raise ValueError(f"invalid {endpoint} response envelope")
+    if "result" not in response:
+        return response
+    result = response["result"]
+    if not isinstance(result, dict):
+        raise ValueError(f"invalid {endpoint} result envelope")
+    return result
+
+
+def _positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _bundle_id(supply: dict) -> str:
+    value = supply.get("bundle_id")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("non-final supply has invalid bundle ID")
+    return value.strip()
+
+
+def _sku(value: object) -> str:
+    if _positive_int(value):
+        return str(value)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    raise ValueError("supply bundle item has invalid SKU")
+
+
 def _resolve_supply_cluster(
         supply: dict, clusters: dict[int, str],
         warehouse_to_macrolocal: dict[int, int]) -> tuple[str | None, str | None]:
     """Resolve canonical direct cluster evidence, falling back only when absent."""
-    direct = supply.get("macrolocal_cluster_id")
-    if direct is not None:
-        if isinstance(direct, bool) or not isinstance(direct, int) or direct <= 0:
+    if "macrolocal_cluster_id" in supply:
+        direct = supply["macrolocal_cluster_id"]
+        if not _positive_int(direct):
             return None, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"
         cluster = clusters.get(direct)
         return (cluster, None) if cluster is not None else (None, "UNRESOLVED_SUPPLY_CLUSTER")
 
     storage = supply.get("storage_warehouse")
     warehouse_id = storage.get("warehouse_id") if isinstance(storage, dict) else None
-    try:
-        cluster = clusters[warehouse_to_macrolocal[int(warehouse_id)]]
-    except (KeyError, TypeError, ValueError):
+    if not _positive_int(warehouse_id):
         return None, "UNRESOLVED_SUPPLY_CLUSTER"
-    return cluster, None
-
-
-def _items(response: dict, key: str) -> list:
-    value = response.get(key)
-    if isinstance(value, list):
-        return value
-    result = response.get("result")
-    return result.get(key, []) if isinstance(result, dict) and isinstance(result.get(key, []), list) else []
+    macrolocal_id = warehouse_to_macrolocal.get(warehouse_id)
+    cluster = clusters.get(macrolocal_id) if macrolocal_id is not None else None
+    return (cluster, None) if cluster is not None else (None, "UNRESOLVED_SUPPLY_CLUSTER")
 
 
 def normalize_inbound(details: list[dict], bundle_items: dict[str, list[dict]], clusters: dict[int, str],
@@ -72,54 +94,70 @@ def normalize_inbound(details: list[dict], bundle_items: dict[str, list[dict]], 
     rejected_record_count = 0
     incomplete_skus: set[str] = set()
     for order in details:
-        order_id = int(order.get("order_id", 0))
+        if not isinstance(order, dict) or not _positive_int(order.get("order_id")):
+            raise ValueError("invalid supply-order detail")
+        order_id = order["order_id"]
         supplies = order.get("supplies")
-        for supply in supplies if isinstance(supplies, list) else ():
+        if not isinstance(supplies, list):
+            raise ValueError(f"supply order {order_id} has invalid supplies evidence")
+        for supply in supplies:
             if not isinstance(supply, dict):
-                continue
+                raise ValueError(f"supply order {order_id} contains invalid supply evidence")
             state = classify_supply_state(supply.get("state"))
             if state is SupplyState.FINAL:
                 continue
-            if state is SupplyState.UNKNOWN:
-                diagnostics.append(ImportDiagnostic("error", "UNKNOWN_SUPPLY_STATE", f"Unknown state for supply order {order_id}."))
-                continue
-            bundle_id = str(supply.get("bundle_id") or "").strip()
-            if not bundle_id:
-                diagnostics.append(ImportDiagnostic("error", "MISSING_SUPPLY_BUNDLE_ID", f"Supply order {order_id} has no bundle ID."))
-                continue
+            bundle_id = _bundle_id(supply)
             items = bundle_items.get(bundle_id)
             if not items:
                 diagnostics.append(ImportDiagnostic(
                     "error", "MISSING_SUPPLY_BUNDLE_ITEMS",
                     f"Supply order {order_id} has no bundle item evidence."))
                 continue
+            if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+                raise ValueError(f"bundle {bundle_id} contains malformed items")
+
+            parsed: list[tuple[str, int | None]] = []
+            for item in items:
+                sku = _sku(item.get("sku"))
+                quantity = item.get("quantity")
+                valid_quantity = (isinstance(quantity, int) and
+                                  not isinstance(quantity, bool) and quantity >= 0)
+                parsed.append((sku, quantity if valid_quantity else None))
+                if not valid_quantity:
+                    diagnostics.append(ImportDiagnostic(
+                        "warning", "INVALID_SUPPLY_BUNDLE_ITEM",
+                        f"Bundle {bundle_id} contains invalid quantity for SKU {sku}."))
+
+            uncertainty_code = None
+            if state is SupplyState.UNKNOWN:
+                uncertainty_code = "UNKNOWN_SUPPLY_STATE"
+                diagnostics.append(ImportDiagnostic(
+                    "warning", uncertainty_code,
+                    f"Unknown state for supply order {order_id}; affected inbound quantity is unknown."))
+            elif state is SupplyState.DISPUTED:
+                uncertainty_code = "REPORT_REJECTED_SUPPLY_STATE"
+                diagnostics.append(ImportDiagnostic(
+                    "warning", uncertainty_code,
+                    f"Supply order {order_id} contains REPORT_REJECTED supply; inbound quantity for affected SKU is unknown."))
+
             cluster = None
             if state is SupplyState.INBOUND:
                 cluster, cluster_error = _resolve_supply_cluster(
                     supply, clusters, warehouse_to_macrolocal)
                 if cluster_error is not None:
+                    uncertainty_code = cluster_error
                     message = (f"Supply order {order_id} has invalid macrolocal cluster ID."
                                if cluster_error == "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"
                                else f"Supply order {order_id} has unresolved placement cluster.")
-                    diagnostics.append(ImportDiagnostic("error", cluster_error, message))
-                    continue
-            valid_items: list[tuple[str, int]] = []
-            for item in items:
-                sku = str(item.get("sku", "")).strip()
-                quantity = item.get("quantity")
-                if not sku or isinstance(quantity, bool) or not isinstance(quantity, (int, float)) or quantity < 0 or int(quantity) != quantity:
-                    diagnostics.append(ImportDiagnostic("error", "INVALID_SUPPLY_BUNDLE_ITEM", f"Bundle {bundle_id} contains invalid product evidence."))
-                    continue
-                valid_items.append((sku, int(quantity)))
-            if state is SupplyState.DISPUTED:
-                rejected_record_count += len(valid_items)
-                incomplete_skus.update(sku for sku, _quantity in valid_items)
-                diagnostics.append(ImportDiagnostic(
-                    "warning", "REPORT_REJECTED_SUPPLY_STATE",
-                    f"Supply order {order_id} contains REPORT_REJECTED supply; inbound quantity for affected SKU is unknown."))
-                continue
-            for sku, quantity in valid_items:
-                totals[(sku, cluster)] = totals.get((sku, cluster), 0) + quantity
+                    diagnostics.append(ImportDiagnostic("warning", cluster_error, message))
+
+            for sku, quantity in parsed:
+                if uncertainty_code is not None or quantity is None:
+                    rejected_record_count += 1
+                    incomplete_skus.add(sku)
+                else:
+                    totals[(sku, cluster)] = totals.get((sku, cluster), 0) + quantity
+
     records = tuple(AvailabilityRecord(sku, cluster, cluster, 0.0, None, fbo_quantity=None, inbound_quantity=quantity)
                     for (sku, cluster), quantity in sorted(totals.items()))
     quality = OzonRecordQualityEvidence(
@@ -129,39 +167,56 @@ def normalize_inbound(details: list[dict], bundle_items: dict[str, list[dict]], 
 
 def _fetch_order_ids(client: OzonClient) -> list[int]:
     order_ids: list[int] = []
+    seen_ids: set[int] = set()
     last_id = ""
-    seen = {last_id}
+    seen_cursors: set[str] = set()
     while True:
         payload = {"filter": {}, "limit": PAGE_SIZE, "sort_by": "ORDER_CREATION"}
         if last_id:
             payload["last_id"] = last_id
-        response = client.post_json(SUPPLY_ORDER_LIST_PATH, payload, policy=READ)
-        order_ids.extend(int(value) for value in _items(response, "order_ids"))
-        root = response.get("result") if isinstance(response.get("result"), dict) else response
-        next_id = str(root.get("last_id") or "")
+        root = _root(client.post_json(SUPPLY_ORDER_LIST_PATH, payload, policy=READ), "supply-order list")
+        values = root.get("order_ids")
+        if not isinstance(values, list):
+            raise ValueError("supply-order list order_ids must be an array")
+        for value in values:
+            if not _positive_int(value):
+                raise ValueError("invalid supply-order ID")
+            if value in seen_ids:
+                raise ValueError("duplicate supply-order ID")
+            seen_ids.add(value)
+            order_ids.append(value)
+        cursor = root.get("last_id", "")
+        if cursor is None:
+            raise ValueError("invalid supply-order cursor")
+        if not isinstance(cursor, str):
+            raise ValueError("invalid supply-order cursor")
+        next_id = cursor.strip()
         if not next_id:
             break
-        if next_id in seen:
+        if next_id in seen_cursors:
             raise ValueError("non-progressing supply-order cursor")
-        seen.add(next_id); last_id = next_id
+        seen_cursors.add(next_id)
+        last_id = next_id
     return order_ids
 
 
 def _fetch_details(client: OzonClient, order_ids: list[int]) -> list[dict]:
     details = []
     for start in range(0, len(order_ids), DETAIL_BATCH_SIZE):
-        response = client.post_json(SUPPLY_ORDER_GET_PATH, {"order_ids": order_ids[start:start + DETAIL_BATCH_SIZE]}, policy=READ)
         batch = order_ids[start:start + DETAIL_BATCH_SIZE]
-        returned = [item for item in _items(response, "orders") if isinstance(item, dict)]
+        root = _root(client.post_json(
+            SUPPLY_ORDER_GET_PATH, {"order_ids": batch}, policy=READ), "supply-order details")
+        returned = root.get("orders")
+        if not isinstance(returned, list):
+            raise ValueError("supply-order details orders must be an array")
+        if any(not isinstance(item, dict) for item in returned):
+            raise ValueError("invalid supply-order detail object")
         returned_ids = []
         for item in returned:
             value = item.get("order_id")
-            if isinstance(value, bool):
+            if not _positive_int(value):
                 raise ValueError("invalid supply-order detail ID")
-            try:
-                returned_ids.append(int(value))
-            except (TypeError, ValueError) as exc:
-                raise ValueError("invalid supply-order detail ID") from exc
+            returned_ids.append(value)
         if len(returned_ids) != len(set(returned_ids)):
             raise ValueError("duplicate supply-order detail ID")
         if set(returned_ids) != set(batch):
@@ -174,20 +229,44 @@ def _fetch_bundles(client: OzonClient, bundle_ids: list[str]) -> dict[str, list[
     result: dict[str, list[dict]] = {bundle_id: [] for bundle_id in bundle_ids}
     for bundle_id in bundle_ids:
         last_id = ""
-        seen = {last_id}
+        seen_cursors: set[str] = set()
+        expected_total: int | None = None
         while True:
             payload = {"bundle_ids": [bundle_id], "limit": 100}
             if last_id:
                 payload["last_id"] = last_id
-            response = client.post_json(SUPPLY_ORDER_BUNDLE_PATH, payload, policy=READ)
-            result[bundle_id].extend(item for item in _items(response, "items") if isinstance(item, dict))
-            root = response.get("result") if isinstance(response.get("result"), dict) else response
-            if not bool(root.get("has_next")):
+            root = _root(client.post_json(
+                SUPPLY_ORDER_BUNDLE_PATH, payload, policy=READ), "supply-order bundle")
+            items = root.get("items")
+            if not isinstance(items, list):
+                raise ValueError("supply-order bundle items must be an array")
+            if any(not isinstance(item, dict) for item in items):
+                raise ValueError("supply-order bundle contains invalid item")
+            result[bundle_id].extend(items)
+
+            if "total_count" in root:
+                total = root["total_count"]
+                if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+                    raise ValueError("invalid supply-order bundle total_count")
+                if expected_total is not None and total != expected_total:
+                    raise ValueError("inconsistent supply-order bundle total_count")
+                expected_total = total
+
+            has_next = root.get("has_next")
+            if not isinstance(has_next, bool):
+                raise ValueError("supply-order bundle has_next must be boolean")
+            if not has_next:
+                if expected_total is not None and len(result[bundle_id]) != expected_total:
+                    raise ValueError("supply-order bundle total_count does not match items")
                 break
-            next_id = str(root.get("last_id") or "")
-            if not next_id or next_id in seen:
+            cursor = root.get("last_id")
+            if not isinstance(cursor, str) or not cursor.strip():
+                raise ValueError("invalid supply-order bundle cursor")
+            next_id = cursor.strip()
+            if next_id in seen_cursors:
                 raise ValueError("non-progressing supply bundle cursor")
-            seen.add(next_id); last_id = next_id
+            seen_cursors.add(next_id)
+            last_id = next_id
     return result
 
 
@@ -195,8 +274,15 @@ def fetch_inbound(client: OzonClient, cluster_by_id: dict[int, str] | None = Non
                   warehouse_to_macrolocal: dict[int, int] | None = None):
     order_ids = _fetch_order_ids(client)
     details = _fetch_details(client, order_ids)
-    bundle_ids = sorted({str(supply.get("bundle_id") or "").strip() for order in details
-                         for supply in order.get("supplies", ()) if isinstance(supply, dict)
-                         and str(supply.get("bundle_id") or "").strip()})
-    bundles = _fetch_bundles(client, bundle_ids)
+    bundle_ids: set[str] = set()
+    for order in details:
+        supplies = order.get("supplies")
+        if not isinstance(supplies, list):
+            raise ValueError(f"supply order {order['order_id']} has invalid supplies evidence")
+        for supply in supplies:
+            if not isinstance(supply, dict):
+                raise ValueError(f"supply order {order['order_id']} contains invalid supply evidence")
+            if classify_supply_state(supply.get("state")) is not SupplyState.FINAL:
+                bundle_ids.add(_bundle_id(supply))
+    bundles = _fetch_bundles(client, sorted(bundle_ids))
     return normalize_inbound(details, bundles, cluster_by_id or {}, warehouse_to_macrolocal or {})
