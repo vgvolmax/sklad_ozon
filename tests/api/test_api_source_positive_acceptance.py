@@ -3,9 +3,13 @@
 from dataclasses import replace
 
 import backend.api as api_module
-from backend.ozon.source_contracts import PlacementZoneEvidence
-from tests.api.test_analysis import CLIENT, _analysis_data, _api_parity_fixture
-from tests.helpers.xlsx_fixtures import make_real_unitka
+import backend.ozon.sync as sync_module
+from backend.ozon.adapters.catalog import ClusterCatalogResult
+from backend.ozon.endpoints import FBS_STOCK_PATH
+from backend.ozon.source_contracts import Cluster, PlacementZoneEvidence
+from backend.ozon.sync import sync_ozon_source
+from tests.api.test_analysis import CLIENT, _analysis_data, _api_parity_fixture, _parity_files
+from tests.helpers.xlsx_fixtures import make_real_unitka, make_xlsx
 
 
 def _clean_api_source():
@@ -19,6 +23,82 @@ def _clean_api_source():
         ),
         placement_zones=(PlacementZoneEvidence("SKU-1", ("SORTABLE",)),),
     )
+
+
+def _seller_stock_wire_source(monkeypatch, seller_response):
+    base = _api_parity_fixture()
+    sku_b_orders = tuple(
+        replace(row, sku="SKU-B", article="ART-B") for row in base.orders)
+    fbo = base.availability + tuple(
+        replace(row, sku="SKU-B", article="ART-B") for row in base.availability)
+    monkeypatch.setattr(sync_module, "next_backfill", lambda _window: None)
+    monkeypatch.setattr(sync_module, "fetch_postings", lambda *_args: (
+        base.orders + sku_b_orders, ()))
+    monkeypatch.setattr(sync_module, "fetch_clusters", lambda _client: ClusterCatalogResult(
+        (Cluster(10, "Москва"),), {501: 10}, ()))
+    monkeypatch.setattr(sync_module, "fetch_seller_warehouses", lambda _client: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_product_skus", lambda _client: ("SKU-1", "SKU-B"))
+    monkeypatch.setattr(sync_module, "fetch_fbo_stock", lambda *_args: (fbo, ()))
+    monkeypatch.setattr(sync_module, "fetch_inbound", lambda *_args: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_placement_zones", lambda *_args: ((), ()))
+
+    class Client:
+        def post_json(self, path, _payload, **_kwargs):
+            assert path == FBS_STOCK_PATH
+            return seller_response
+
+    return sync_ozon_source(Client())
+
+
+def _analyze_two_sku_wire_source(source):
+    api_module.OZON_SOURCE_STORE.put(source)
+    base_files = _parity_files()
+    products = make_xlsx(
+        headers=["SKU", "Артикул", "Себестоимость", "Доступный остаток", "Цена", "Комиссия", "Объём, л"],
+        rows=[
+            ["SKU-1", "ART-1", 100, 99, 1000, "10%", 1],
+            ["SKU-B", "ART-B", 100, 99, 1000, "10%", 1],
+        ],
+    )
+    response = CLIENT.post("/api/analysis", files={
+        "tariffs_file": base_files["tariffs_file"],
+        "product_economics_file": ("products.xlsx", products),
+    }, data=_analysis_data(
+        source_mode="api", source_snapshot_id=source.source_snapshot_id,
+        as_of=source.source_as_of.isoformat(),
+    ))
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_scoped_seller_stock_wire_corruption_blocks_only_affected_optimizer_sku(monkeypatch):
+    source = _seller_stock_wire_source(monkeypatch, {"products": [
+        {"sku": "SKU-1", "warehouse_id": 1, "free_stock": 10},
+        {"sku": "SKU-B", "warehouse_id": 1, "free_stock": None},
+    ], "has_next": False})
+    evidence = next(item for item in source.endpoint_evidence if item.name == "seller_stock")
+    payload = _analyze_two_sku_wire_source(source)
+
+    assert evidence.complete is True
+    assert evidence.record_quality.incomplete_skus == ("SKU-B",)
+    assert evidence.record_quality.rejected_record_count == 1
+    assert {row["sku"] for row in payload["allocations"]} == {"SKU-1"}
+    diagnostics = {(item.get("sku"), item["code"]) for item in payload["diagnostics"]}
+    assert ("SKU-B", "MISSING_SELLER_AVAILABLE_STOCK") in diagnostics
+
+
+def test_global_seller_stock_wire_corruption_blocks_partial_and_unitka_fallback(monkeypatch):
+    source = _seller_stock_wire_source(monkeypatch, {"products": None})
+    evidence = next(item for item in source.endpoint_evidence if item.name == "seller_stock")
+    payload = _analyze_two_sku_wire_source(source)
+
+    assert evidence.complete is False
+    assert payload["allocations"] == []
+    missing = {
+        item.get("sku") for item in payload["diagnostics"]
+        if item["code"] == "MISSING_SELLER_AVAILABLE_STOCK"
+    }
+    assert missing == {"SKU-1", "SKU-B"}
 
 
 def test_api_source_reaches_positive_calculated_shippable_and_candidate_before_live_validation():

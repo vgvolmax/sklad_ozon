@@ -8,6 +8,8 @@ from backend.domain.contracts import AnalysisSourceCoverage
 from backend.ingestion.availability import AvailabilityRecord
 from backend.ozon.adapters.catalog import ClusterCatalogResult
 from backend.ozon.endpoints import (
+    FBO_STOCK_PATH,
+    FBS_STOCK_PATH,
     FBO_POSTINGS_PATH,
     SUPPLY_ORDER_BUNDLE_PATH,
     SUPPLY_ORDER_GET_PATH,
@@ -83,6 +85,21 @@ def test_scoped_inbound_gap_overrides_partial_numeric_observation():
     assert aggregate_api_need_availability(records, scoped, sku="SKU-B") == (10, 4)
 
 
+def test_fbo_and_seller_stock_completeness_can_be_scoped_to_sku():
+    scoped = AnalysisSourceCoverage(
+        True, True, True, True,
+        fbo_stock_incomplete_skus=("SKU-B",),
+        seller_stock_complete=True,
+        seller_stock_incomplete_skus=("SKU-B",),
+    )
+    assert scoped.fbo_stock_complete_for("SKU-A") is True
+    assert scoped.fbo_stock_complete_for("SKU-B") is False
+    assert scoped.seller_stock_complete_for("SKU-A") is True
+    assert scoped.seller_stock_complete_for("SKU-B") is False
+    records = (row("W", 10),)
+    assert aggregate_api_need_availability(records, scoped, sku="SKU-B")[0] is None
+
+
 def _need(sku, source_coverage):
     return calculate_need(
         sku=sku,
@@ -142,10 +159,10 @@ def test_scoped_wire_corruption_propagates_adapter_snapshot_coverage_and_need(mo
     monkeypatch.setattr(sync_module, "fetch_seller_warehouses", lambda _client: (
         (SellerWarehouse(1, "Seller", None, True, False),), ()))
     monkeypatch.setattr(sync_module, "fetch_product_skus", lambda _client: ("SKU-A", "SKU-B"))
-    monkeypatch.setattr(sync_module, "fetch_fbo_stock", lambda _client, _skus: ((), ()))
-    monkeypatch.setattr(sync_module, "fetch_seller_stock", lambda _client, _skus: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_seller_stock", lambda *_args: ((), ()))
     monkeypatch.setattr(sync_module, "fetch_inbound", lambda _client, _clusters, _mapping: ((), ()))
-    monkeypatch.setattr(sync_module, "fetch_placement_zones", lambda _client, _skus: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_placement_zones", lambda *_args: ((), ()))
 
     source = sync_ozon_source(ScopedOrdersClient())
     fbo_evidence = next(item for item in source.endpoint_evidence if item.name == "orders_fbo")
@@ -167,7 +184,7 @@ def _patch_inbound_acceptance_dependencies(monkeypatch):
         (Cluster(10, "Москва"),), {501: 10}, ()))
     monkeypatch.setattr(sync_module, "fetch_seller_warehouses", lambda _client: ((), ()))
     monkeypatch.setattr(sync_module, "fetch_product_skus", lambda _client: ("SKU-A", "SKU-B"))
-    monkeypatch.setattr(sync_module, "fetch_fbo_stock", lambda _client, _skus: (
+    monkeypatch.setattr(sync_module, "fetch_fbo_stock", lambda _client, _skus, _mapping: (
         (AvailabilityRecord("SKU-A", "W", "Москва", 0, None, fbo_quantity=3),
          AvailabilityRecord("SKU-B", "W", "Москва", 0, None, fbo_quantity=3)), ()))
     monkeypatch.setattr(sync_module, "fetch_seller_stock", lambda *_args: ((), ()))
@@ -183,6 +200,116 @@ def _calculated_need_from_source(source, sku, *, include_inbound=True):
         horizon_days=14, fbo_stock=fbo, inbound_qty=inbound,
         include_inbound=include_inbound, ozon_recommended_qty=None,
         ozon_horizon_days=None, demand_source_complete=True)
+
+
+def _patch_stock_acceptance_dependencies(monkeypatch):
+    monkeypatch.setattr(sync_module, "next_backfill", lambda _window: None)
+    monkeypatch.setattr(sync_module, "fetch_postings", lambda *_args: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_clusters", lambda _client: ClusterCatalogResult(
+        (Cluster(10, "Москва"),), {501: 10}, ()))
+    monkeypatch.setattr(sync_module, "fetch_seller_warehouses", lambda _client: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_product_skus", lambda _client: ("SKU-A", "SKU-B"))
+    monkeypatch.setattr(sync_module, "fetch_inbound", lambda *_args: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_placement_zones", lambda *_args: ((), ()))
+
+
+def test_scoped_fbo_wire_corruption_reaches_need_for_only_affected_sku(monkeypatch):
+    _patch_stock_acceptance_dependencies(monkeypatch)
+    monkeypatch.setattr(sync_module, "fetch_seller_stock", lambda *_args: ((), ()))
+
+    class Client:
+        def post_json(self, path, _payload, **_kwargs):
+            assert path == FBO_STOCK_PATH
+            return {"items": [
+                {"sku": "SKU-A", "cluster_name": "Москва", "available_stock_count": 5},
+                {"sku": "SKU-B", "cluster_name": "Москва", "available_stock_count": None},
+            ]}
+
+    source = sync_ozon_source(Client())
+    evidence = next(item for item in source.endpoint_evidence if item.name == "fbo_stock")
+    coverage_a, _inbound_a, need_a = _calculated_need_from_source(source, "SKU-A", include_inbound=False)
+    coverage_b, _inbound_b, need_b = _calculated_need_from_source(source, "SKU-B", include_inbound=False)
+
+    assert evidence.complete is True
+    assert evidence.record_quality.incomplete_skus == ("SKU-B",)
+    assert evidence.record_quality.rejected_record_count == 1
+    assert coverage_a.fbo_stock_complete_for("SKU-A") is True
+    assert coverage_b.fbo_stock_complete_for("SKU-B") is False
+    assert aggregate_api_need_availability(
+        source.availability, coverage_a, sku="SKU-A")[0] == 5
+    assert need_a.calculated_need_qty is not None
+    assert aggregate_api_need_availability(
+        source.availability, coverage_b, sku="SKU-B")[0] is None
+    assert need_b.calculated_need_qty is None
+    assert "MISSING_FBO_STOCK" in need_b.blocker_codes
+
+
+def test_global_fbo_wire_corruption_discards_partial_stock_for_every_sku(monkeypatch):
+    _patch_stock_acceptance_dependencies(monkeypatch)
+    monkeypatch.setattr(sync_module, "fetch_seller_stock", lambda *_args: ((), ()))
+
+    class Client:
+        def post_json(self, path, _payload, **_kwargs):
+            assert path == FBO_STOCK_PATH
+            return {"items": [
+                {"sku": "SKU-A", "cluster_name": "Москва", "available_stock_count": 5},
+                {"sku": None, "cluster_name": "Москва", "available_stock_count": 5},
+            ]}
+
+    source = sync_ozon_source(Client())
+    evidence = next(item for item in source.endpoint_evidence if item.name == "fbo_stock")
+    assert evidence.complete is False
+    for sku in ("SKU-A", "SKU-B"):
+        coverage_for_sku, _inbound, need = _calculated_need_from_source(
+            source, sku, include_inbound=False)
+        assert coverage_for_sku.fbo_stock_complete_for(sku) is False
+        assert aggregate_api_need_availability(
+            source.availability, coverage_for_sku, sku=sku)[0] is None
+        assert need.calculated_need_qty is None
+        assert "MISSING_FBO_STOCK" in need.blocker_codes
+
+
+def test_scoped_seller_stock_wire_corruption_reaches_optimizer_coverage(monkeypatch):
+    _patch_stock_acceptance_dependencies(monkeypatch)
+    monkeypatch.setattr(sync_module, "fetch_fbo_stock", lambda *_args: ((), ()))
+
+    class Client:
+        def post_json(self, path, _payload, **_kwargs):
+            assert path == FBS_STOCK_PATH
+            return {"products": [
+                {"sku": "SKU-A", "warehouse_id": 1, "free_stock": 10},
+                {"sku": "SKU-B", "warehouse_id": 1, "free_stock": None},
+            ], "has_next": False}
+
+    source = sync_ozon_source(Client())
+    evidence = next(item for item in source.endpoint_evidence if item.name == "seller_stock")
+    prepared = api_module._api_prepared_inputs(source)
+    assert evidence.complete is True
+    assert evidence.record_quality.incomplete_skus == ("SKU-B",)
+    assert evidence.record_quality.rejected_record_count == 1
+    assert prepared.source_coverage.seller_stock_complete_for("SKU-A") is True
+    assert prepared.source_coverage.seller_stock_complete_for("SKU-B") is False
+    assert [(row.sku, row.fbs_quantity) for row in source.operational_seller_stock] == [
+        ("SKU-A", 10)
+    ]
+
+
+def test_global_seller_stock_wire_corruption_rejects_all_partial_evidence(monkeypatch):
+    _patch_stock_acceptance_dependencies(monkeypatch)
+    monkeypatch.setattr(sync_module, "fetch_fbo_stock", lambda *_args: ((), ()))
+
+    class Client:
+        def post_json(self, path, _payload, **_kwargs):
+            assert path == FBS_STOCK_PATH
+            return {"products": None}
+
+    source = sync_ozon_source(Client())
+    evidence = next(item for item in source.endpoint_evidence if item.name == "seller_stock")
+    prepared = api_module._api_prepared_inputs(source)
+    assert evidence.complete is False
+    assert prepared.source_coverage.seller_stock_complete_for("SKU-A") is False
+    assert prepared.source_coverage.seller_stock_complete_for("SKU-B") is False
+    assert source.operational_seller_stock == ()
 
 
 def test_scoped_inbound_wire_corruption_blocks_only_affected_sku_need(monkeypatch):

@@ -171,6 +171,7 @@ def _api_parity_fixture():
             EndpointEvidence("orders_fbs", "x", 0, True),
             EndpointEvidence("fbo_stock", "x", 2, True),
             EndpointEvidence("inbound", "x", 1, True),
+            EndpointEvidence("seller_stock", "x", len(seller), True),
         ), ())
 
 

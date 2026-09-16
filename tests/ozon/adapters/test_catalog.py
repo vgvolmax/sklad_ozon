@@ -1,3 +1,5 @@
+import pytest
+
 from backend.ozon.adapters.catalog import V1_CLUSTER_REQUEST, fetch_clusters, normalize_clusters, normalize_seller_warehouses
 
 
@@ -20,8 +22,8 @@ def test_v1_request_has_required_cluster_type():
 
 
 def test_generic_local_id_is_not_canonical_macro_identity():
-    result=normalize_clusters({"clusters":[{"id":10,"name":"wrong"}]},v1())
-    assert result.clusters==() and result.diagnostics[0].code=="INVALID_CLUSTER"
+    with pytest.raises(ValueError):
+        normalize_clusters({"clusters":[{"id":10,"name":"wrong"}]},v1())
 
 
 def test_conflicting_warehouse_mapping_remains_blocked_after_matching_observation():
@@ -44,3 +46,27 @@ def test_seller_warehouse_strips_contacts_and_conflicts_fail_closed():
     assert not diagnostics and "PII" not in repr(warehouses)
     conflicted, diagnostics=normalize_seller_warehouses({"warehouses":[{"warehouse_id":1,"name":"A","is_active":True},{"warehouse_id":1,"name":"B","is_active":True}]})
     assert conflicted==() and diagnostics[-1].code=="CONFLICTING_SELLER_WAREHOUSE_ID"
+
+
+@pytest.mark.parametrize("response", [{}, {"clusters": None}, {"clusters": {}}, {"clusters": ["bad"]}])
+def test_cluster_envelope_and_items_fail_closed(response):
+    with pytest.raises(ValueError):
+        normalize_clusters(response)
+
+
+@pytest.mark.parametrize("cluster_id", [True, 0, -1, "10", 10.0])
+def test_cluster_id_is_strict_positive_integer(cluster_id):
+    with pytest.raises(ValueError):
+        normalize_clusters({"clusters": [{"macrolocal_cluster_id": cluster_id, "data": {"macrolocal_cluster": {"name": "M"}}}]})
+
+
+@pytest.mark.parametrize("response", [{}, {"warehouses": None}, {"warehouses": {}}, {"warehouses": ["bad"]}])
+def test_seller_warehouse_envelope_and_items_fail_closed(response):
+    with pytest.raises(ValueError):
+        normalize_seller_warehouses(response)
+
+
+@pytest.mark.parametrize("active", [None, 0, 1, "false"])
+def test_seller_warehouse_active_is_strict_boolean(active):
+    with pytest.raises(ValueError):
+        normalize_seller_warehouses({"warehouses": [{"warehouse_id": 1, "is_active": active}]})

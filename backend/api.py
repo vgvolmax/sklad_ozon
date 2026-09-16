@@ -437,6 +437,16 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
         if evidence.name == "inbound" and evidence.record_quality is not None
         for sku in evidence.record_quality.incomplete_skus
     }))
+    fbo_stock_incomplete_skus = tuple(sorted({
+        sku for evidence in snapshot.endpoint_evidence
+        if evidence.name == "fbo_stock" and evidence.record_quality is not None
+        for sku in evidence.record_quality.incomplete_skus
+    }))
+    seller_stock_incomplete_skus = tuple(sorted({
+        sku for evidence in snapshot.endpoint_evidence
+        if evidence.name == "seller_stock" and evidence.record_quality is not None
+        for sku in evidence.record_quality.incomplete_skus
+    }))
     order_diagnostics = diagnostics_by_endpoint.get("orders_fbo", ()) + diagnostics_by_endpoint.get("orders_fbs", ())
     availability_diagnostics = diagnostics_by_endpoint.get("fbo_stock", ())
     if include_inbound:
@@ -448,12 +458,15 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
         tuple(snapshot.availability) + tuple(snapshot.operational_seller_stock),
         tuple(snapshot.placement_zones),
         AnalysisSourceCoverage(
-            completeness.get("orders_fbo", False),
-            completeness.get("orders_fbs", False),
-            completeness.get("fbo_stock", False),
-            completeness.get("inbound", False),
-            demand_incomplete_skus,
-            inbound_incomplete_skus,
+            orders_fbo_complete=completeness.get("orders_fbo", False),
+            orders_fbs_complete=completeness.get("orders_fbs", False),
+            fbo_stock_complete=completeness.get("fbo_stock", False),
+            inbound_complete=completeness.get("inbound", False),
+            demand_incomplete_skus=demand_incomplete_skus,
+            inbound_incomplete_skus=inbound_incomplete_skus,
+            fbo_stock_incomplete_skus=fbo_stock_incomplete_skus,
+            seller_stock_complete=completeness.get("seller_stock", False),
+            seller_stock_incomplete_skus=seller_stock_incomplete_skus,
         ),
     )
 

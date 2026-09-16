@@ -26,8 +26,8 @@ def test_total_reached_stops_before_nonblank_cursor():
 
 
 def test_second_page_reaches_total_without_terminal_cursor_request():
-    first_items = [{"sku": value} for value in range(1000)]
-    second_items = [{"sku": value} for value in range(1000, 1500)]
+    first_items = [{"sku": value} for value in range(1, 1001)]
+    second_items = [{"sku": value} for value in range(1001, 1501)]
     client = ProductClient([
         page(first_items, 1500, "page-2"),
         page(second_items, 1500, "terminal"),
@@ -47,7 +47,7 @@ def test_total_not_reached_rejects_repeated_cursor():
         page([], 2, "same"),
     ])
 
-    with pytest.raises(ValueError, match="non-progressing product-list cursor"):
+    with pytest.raises(ValueError, match="non-progressing product-list"):
         fetch_product_skus(client)
 
 
@@ -84,3 +84,40 @@ def test_stable_dedupe_preserves_first_seen_order_across_pages():
     ])
 
     assert fetch_product_skus(client) == ("2", "3")
+
+
+@pytest.mark.parametrize("response", [
+    {}, {"result": None}, {"result": {}}, {"result": {"items": None, "total": 0}},
+    {"result": {"items": {}, "total": 0}},
+])
+def test_product_collection_envelope_is_required(response):
+    with pytest.raises(ValueError):
+        fetch_product_skus(ProductClient([response]))
+
+
+@pytest.mark.parametrize("sku", [0, -1, 1.5, {}, [], " "])
+def test_product_sku_requires_positive_integer_or_nonblank_string(sku):
+    with pytest.raises(ValueError):
+        fetch_product_skus(ProductClient([page([{"sku": sku}], 1, "done")]))
+
+
+def test_explicit_empty_product_universe_is_valid():
+    assert fetch_product_skus(ProductClient([page([], 0, "ignored")])) == ()
+
+
+def test_product_total_must_remain_stable_and_may_not_be_exceeded():
+    with pytest.raises(ValueError):
+        fetch_product_skus(ProductClient([page([{"sku": 1}], 2, "next"), page([{"sku": 2}], 3, "done")]))
+    with pytest.raises(ValueError):
+        fetch_product_skus(ProductClient([page([{"sku": 1}, {"sku": 2}], 1, "done")]))
+
+
+@pytest.mark.parametrize("cursor", [None, 1, {}, [], " "])
+def test_product_continuation_cursor_is_strict(cursor):
+    with pytest.raises(ValueError):
+        fetch_product_skus(ProductClient([page([{"sku": 1}], 2, cursor)]))
+
+
+def test_product_page_must_make_raw_progress():
+    with pytest.raises(ValueError):
+        fetch_product_skus(ProductClient([page([], 1, "next")]))

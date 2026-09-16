@@ -60,7 +60,7 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
             record_quality = None
             if name == "clusters":
                 records, item_diagnostics = value.clusters, value.diagnostics
-            elif name in {"orders_fbo", "orders_fbs", "inbound"}:
+            elif name in {"orders_fbo", "orders_fbs", "inbound", "fbo_stock", "seller_stock", "placement_zones"}:
                 if len(value) == 3:
                     records, item_diagnostics, record_quality = value
                 else:  # Compatibility for injected legacy adapter doubles.
@@ -122,10 +122,19 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
     warehouse_to_macrolocal = clusters_result.warehouse_to_macrolocal if clusters_result is not None else {}
     seller_warehouses = run("seller_warehouses", lambda: fetch_seller_warehouses(client), ())
     cluster_by_id = {cluster.cluster_id: cluster.name for cluster in clusters}
+    cluster_by_warehouse = {
+        str(warehouse_id): cluster_by_id[macrolocal_id]
+        for warehouse_id, macrolocal_id in warehouse_to_macrolocal.items()
+        if macrolocal_id in cluster_by_id
+    }
     product_skus = run("products", lambda: (fetch_product_skus(client), ()), ())
     product_evidence = next(item for item in evidence if item.name == "products")
     if product_evidence.complete:
-        fbo = run("fbo_stock", lambda: fetch_fbo_stock(client, product_skus), ())
+        fbo = run(
+            "fbo_stock",
+            lambda: fetch_fbo_stock(client, product_skus, cluster_by_warehouse),
+            (),
+        )
     else:
         fbo = ()
         if not product_evidence.complete:
