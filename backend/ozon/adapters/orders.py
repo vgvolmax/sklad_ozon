@@ -5,6 +5,7 @@ the similarly geographic ``region`` field is deliberately ignored.
 """
 
 from datetime import date, datetime, time, timezone
+from math import isfinite
 
 from backend.domain.contracts import ImportDiagnostic, OrderLifecycle, OrderRecord
 from backend.ozon.client import OzonClient, OzonRequestPolicy
@@ -38,6 +39,20 @@ def _text(value: object) -> str:
     return str(value).strip() if value is not None else ""
 
 
+def _wire_text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _sku_text(value: object) -> str:
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value) if value > 0 else ""
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
 def _business_timestamp(value: object, field: str, diagnostics: list[ImportDiagnostic]) -> str:
     raw = _text(value)
     if not raw:
@@ -58,6 +73,15 @@ def _business_timestamp(value: object, field: str, diagnostics: list[ImportDiagn
 def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
         tuple[OrderRecord, ...], tuple[ImportDiagnostic, ...], OzonRecordQualityEvidence]:
     """Normalize only documented endpoint fields and discard all PII."""
+    products = posting.get("products")
+    if not isinstance(products, list) or not products:
+        raise ValueError("posting has no usable products collection")
+    if any(not isinstance(product, dict) for product in products):
+        raise ValueError("posting contains a non-object product")
+    sku_field = "product_id" if fbs else "sku"
+    if any(not _sku_text(product.get(sku_field)) for product in products):
+        raise ValueError("posting product has no usable SKU")
+
     status = _text(posting.get("status_alias" if fbs else "status"))
     analytics = posting.get("analytics_data")
     if not isinstance(analytics, dict):
@@ -66,12 +90,12 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
     if not isinstance(financial, dict):
         financial = {}
     origin_cluster = _text(financial.get("cluster_from"))
-    destination = _text(financial.get("cluster_to"))
+    destination = _wire_text(financial.get("cluster_to"))
     origin_warehouse = _text(analytics.get("warehouse_name")) or None
     lifecycle = _lifecycle(status)
     diagnostics: list[ImportDiagnostic] = []
-    accepted = _business_timestamp(
-        posting.get("in_process_at") or posting.get("created_at"), "accepted_at", diagnostics)
+    event_timestamp = posting.get("in_process_at") or posting.get("created_at")
+    accepted = _business_timestamp(event_timestamp, "accepted_at", diagnostics)
     planned_ship = _business_timestamp(posting.get("shipment_date"), "planned_ship_at", diagnostics)
     handed_to_delivery = _business_timestamp(
         posting.get("delivering_date"), "handed_to_delivery_at", diagnostics)
@@ -82,23 +106,42 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
             "warning", "UNKNOWN_ORDER_STATUS",
             f"Posting {posting_number or '<unknown>'} has unknown status {status or '<blank>'}.",
             field="status"))
+    missing_event_date = (
+        lifecycle in {OrderLifecycle.FULFILLED, OrderLifecycle.IN_PROGRESS}
+        and not _text(event_timestamp)
+    )
+    if missing_event_date:
+        diagnostics.append(ImportDiagnostic(
+            "warning", "MISSING_ORDER_EVENT_DATE",
+            f"Posting {posting_number or '<unknown>'} has no demand event date.",
+            field="accepted_at"))
 
     records: list[OrderRecord] = []
     rejected_record_count = 0
     incomplete_skus: set[str] = set()
-    products = posting.get("products")
-    for product in products if isinstance(products, list) else ():
-        if not isinstance(product, dict):
-            continue
-        sku = _text(product.get("product_id" if fbs else "sku"))
+    for product in products:
+        sku = _sku_text(product.get(sku_field))
         quantity = product.get("quantity")
-        if (not sku or isinstance(quantity, bool) or
-                not isinstance(quantity, (int, float)) or quantity <= 0 or int(quantity) != quantity):
-            diagnostics.append(ImportDiagnostic("error", "INVALID_ORDER_PRODUCT", "Invalid posting product evidence."))
-            continue
-        if not destination:
+        invalid_quantity = (
+            isinstance(quantity, bool)
+            or not isinstance(quantity, (int, float))
+            or not isfinite(quantity)
+            or quantity <= 0
+            or int(quantity) != quantity
+        )
+        demand_relevant = lifecycle in {OrderLifecycle.FULFILLED, OrderLifecycle.IN_PROGRESS}
+        quarantined = (
+            invalid_quantity
+            or lifecycle is OrderLifecycle.UNKNOWN
+            or missing_event_date
+            or not destination
+        )
+        if invalid_quantity:
+            diagnostics.append(ImportDiagnostic(
+                "warning", "INVALID_ORDER_PRODUCT", "Invalid posting product evidence."))
+        if quarantined:
             rejected_record_count += 1
-            if lifecycle in {OrderLifecycle.FULFILLED, OrderLifecycle.IN_PROGRESS}:
+            if demand_relevant or lifecycle is OrderLifecycle.UNKNOWN:
                 incomplete_skus.add(sku)
             continue
         records.append(OrderRecord(
@@ -134,7 +177,7 @@ def normalize_fbs_posting(posting: dict):
 
 def _result(response: dict) -> dict:
     value = response.get("result", response)
-    if not isinstance(value, dict) or not isinstance(value.get("postings", []), list):
+    if not isinstance(value, dict) or not isinstance(value.get("postings"), list):
         raise ValueError("invalid postings response")
     return value
 
@@ -158,23 +201,29 @@ def fetch_postings(client: OzonClient, path: str, history_from: date, history_to
         if cursor:
             payload["cursor"] = cursor
         result = _result(client.post_json(path, payload, policy=READ))
-        postings = result.get("postings", [])
+        postings = result["postings"]
         for posting in postings:
-            if isinstance(posting, dict):
-                normalizer = normalize_fbs_posting if path == FBS_POSTINGS_PATH else normalize_fbo_posting
-                normalized, page_diagnostics, page_quality = normalizer(posting)
-                records.extend(normalized)
-                diagnostics.extend(page_diagnostics)
-                rejected_record_count += page_quality.rejected_record_count
-                incomplete_skus.update(page_quality.incomplete_skus)
-        next_cursor = _text(result.get("cursor"))
-        has_next = bool(result.get("has_next"))
+            if not isinstance(posting, dict):
+                raise ValueError("postings response contains a non-object posting")
+            normalizer = normalize_fbs_posting if path == FBS_POSTINGS_PATH else normalize_fbo_posting
+            normalized, page_diagnostics, page_quality = normalizer(posting)
+            records.extend(normalized)
+            diagnostics.extend(page_diagnostics)
+            rejected_record_count += page_quality.rejected_record_count
+            incomplete_skus.update(page_quality.incomplete_skus)
+        has_next = result.get("has_next")
+        if not isinstance(has_next, bool):
+            raise ValueError("postings response has invalid has_next")
         if not has_next:
             break
-        if not next_cursor or next_cursor in seen:
+        raw_cursor = result.get("cursor")
+        if not isinstance(raw_cursor, str) or not raw_cursor.strip():
+            raise ValueError("postings response has invalid cursor")
+        next_cursor = raw_cursor.strip()
+        if next_cursor in seen:
             diagnostics.append(ImportDiagnostic(
                 "error", "NON_PROGRESSING_POSTINGS_CURSOR",
-                f"{path} returned a repeated or empty cursor."))
+                f"{path} returned a repeated cursor."))
             break
         seen.add(next_cursor)
         cursor = next_cursor
