@@ -733,9 +733,18 @@ option-local export errors do not by themselves invalidate the `ShipmentPlan`.
 They remain retryable export failures. Terminal plan invalidation is based on
 the structured backend error code, not HTTP status text or message matching.
 
-An export response is bound to the `shipment_plan_id` that initiated it. A late
-response from an older plan may neither invalidate a newer plan nor trigger a
-download after the old plan has become stale.
+`shipment_plan_id` is content-addressed and may repeat across separate
+successful validations when their evidence is identical. Frontend asynchronous
+export ownership is therefore bound to both the backend `shipment_plan_id` and
+a frontend-only committed plan generation.
+
+The generation increments only when a new `ShipmentPlan` is successfully
+applied. It does not increment when validation starts and does not reset when
+an old plan is cleared during the lifetime of the page. A late export response
+may mutate state or trigger a download only when both the plan ID and committed
+generation still match. Thus a response from an older plan commit may neither
+invalidate a newer commit nor trigger a download after the old plan has become
+stale, even if both commits have the same content-addressed plan ID.
 
 ## 15. UI target
 
