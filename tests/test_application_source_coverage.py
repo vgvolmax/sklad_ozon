@@ -1,9 +1,15 @@
 from decimal import Decimal
 
+import backend.api as api_module
+import backend.ozon.sync as sync_module
 from backend.application import aggregate_api_need_availability
 from backend.decision.need import calculate_need
 from backend.domain.contracts import AnalysisSourceCoverage
 from backend.ingestion.availability import AvailabilityRecord
+from backend.ozon.adapters.catalog import ClusterCatalogResult
+from backend.ozon.endpoints import FBO_POSTINGS_PATH
+from backend.ozon.source_contracts import Cluster, SellerWarehouse
+from backend.ozon.sync import sync_ozon_source
 
 
 def coverage(*, fbo=True, inbound=True):
@@ -102,3 +108,48 @@ def test_global_order_corruption_blocks_need_for_every_sku():
         need = _need(sku, source_coverage)
         assert need.calculated_need_qty is None
         assert "INCOMPLETE_DEMAND_SOURCE" in need.blocker_codes
+
+
+def test_scoped_wire_corruption_propagates_adapter_snapshot_coverage_and_need(monkeypatch):
+    class ScopedOrdersClient:
+        def post_json(self, path, _payload, **_kwargs):
+            if path == FBO_POSTINGS_PATH:
+                return {"result": {
+                    "postings": [{
+                        "posting_number": "P-1",
+                        "status": "delivered",
+                        "in_process_at": "2026-09-01T10:00:00Z",
+                        "financial_data": {"cluster_from": "Казань", "cluster_to": "Москва"},
+                        "analytics_data": {"warehouse_name": "W-1"},
+                        "products": [
+                            {"sku": "SKU-A", "quantity": 2, "price": "100"},
+                            {"sku": "SKU-B", "quantity": None, "price": "100"},
+                        ],
+                    }],
+                    "has_next": False,
+                    "cursor": "",
+                }}
+            return {"result": {"postings": [], "has_next": False, "cursor": ""}}
+
+    monkeypatch.setattr(sync_module, "next_backfill", lambda _window: None)
+    monkeypatch.setattr(sync_module, "fetch_clusters", lambda _client: ClusterCatalogResult(
+        (Cluster(10, "Москва"),), {501: 10}, ()))
+    monkeypatch.setattr(sync_module, "fetch_seller_warehouses", lambda _client: (
+        (SellerWarehouse(1, "Seller", None, True, False),), ()))
+    monkeypatch.setattr(sync_module, "fetch_product_skus", lambda _client: ("SKU-A", "SKU-B"))
+    monkeypatch.setattr(sync_module, "fetch_fbo_stock", lambda _client, _skus: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_seller_stock", lambda _client, _skus: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_inbound", lambda _client, _clusters, _mapping: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_placement_zones", lambda _client, _skus: ((), ()))
+
+    source = sync_ozon_source(ScopedOrdersClient())
+    fbo_evidence = next(item for item in source.endpoint_evidence if item.name == "orders_fbo")
+    prepared = api_module._api_prepared_inputs(source)
+
+    assert [order.sku for order in source.orders] == ["SKU-A"]
+    assert fbo_evidence.complete is True
+    assert fbo_evidence.record_quality.incomplete_skus == ("SKU-B",)
+    assert prepared.source_coverage.demand_complete_for("SKU-A") is True
+    assert prepared.source_coverage.demand_complete_for("SKU-B") is False
+    assert _need("SKU-A", prepared.source_coverage).calculated_need_qty == 10
+    assert _need("SKU-B", prepared.source_coverage).calculated_need_qty is None
