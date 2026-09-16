@@ -20,6 +20,7 @@ POLL_INTERVAL_SECONDS=.25
 MAX_POLL_DURATION_SECONDS=5.0
 VALIDATION_CACHE_TTL_SECONDS=120.0
 OUTCOME_UNKNOWN_TTL_SECONDS=24*60*60
+DRAFT_RESUME_TTL_SECONDS=24*60*60
 VALIDATION_CACHE_MAX_ENTRIES=64
 READ_POLICY=OzonRequestPolicy(retry_safe=True,max_attempts=3)
 FULL_ELIGIBLE_WAREHOUSE_STATES=frozenset({"AVAILABLE","FULL_AVAILABLE"})
@@ -43,6 +44,13 @@ class _DraftInfo:
     warehouses: tuple[OzonWarehouseEvidence,...]
     errors: tuple[OzonDraftErrorEvidence,...]
     rejected_reason_codes: tuple[str,...]
+
+@dataclass(frozen=True,slots=True)
+class _ResumableDraft:
+    draft_id: int
+    created_at: float
+    preliminary_error_reason_codes: tuple[str,...]
+    preliminary_rejected_reason_codes: tuple[str,...]
 
 @dataclass(slots=True)
 class _InFlightValidation:
@@ -187,7 +195,7 @@ def normalize_timeslots(response):
 class DraftValidationService:
     def __init__(self,client,*,clock:Callable[[],float]=time.monotonic,utcnow=lambda:datetime.now(timezone.utc),today=None,sleeper=time.sleep,cache_ttl=VALIDATION_CACHE_TTL_SECONDS,cache_size=VALIDATION_CACHE_MAX_ENTRIES):
         self.client=client;self.clock=clock;self.utcnow=utcnow;self.today=today or ozon_business_today;self.sleeper=sleeper;self.cache_ttl=cache_ttl;self.cache_size=cache_size
-        self._cache=OrderedDict();self._create_attempts=deque();self._state_lock=RLock();self._inflight={}
+        self._cache=OrderedDict();self._create_attempts=deque();self._state_lock=RLock();self._inflight={};self._resumable_drafts={}
     def _key(self,c,s,p):
         return hashlib.sha256(json.dumps([c.candidate_id,p,s.date_from.isoformat(),s.date_to.isoformat(),[(x.sku,x.destination_cluster_id,x.quantity) for x in c.assignments]],separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
     def _option(self,c,state,reasons,**kw):
@@ -203,17 +211,30 @@ class DraftValidationService:
         if sum(now-x<60 for x in self._create_attempts)>=2 or sum(now-x<3600 for x in self._create_attempts)>=50 or len(self._create_attempts)>=500:return False
         self._create_attempts.append(now)
         return True
+    def _prune_resumable_drafts_locked(self,now):
+        expired=[key for key,draft in self._resumable_drafts.items() if now-draft.created_at>=DRAFT_RESUME_TTL_SECONDS]
+        for expired_key in expired:self._resumable_drafts.pop(expired_key,None)
+    def _resumable_draft_locked(self,key,now):
+        self._prune_resumable_drafts_locked(now)
+        return self._resumable_drafts.get(key)
+    def _remember_resumable_draft(self,key,draft):
+        with self._state_lock:self._resumable_drafts[key]=draft
+    def _clear_resumable_draft(self,key,draft_id):
+        with self._state_lock:
+            current=self._resumable_drafts.get(key)
+            if current is not None and current.draft_id==draft_id:self._resumable_drafts.pop(key,None)
     def _wait_for_flight(self,candidate,flight,cancelled):
         while not flight.done.wait(timeout=.05):
             if cancelled():return self._option(candidate,ValidationState.UNAVAILABLE,("VALIDATION_CANCELLED",))
         if flight.error is not None:raise flight.error
         if flight.option is None:raise RuntimeError("in-flight validation completed without a result")
         return flight.option
-    def _publish_flight(self,key,flight,option=None,error=None):
+    def _publish_flight(self,key,flight,option=None,error=None,*,cache=True):
         with self._state_lock:
             if error is None:
-                self._cache[key]=(self.clock(),option)
-                while len(self._cache)>self.cache_size:self._cache.popitem(last=False)
+                if cache:
+                    self._cache[key]=(self.clock(),option)
+                    while len(self._cache)>self.cache_size:self._cache.popitem(last=False)
                 flight.option=option
             else:flight.error=error
             self._inflight.pop(key,None)
@@ -235,37 +256,51 @@ class DraftValidationService:
             except (ValueError,TypeError) as exc:
                 output.append(self._option(candidate,ValidationState.UNAVAILABLE,(str(exc),)));continue
             with self._state_lock:
-                cached=self._cached_option_locked(key,self.clock());flight=self._inflight.get(key)
+                now=self.clock();cached=self._cached_option_locked(key,now);flight=self._inflight.get(key);resumable=self._resumable_draft_locked(key,now)
                 if cached is None and flight is None:
-                    if created>=DEFAULT_MAX_NEW_DRAFTS or not self._reserve_create_slot_locked(self.clock()):
-                        output.append(self._option(candidate,ValidationState.RATE_LIMITED,("DRAFT_RATE_BUDGET_EXHAUSTED",)));continue
-                    flight=_InFlightValidation(Event());self._inflight[key]=flight;owner=True;created+=1
+                    if resumable is None:
+                        if created>=DEFAULT_MAX_NEW_DRAFTS or not self._reserve_create_slot_locked(now):
+                            output.append(self._option(candidate,ValidationState.RATE_LIMITED,("DRAFT_RATE_BUDGET_EXHAUSTED",)));continue
+                        created+=1
+                    flight=_InFlightValidation(Event());self._inflight[key]=flight;owner=True
                 else:owner=False
             if cached is not None:output.append(cached);continue
             if not owner:
                 output.append(self._wait_for_flight(candidate,flight,cancelled));continue
-            try:option=self._validate_one(candidate,scenario,identities,create,cancelled,active_client)
+            try:option=self._validate_one(candidate,scenario,identities,create,cancelled,active_client,key=key,resumable=resumable)
             except BaseException as exc:
                 self._publish_flight(key,flight,error=exc);raise
             else:
-                self._publish_flight(key,flight,option=option);output.append(option)
+                cache=not (option.draft_id is not None and option.reason_codes==("DRAFT_INFO_TIMEOUT",))
+                self._publish_flight(key,flight,option=option,cache=cache);output.append(option)
         return tuple(output)
-    def _validate_one(self,candidate,scenario,identities,create,cancelled,client):
-        preliminary_errors=();preliminary_rejected_reasons=()
-        try:
-            response=client.post_json(create.path,create.payload,policy=CREATE_POLICY);draft_id=_draft_id(response)
-            errors=response.get("errors",[]) if isinstance(response,dict) else []
-            rejected,preliminary_errors,preliminary_rejected_reasons=_normalize_errors(errors,candidate,identities)
-            if draft_id is None:
-                reasons=_normalized_reason_codes((*_error_reason_codes(preliminary_errors),*preliminary_rejected_reasons))
-                if rejected or reasons:return self._option(candidate,ValidationState.REJECTED,("OZON_REJECTED_CANDIDATE",)+reasons,rejected=rejected)
-                raise InvalidDraftResponse("missing draft_id")
-        except OzonClientError as exc:
-            if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:raise
-            if exc.code is OzonErrorCode.RATE_LIMITED:return self._option(candidate,ValidationState.RATE_LIMITED,("OZON_RATE_LIMITED",))
-            if exc.code is OzonErrorCode.UNAVAILABLE and exc.status is None:return self._option(candidate,ValidationState.OUTCOME_UNKNOWN,("DRAFT_CREATE_OUTCOME_UNKNOWN",))
-            return self._option(candidate,ValidationState.UNAVAILABLE,("OZON_INVALID_DRAFT_RESPONSE" if exc.code is OzonErrorCode.INVALID_RESPONSE else "OZON_UNAVAILABLE",))
-        except (InvalidDraftResponse,ValueError,TypeError):return self._option(candidate,ValidationState.UNAVAILABLE,("OZON_INVALID_DRAFT_RESPONSE",))
+    def _validate_one(self,candidate,scenario,identities,create,cancelled,client,*,key,resumable=None):
+        preliminary_error_reasons=();preliminary_rejected_reasons=()
+        if resumable is None:
+            try:
+                response=client.post_json(create.path,create.payload,policy=CREATE_POLICY);draft_id=_draft_id(response)
+                if draft_id is not None:
+                    resumable=_ResumableDraft(draft_id,self.clock(),(),())
+                    self._remember_resumable_draft(key,resumable)
+                errors=response.get("errors",[]) if isinstance(response,dict) else []
+                rejected,preliminary_errors,preliminary_rejected_reasons=_normalize_errors(errors,candidate,identities)
+                preliminary_error_reasons=_error_reason_codes(preliminary_errors)
+                if draft_id is None:
+                    reasons=_normalized_reason_codes((*preliminary_error_reasons,*preliminary_rejected_reasons))
+                    if rejected or reasons:return self._option(candidate,ValidationState.REJECTED,("OZON_REJECTED_CANDIDATE",)+reasons,rejected=rejected)
+                    raise InvalidDraftResponse("missing draft_id")
+                resumable=_ResumableDraft(draft_id,resumable.created_at,preliminary_error_reasons,preliminary_rejected_reasons)
+                self._remember_resumable_draft(key,resumable)
+            except OzonClientError as exc:
+                if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:raise
+                if exc.code is OzonErrorCode.RATE_LIMITED:return self._option(candidate,ValidationState.RATE_LIMITED,("OZON_RATE_LIMITED",))
+                if exc.code is OzonErrorCode.UNAVAILABLE and exc.status is None:return self._option(candidate,ValidationState.OUTCOME_UNKNOWN,("DRAFT_CREATE_OUTCOME_UNKNOWN",))
+                return self._option(candidate,ValidationState.UNAVAILABLE,("OZON_INVALID_DRAFT_RESPONSE" if exc.code is OzonErrorCode.INVALID_RESPONSE else "OZON_UNAVAILABLE",))
+            except (InvalidDraftResponse,ValueError,TypeError):return self._option(candidate,ValidationState.UNAVAILABLE,("OZON_INVALID_DRAFT_RESPONSE",))
+        else:
+            draft_id=resumable.draft_id
+            preliminary_error_reasons=resumable.preliminary_error_reason_codes
+            preliminary_rejected_reasons=resumable.preliminary_rejected_reason_codes
         if cancelled():return self._option(candidate,ValidationState.UNAVAILABLE,("VALIDATION_CANCELLED",),draft_id=draft_id)
         info=None;deadline=self.clock()+MAX_POLL_DURATION_SECONDS
         for attempt in range(MAX_INFO_POLL_ATTEMPTS):
@@ -279,7 +314,8 @@ class DraftValidationService:
             if cancelled():return self._option(candidate,ValidationState.UNAVAILABLE,("VALIDATION_CANCELLED",),draft_id=draft_id)
             if attempt+1<MAX_INFO_POLL_ATTEMPTS and self.clock()<deadline:self.sleeper(min(POLL_INTERVAL_SECONDS,max(0,deadline-self.clock())))
         if info is None:return self._option(candidate,ValidationState.UNAVAILABLE,("DRAFT_INFO_TIMEOUT",),draft_id=draft_id)
-        causal_reasons=_normalized_reason_codes((*_error_reason_codes(preliminary_errors+info.errors),*preliminary_rejected_reasons,*info.rejected_reason_codes))
+        self._clear_resumable_draft(key,draft_id)
+        causal_reasons=_normalized_reason_codes((*preliminary_error_reasons,*_error_reason_codes(info.errors),*preliminary_rejected_reasons,*info.rejected_reason_codes))
         if info.status=="FAILED":return self._option(candidate,ValidationState.REJECTED,("OZON_REJECTED_CANDIDATE",)+causal_reasons,draft_id=draft_id,rejected=info.rejected,warehouses=info.warehouses)
         if not info.accepted:return self._option(candidate,ValidationState.REJECTED,("OZON_REJECTED_CANDIDATE",)+causal_reasons,draft_id=draft_id,rejected=info.rejected,warehouses=info.warehouses)
         try:selected=_selected_warehouses(info.warehouses,identities)

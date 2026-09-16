@@ -6,6 +6,7 @@ from backend.ozon.client import OzonClientError
 from backend.ozon.contracts import OzonErrorCode
 from backend.ozon.draft_contracts import ValidationState
 from backend.ozon.endpoints import (
+    DRAFT_CREATE_INFO,
     DRAFT_CROSSDOCK_CREATE,
     DRAFT_DIRECT_CREATE,
     DRAFT_MULTI_CLUSTER_CREATE,
@@ -104,3 +105,37 @@ def test_session_revocation_unblocks_waiters_without_cache_poisoning(monkeypatch
 
     assert option.state is ValidationState.NO_TIMESLOT
     assert fresh.create_calls == 1
+
+
+def test_session_revocation_after_create_preserves_resume_identity():
+    class RevokedAfterCreateClient:
+        def __init__(self):
+            self.create_calls = 0
+
+        def post_json(self, path, payload, *, policy):
+            if path in {DRAFT_DIRECT_CREATE, DRAFT_CROSSDOCK_CREATE, DRAFT_MULTI_CLUSTER_CREATE}:
+                self.create_calls += 1
+                return {"draft_id": 7, "errors": []}
+            if path == DRAFT_CREATE_INFO:
+                assert payload == {"draft_id": 7}
+                raise OzonClientError(
+                    OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED,
+                    "Ozon credential context changed",
+                )
+            raise AssertionError(path)
+
+    revoked = RevokedAfterCreateClient()
+    service = make_service(revoked)
+    try:
+        _same_validation(service)
+    except OzonClientError as error:
+        assert error.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED
+    else:
+        raise AssertionError("credential revocation must propagate")
+
+    fresh = SuccessfulClient()
+    option = _same_validation(service, client=fresh)[0]
+
+    assert option.state is ValidationState.NO_TIMESLOT
+    assert revoked.create_calls == 1
+    assert fresh.create_calls == 0

@@ -629,6 +629,20 @@ during draft creation, draft-info polling, or timeslot discovery fails with cred
 change semantics. Revocation is never converted into an ordinary Ozon-unavailable option
 and is never cached.
 
+Once a method-specific create call has returned a valid `draft_id`, that draft identity is
+process-memory resumable while draft-info remains unresolved. A bounded draft-info polling
+timeout does not authorize another create for the same validation fingerprint. A later
+explicit validation resumes `/v2/draft/create/info` using the known `draft_id` and does not
+consume a new-draft budget.
+
+The resumable identity is cleared when draft-info becomes authoritative `SUCCESS`/`FAILED`,
+or expires after a bounded local resume horizon. The horizon is an application-local
+duplicate-prevention rule, not a claim about Ozon draft lifetime. An ambiguous create
+transport outcome without a proven `draft_id` remains `OUTCOME_UNKNOWN` and is not
+resumable. Credential-session revocation still propagates as an error; a known draft
+identity may be resumed only by a later authorized request for the same persistent
+account/provenance.
+
 Flow:
 
 ```text
