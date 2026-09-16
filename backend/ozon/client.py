@@ -228,11 +228,15 @@ class OzonClient:
             return OzonClientError(
                 OzonErrorCode.PERMISSION_DENIED, "Ozon API denied access to endpoint", **common,
             )
+        if status == 400:
+            return OzonClientError(
+                OzonErrorCode.INVALID_REQUEST, "Ozon API rejected the request", **common,
+            )
         if status == 429:
             return OzonClientError(OzonErrorCode.RATE_LIMITED, "Ozon API rate limit reached", **common)
         if status >= 500:
             return OzonClientError(OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable", **common)
-        return OzonClientError(OzonErrorCode.INVALID_RESPONSE, "Ozon API rejected the request", **common)
+        return OzonClientError(OzonErrorCode.INVALID_RESPONSE, "Ozon API returned an invalid response", **common)
 
     @staticmethod
     def _request_id(response: TransportResponse) -> str | None:

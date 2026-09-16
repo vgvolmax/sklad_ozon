@@ -36,7 +36,8 @@ def test_vault_status_is_immutable_and_contains_only_safe_metadata():
 def test_error_codes_are_stable():
     assert {code.value for code in OzonErrorCode} == {
         "OZON_VAULT_LOCKED", "OZON_AUTH_FAILED", "OZON_PERMISSION_DENIED", "OZON_RATE_LIMITED",
-        "OZON_UNAVAILABLE", "OZON_INVALID_RESPONSE", "OZON_CREDENTIAL_CONTEXT_CHANGED",
+        "OZON_UNAVAILABLE", "OZON_INVALID_REQUEST", "OZON_INVALID_RESPONSE",
+        "OZON_CREDENTIAL_CONTEXT_CHANGED",
     }
 
 

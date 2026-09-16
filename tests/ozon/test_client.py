@@ -93,7 +93,7 @@ def test_http_400_preserves_only_allowlisted_safe_evidence():
             policy=OzonRequestPolicy(False),
         )
 
-    assert error.value.code is OzonErrorCode.INVALID_RESPONSE
+    assert error.value.code is OzonErrorCode.INVALID_REQUEST
     assert error.value.endpoint == "/v2/product/info/stocks-by-warehouse/fbs"
     assert error.value.status == 400
     assert error.value.vendor_code == "3"
@@ -123,7 +123,7 @@ def test_malformed_error_json_keeps_response_metadata():
     ]))
     with pytest.raises(OzonClientError) as error:
         client.post_json("/v1/test", {}, policy=OzonRequestPolicy(False))
-    assert error.value.code is OzonErrorCode.INVALID_RESPONSE
+    assert error.value.code is OzonErrorCode.INVALID_REQUEST
     assert error.value.endpoint == "/v1/test"
     assert error.value.status == 400
     assert error.value.request_id == "trace-x"
