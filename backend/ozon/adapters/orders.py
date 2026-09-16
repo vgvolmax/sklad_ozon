@@ -39,6 +39,20 @@ def _text(value: object) -> str:
     return str(value).strip() if value is not None else ""
 
 
+def _wire_text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _sku_text(value: object) -> str:
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value) if value > 0 else ""
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
 def _business_timestamp(value: object, field: str, diagnostics: list[ImportDiagnostic]) -> str:
     raw = _text(value)
     if not raw:
@@ -65,7 +79,7 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
     if any(not isinstance(product, dict) for product in products):
         raise ValueError("posting contains a non-object product")
     sku_field = "product_id" if fbs else "sku"
-    if any(not _text(product.get(sku_field)) for product in products):
+    if any(not _sku_text(product.get(sku_field)) for product in products):
         raise ValueError("posting product has no usable SKU")
 
     status = _text(posting.get("status_alias" if fbs else "status"))
@@ -76,7 +90,7 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
     if not isinstance(financial, dict):
         financial = {}
     origin_cluster = _text(financial.get("cluster_from"))
-    destination = _text(financial.get("cluster_to"))
+    destination = _wire_text(financial.get("cluster_to"))
     origin_warehouse = _text(analytics.get("warehouse_name")) or None
     lifecycle = _lifecycle(status)
     diagnostics: list[ImportDiagnostic] = []
@@ -106,7 +120,7 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
     rejected_record_count = 0
     incomplete_skus: set[str] = set()
     for product in products:
-        sku = _text(product.get(sku_field))
+        sku = _sku_text(product.get(sku_field))
         quantity = product.get("quantity")
         invalid_quantity = (
             isinstance(quantity, bool)
@@ -197,14 +211,19 @@ def fetch_postings(client: OzonClient, path: str, history_from: date, history_to
             diagnostics.extend(page_diagnostics)
             rejected_record_count += page_quality.rejected_record_count
             incomplete_skus.update(page_quality.incomplete_skus)
-        next_cursor = _text(result.get("cursor"))
-        has_next = bool(result.get("has_next"))
+        has_next = result.get("has_next")
+        if not isinstance(has_next, bool):
+            raise ValueError("postings response has invalid has_next")
         if not has_next:
             break
-        if not next_cursor or next_cursor in seen:
+        raw_cursor = result.get("cursor")
+        if not isinstance(raw_cursor, str) or not raw_cursor.strip():
+            raise ValueError("postings response has invalid cursor")
+        next_cursor = raw_cursor.strip()
+        if next_cursor in seen:
             diagnostics.append(ImportDiagnostic(
                 "error", "NON_PROGRESSING_POSTINGS_CURSOR",
-                f"{path} returned a repeated or empty cursor."))
+                f"{path} returned a repeated cursor."))
             break
         seen.add(next_cursor)
         cursor = next_cursor
