@@ -129,6 +129,33 @@ def test_explicit_empty_postings_is_valid(path):
     assert quality.rejected_record_count == 0 and quality.incomplete_skus == ()
 
 
+@pytest.mark.parametrize("result", [
+    {"postings": [fbo()]},
+    {"postings": [fbo()], "has_next": None},
+    {"postings": [fbo()], "has_next": 0},
+    {"postings": [fbo()], "has_next": 1},
+    {"postings": [fbo()], "has_next": "false"},
+    {"postings": [fbo()], "has_next": {}},
+    {"postings": [fbo()], "has_next": []},
+])
+def test_missing_or_non_boolean_has_next_fails_endpoint(result):
+    with pytest.raises(ValueError):
+        fetch_postings(
+            Client([{"result": result}]),
+            FBO_POSTINGS_PATH, date(2026, 7, 1), date(2026, 8, 1))
+
+
+@pytest.mark.parametrize("cursor", [None, "", "   ", 123, {}, []])
+def test_has_next_true_requires_nonblank_string_cursor(cursor):
+    result = {"postings": [fbo()], "has_next": True}
+    if cursor is not None:
+        result["cursor"] = cursor
+    with pytest.raises(ValueError):
+        fetch_postings(
+            Client([{"result": result}]),
+            FBO_POSTINGS_PATH, date(2026, 7, 1), date(2026, 8, 1))
+
+
 @pytest.mark.parametrize("normalizer,factory", [
     (normalize_fbo_posting, fbo),
     (normalize_fbs_posting, fbs),
@@ -168,6 +195,18 @@ def test_missing_product_identity_fails_endpoint(normalizer, factory, sku_field,
     (normalize_fbo_posting, fbo, "sku"),
     (normalize_fbs_posting, fbs, "product_id"),
 ])
+@pytest.mark.parametrize("sku", [{}, [], True, 1.5, 0, -1])
+def test_wrong_type_or_nonpositive_product_identity_fails_endpoint(normalizer, factory, sku_field, sku):
+    posting = factory()
+    posting["products"][0][sku_field] = sku
+    with pytest.raises(ValueError):
+        normalizer(posting)
+
+
+@pytest.mark.parametrize("normalizer,factory,sku_field", [
+    (normalize_fbo_posting, fbo, "sku"),
+    (normalize_fbs_posting, fbs, "product_id"),
+])
 def test_invalid_quantity_is_scoped_to_known_sku(normalizer, factory, sku_field):
     posting = factory()
     posting["products"] = [
@@ -179,6 +218,18 @@ def test_invalid_quantity_is_scoped_to_known_sku(normalizer, factory, sku_field)
     assert quality.rejected_record_count == 1
     assert quality.incomplete_skus == ("SKU-B",)
     assert any(item.code == "INVALID_ORDER_PRODUCT" and item.severity == "warning"
+               for item in diagnostics)
+
+
+@pytest.mark.parametrize("destination", [{}, [], True, 123])
+def test_wrong_type_destination_is_scoped_to_known_sku(destination):
+    posting = fbo()
+    posting["financial_data"]["cluster_to"] = destination
+    rows, diagnostics, quality = normalize_fbo_posting(posting)
+    assert rows == ()
+    assert quality.rejected_record_count == 1
+    assert quality.incomplete_skus == ("123",)
+    assert any(item.code == "UNRESOLVED_DESTINATION_CLUSTER" and item.severity == "warning"
                for item in diagnostics)
 
 
