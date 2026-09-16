@@ -79,6 +79,8 @@ def test_analysis_form_dynamic_state_updates_without_replacing_file_inputs():
     assert 'id="analysis-source-basis"' in source
     assert 'id="analysis-submit"' in source
     assert 'id="analysis-source-required"' in source
+    assert "const api=state.source.mode==='api'" in updater
+    assert "missingSource=api&&!state.source.snapshotId" in updater
     assert "submit.disabled=analysisActive||missingSource" in updater
     assert "state.source.sourceAsOf" in updater
     assert "Сначала обновите данные Ozon." in updater
@@ -87,6 +89,28 @@ def test_analysis_form_dynamic_state_updates_without_replacing_file_inputs():
     assert render_data.index("analysisRegion.innerHTML=analysisFormMarkup()") < render_data.index(
         "updateAnalysisFormState(root)"
     )
+
+
+def test_data_render_applies_generic_busy_state_before_analysis_specific_state():
+    source = APP_JS.read_text()
+    start = source.index("function renderData()")
+    end = source.index("function validate", start)
+    render_data = source[start:end]
+
+    generic = render_data.index("updateRequestControls(root)")
+    specific = render_data.index("updateAnalysisFormState(root)")
+
+    assert generic < specific
+
+
+def test_request_controls_do_not_own_api_source_gating():
+    source = APP_JS.read_text()
+    start = source.index("function updateRequestControls")
+    end = source.index("function reportMetaMarkup", start)
+    request_controls = source[start:end]
+
+    assert "snapshotId" not in request_controls
+    assert "missingSource" not in request_controls
 
 
 def test_credential_payloads_use_named_elements_not_form_data():
