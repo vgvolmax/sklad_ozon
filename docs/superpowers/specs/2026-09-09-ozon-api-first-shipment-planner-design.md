@@ -420,6 +420,16 @@ Vault JSON stores version/KDF/cipher metadata and ciphertext. Password is never 
 
 After unlock, decrypted credentials remain backend-memory-only until manual lock or process exit. No inactivity timeout.
 
+The vault maintains two deliberately distinct identities. `credential_context_id` is the
+persistent encrypted-account identity, remains stable across lock/unlock, and owns source
+provenance. `session_generation` is a process-memory-only unlock-session identity: it is
+never persisted or exposed to the frontend and owns revocation of plaintext credentials.
+Successful setup/unlock activates a new generation; lock revokes it immediately. Unlocking
+again preserves `credential_context_id` but creates a new generation, so old captured
+contexts never revive. Manual lock does not delete or re-identify source or analysis
+evidence already captured for that encrypted account; it only prevents further live Ozon
+API use until unlock.
+
 Frontend receives only configured/locked state, masked Client-Id suffix and last connection check. Saved API key is never returned.
 
 ## 7. Ozon HTTP client
@@ -439,6 +449,13 @@ Use the standard-library synchronous HTTP stack in a dedicated client. Required 
 - pagination helpers and cancellation between pages;
 - bounded retry for retry-safe reads on 429/selected 5xx respecting `Retry-After`;
 - **no blind retry** for draft creation after ambiguous transport failure (`DRAFT_CREATE_OUTCOME_UNKNOWN`).
+
+Every request attempt is authorized against its captured unlock session. The client
+revalidates that session before every transport attempt, after every transport completion,
+after transport exceptions before retry classification, before a retry, and before accepting
+a decoded response. Lock cannot guarantee cancellation of a stdlib call already blocked in
+the OS/network stack; when that call returns, its response is discarded and cannot be
+retried or committed.
 
 Do not add another HTTP framework solely to manufacture independent connect/read timeout knobs.
 
@@ -606,6 +623,11 @@ max_new_drafts_per_user_run = 6
 ```
 
 Backend also enforces current Ozon external limits. Repeated identical candidate checks may reuse short-lived process-memory evidence keyed by candidate fingerprint.
+
+Live validation requires one continuously valid captured unlock session. A session change
+during draft creation, draft-info polling, or timeslot discovery fails with credential-context
+change semantics. Revocation is never converted into an ordinary Ozon-unavailable option
+and is never cached.
 
 Flow:
 

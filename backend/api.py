@@ -40,7 +40,7 @@ from backend.project import (EconomicsSettings, OptimizerThresholds, Project,
                              ProjectValidationError, load_project_if_exists,
                              save_project_atomic)
 from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
-from backend.ozon.contracts import OzonCredentials, OzonErrorCode
+from backend.ozon.contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import CONNECTION_TEST_PATH
 from backend.ozon.vault import CredentialVault, OzonVaultError
 from backend.ozon.handoff import HandoffPointStore, handoff_supply_types, search_handoff_points
@@ -129,6 +129,14 @@ def commit_current_credential_context(context_id, action, *, field=None):
                 'OZON_CREDENTIAL_CONTEXT_CHANGED',CREDENTIAL_CONTEXT_MESSAGE,field,409)
         return action()
 
+def commit_active_credential_context(context: OzonCredentialContext, action, *, field=None):
+    """Linearize live-result commits against unlock-session transitions."""
+    with OZON_CONTEXT_COMMIT_LOCK:
+        if not OZON_VAULT.is_context_active(context):
+            raise ShipmentPreparationError(
+                'OZON_CREDENTIAL_CONTEXT_CHANGED',CREDENTIAL_CONTEXT_MESSAGE,field,409)
+        return action()
+
 def current_source(source_snapshot_id, *, field='source_snapshot_id'):
     snapshot=OZON_SOURCE_STORE.get(source_snapshot_id)
     if snapshot is None:
@@ -171,19 +179,24 @@ async def ozon_credentials_unlock(request:Request):
     body=await json_object(request)
     if body is None or not isinstance(body.get('password'),str) or not body['password'].strip():
         return error(400,'MISSING_FIELD','Vault password is required.','password')
-    try:return vault_response(OZON_VAULT.unlock(body['password']))
+    try:
+        with OZON_CONTEXT_COMMIT_LOCK:
+            status=OZON_VAULT.unlock(body['password'])
+        return vault_response(status)
     except OzonVaultError as exc:return error(401,exc.code.value,'Vault password or encrypted data is invalid.',None)
 
 @router.post('/api/ozon/credentials/lock')
 def ozon_credentials_lock():
-    return vault_response(OZON_VAULT.lock())
+    with OZON_CONTEXT_COMMIT_LOCK:
+        status=OZON_VAULT.lock()
+    return vault_response(status)
 
 @router.post('/api/ozon/connection/test')
 def ozon_connection_test():
     try:
         context=OZON_VAULT.capture_context()
         OZON_CLIENT.bind_context(context).post_json(CONNECTION_TEST_PATH,{},policy=OzonRequestPolicy(retry_safe=True))
-        status=commit_current_credential_context(context.context_id,OZON_VAULT.record_connection_check)
+        status=commit_active_credential_context(context,OZON_VAULT.record_connection_check)
     except OzonVaultError as exc:
         return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
     except OzonClientError as exc:
@@ -212,8 +225,9 @@ async def ozon_handoff_search(request:Request):
     try:
         context=OZON_VAULT.capture_context()
         points=search_handoff_points(OZON_CLIENT.bind_context(context),query,ozon_supply_types)
-        commit_current_credential_context(context.context_id,lambda:HANDOFF_STORE.put_all(points))
-        return {'api_version':1,'items':wire(points)}
+        return commit_active_credential_context(
+            context,lambda:(HANDOFF_STORE.put_all(points),
+                            {'api_version':1,'items':wire(points)})[1])
     except OzonVaultError as exc:return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
     except OzonClientError as exc:
         if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error()
@@ -225,8 +239,9 @@ def ozon_sync():
     try:
         context=OZON_VAULT.capture_context()
         snapshot=sync_ozon_source(OZON_CLIENT.bind_context(context),credential_context_id=context.context_id)
-        commit_current_credential_context(context.context_id,lambda:OZON_SOURCE_STORE.put(snapshot))
-        return {'api_version':1,'source':wire(snapshot),'capabilities':capability_matrix(snapshot)}
+        return commit_active_credential_context(
+            context,lambda:(OZON_SOURCE_STORE.put(snapshot),
+                            {'api_version':1,'source':wire(snapshot),'capabilities':capability_matrix(snapshot)})[1])
     except OzonVaultError as exc:return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
     except OzonClientError as exc:
         if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error()
@@ -314,9 +329,9 @@ async def shipment_validate(request:Request):
     except OzonClientError as exc:
         if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error('analysis_snapshot_id')
         raise
-    if OZON_VAULT.credential_context_id()!=context.context_id:return credential_context_error('analysis_snapshot_id')
-    return {'api_version':1,'analysis_snapshot_id':analysis_id,
-            'shippable_plan_id':plan_id,'options':wire(options)}
+    try:return commit_active_credential_context(context,lambda:{'api_version':1,'analysis_snapshot_id':analysis_id,
+            'shippable_plan_id':plan_id,'options':wire(options)},field='analysis_snapshot_id')
+    except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
 
 @router.post('/api/shipment/plan')
 async def shipment_plan(request:Request):
@@ -345,10 +360,10 @@ async def shipment_plan(request:Request):
     except OzonClientError as exc:
         if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error('analysis_snapshot_id')
         raise
-    if OZON_VAULT.credential_context_id()!=context.context_id:return credential_context_error('analysis_snapshot_id')
+    if not OZON_VAULT.is_context_active(context):return credential_context_error('analysis_snapshot_id')
     try:shipment=build_shipment_plan(source_snapshot_id=source_id,analysis_snapshot_id=analysis_id,shippable_plan_id=plan_id,analysis_as_of=prepared.snapshot.analysis_as_of,scenario=prepared.scenario,candidates=prepared.candidates,validations=options,diagnostics=tuple(x.code for x in prepared.diagnostics))
     except ShipmentOrchestrationError as exc:return error(502,exc.code,'Ozon validation returned inconsistent candidate evidence.',None)
-    try:commit_current_credential_context(context.context_id,lambda:SHIPMENT_PLAN_STORE.put(shipment),field='analysis_snapshot_id')
+    try:commit_active_credential_context(context,lambda:SHIPMENT_PLAN_STORE.put(shipment),field='analysis_snapshot_id')
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     return {'api_version':1,'shipment_plan':wire(shipment)}
 

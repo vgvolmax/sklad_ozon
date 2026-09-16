@@ -37,6 +37,7 @@ class CredentialVault:
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
         self._credentials: OzonCredentials | None = None
+        self._session_generation = 0
         self._last_connection_check: str | None = None
         self._lock = RLock()
 
@@ -62,7 +63,7 @@ class CredentialVault:
         }
         with self._lock:
             self._write_atomic(json.dumps(document, separators=(",", ":")).encode("utf-8"))
-            self._credentials = credentials
+            self._activate_session_locked(credentials)
             self._last_connection_check = None
             return self.status()
 
@@ -84,16 +85,16 @@ class CredentialVault:
             decoded = json.loads(plaintext)
             credentials = OzonCredentials(decoded["client_id"], decoded["api_key"])
         except (InvalidTag, KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
-            self._credentials = None
+            self._revoke_session_locked()
             raise OzonVaultError(OzonErrorCode.AUTH_FAILED, "Vault password or encrypted data is invalid") from None
-        self._credentials = credentials
+        self._activate_session_locked(credentials)
         return self.status()
 
     def lock(self) -> VaultStatus:
         # Python cannot promise secure memory zeroization; dropping this reference
         # only makes credentials unavailable to subsequent backend operations.
         with self._lock:
-            self._credentials = None
+            self._revoke_session_locked()
             return self.status()
 
     def status(self) -> VaultStatus:
@@ -130,7 +131,16 @@ class CredentialVault:
             context_id = self.credential_context_id()
             if context_id is None:
                 raise OzonVaultError(OzonErrorCode.LOCKED, "Ozon credential vault is locked")
-            return OzonCredentialContext(context_id, credentials)
+            return OzonCredentialContext(context_id, credentials, self._session_generation)
+
+    def is_context_active(self, context: OzonCredentialContext) -> bool:
+        """Return whether a captured context belongs to the active unlock session."""
+        with self._lock:
+            return (
+                self._credentials is not None
+                and context.session_generation == self._session_generation
+                and context.context_id == self.credential_context_id()
+            )
 
     def require_credentials(self) -> OzonCredentials:
         if self._credentials is None:
@@ -145,12 +155,20 @@ class CredentialVault:
 
     def reset(self) -> None:
         with self._lock:
-            self._credentials = None
+            self._revoke_session_locked()
             self._last_connection_check = None
             try:
                 self._path.unlink()
             except FileNotFoundError:
                 pass
+
+    def _activate_session_locked(self, credentials: OzonCredentials) -> None:
+        self._session_generation += 1
+        self._credentials = credentials
+
+    def _revoke_session_locked(self) -> None:
+        self._session_generation += 1
+        self._credentials = None
 
     @staticmethod
     def _password_bytes(password: str) -> bytes:
