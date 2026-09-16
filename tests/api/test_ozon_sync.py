@@ -41,14 +41,14 @@ def _patch_non_history(monkeypatch, *, fbo_failure=False, cluster_failure=False)
     monkeypatch.setattr(module, "fetch_seller_warehouses", lambda _client: (
         (SellerWarehouse(1, "Seller", None, True, False),), ()))
     if fbo_failure:
-        monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client, _skus: (_ for _ in ()).throw(RuntimeError("fbo")))
+        monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: (_ for _ in ()).throw(RuntimeError("fbo")))
     else:
-        monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client, _skus: ((), ()))
+        monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
     monkeypatch.setattr(module, "fetch_product_skus", lambda _client: ("OLD",))
     monkeypatch.setattr(module, "fetch_seller_stock", lambda _client, _skus: (
         (AvailabilityRecord("OLD", "Seller", "", 3, fbs_quantity=3),), ()))
     monkeypatch.setattr(module, "fetch_inbound", lambda _client, _clusters, _mapping: ((), ()))
-    monkeypatch.setattr(module, "fetch_placement_zones", lambda _client, _skus: ((), ()))
+    monkeypatch.setattr(module, "fetch_placement_zones", lambda *_args: ((), ()))
 
 
 def test_registry_and_capability_matrix_excludes_handoff():
@@ -338,13 +338,14 @@ def test_known_empty_product_universe_allows_complete_empty_dependencies(monkeyp
     _patch_non_history(monkeypatch)
     calls = []
     monkeypatch.setattr(module, "fetch_product_skus", lambda _client: ())
-    monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client, skus: (calls.append(("fbo", skus)) or (), ()))
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda _client, skus, mapping: (
+        calls.append(("fbo", skus, mapping)) or (), ()))
     monkeypatch.setattr(module, "fetch_seller_stock", lambda _client, skus: (calls.append(("seller", skus)) or (), ()))
     monkeypatch.setattr(module, "fetch_placement_zones", lambda _client, skus: (calls.append(("zones", skus)) or (), ()))
 
     source = sync_ozon_source(object())
 
-    assert calls == [("fbo", ()), ("seller", ()), ("zones", ())]
+    assert calls == [("fbo", (), {"501": "Москва"}), ("seller", ()), ("zones", ())]
     assert capability_matrix(source)["need_fbo"]["complete"] is True
     assert capability_matrix(source)["operational_allocation"]["complete"] is True
     assert capability_matrix(source)["shipment_compatibility"]["complete"] is True
