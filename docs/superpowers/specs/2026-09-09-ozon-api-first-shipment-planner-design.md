@@ -721,6 +721,31 @@ Ozon workbook is exact three columns:
 
 No helper/zone columns. One cluster → XLSX; multiple clusters → ZIP with one XLSX per cluster.
 
+Export is authorized only from the backend-owned `ShipmentPlan` identity. If
+`/api/shipment/export` returns the structured `SHIPMENT_PLAN_NOT_FOUND` error
+for the currently displayed plan, that response is authoritative evidence that
+the plan can no longer be exported. The frontend preserves the old plan for
+stale presentation, disables all export actions for that plan, and requires a
+new explicit Ozon validation before export can be enabled again.
+
+Transport failures, temporary HTTP failures, unreadable error responses, and
+option-local export errors do not by themselves invalidate the `ShipmentPlan`.
+They remain retryable export failures. Terminal plan invalidation is based on
+the structured backend error code, not HTTP status text or message matching.
+
+`shipment_plan_id` is content-addressed and may repeat across separate
+successful validations when their evidence is identical. Frontend asynchronous
+export ownership is therefore bound to both the backend `shipment_plan_id` and
+a frontend-only committed plan generation.
+
+The generation increments only when a new `ShipmentPlan` is successfully
+applied. It does not increment when validation starts and does not reset when
+an old plan is cleared during the lifetime of the page. A late export response
+may mutate state or trigger a download only when both the plan ID and committed
+generation still match. Thus a response from an older plan commit may neither
+invalidate a newer commit nor trigger a download after the old plan has become
+stale, even if both commits have the same content-addressed plan ID.
+
 ## 15. UI target
 
 Top-level routes remain exactly:
