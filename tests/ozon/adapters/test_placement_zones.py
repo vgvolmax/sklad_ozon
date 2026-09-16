@@ -1,11 +1,13 @@
+import pytest
+
 from backend.ozon.adapters.placement_zones import fetch_placement_zones, normalize_placement_zones
 from backend.ozon.endpoints import PLACEMENT_ZONE_PATH
 
 
 def test_current_products_placement_exact_and_unknown():
-    rows, diagnostics=normalize_placement_zones({"products_placement":[{"sku":"S","placement_zone":"FRESH"},{"sku":"X","placement_zone":"UNSPECIFIED"},{"sku":"B","placement_zone":""}]})
+    rows, diagnostics, _quality=normalize_placement_zones({"products_placement":[{"sku":"S","placement_zone":"FRESH"},{"sku":"X","placement_zone":"UNSPECIFIED"},{"sku":"B","placement_zone":""}]})
     assert rows[0].zones==("FRESH",) and rows[0].complete
-    assert rows[1].zones==("UNSPECIFIED",) and not rows[1].complete
+    assert rows[1].zones==() and not rows[1].complete
     assert rows[2].zones==() and len(diagnostics)==2
 
 
@@ -16,3 +18,37 @@ def test_request_uses_bounded_sku_batches():
     client=Client(); fetch_placement_zones(client,tuple(str(i) for i in range(201)))
     assert [len(payload["skus"]) for _,payload in client.calls]==[100,100,1]
     assert all(path==PLACEMENT_ZONE_PATH and set(payload)=={"skus"} for path,payload in client.calls)
+
+
+@pytest.mark.parametrize("response", [{}, {"products_placement": None}, {"products_placement": {}}, {"products_placement": ["bad"]}])
+def test_placement_envelope_and_items_fail_closed(response):
+    with pytest.raises(ValueError):
+        normalize_placement_zones(response)
+
+
+@pytest.mark.parametrize("zone", [None, "", " ", "UNSPECIFIED", {}, [], True, 1])
+def test_bad_zone_is_sku_scoped(zone):
+    rows, diagnostics, quality = normalize_placement_zones({"products_placement": [{"sku": "SKU", "placement_zone": zone}]})
+    assert rows == (rows[0],) and not rows[0].complete and rows[0].zones == ()
+    assert diagnostics[0].code == "UNKNOWN_PLACEMENT_ZONE" and quality.incomplete_skus == ("SKU",)
+
+
+def test_placement_omission_and_conflict_are_incomplete():
+    class Client:
+        def post_json(self, *_args, **_kwargs):
+            return {"products_placement": [
+                {"sku": "A", "placement_zone": "ONE"},
+                {"sku": "A", "placement_zone": "TWO"},
+            ]}
+    rows, diagnostics, quality = fetch_placement_zones(Client(), ("A", "B"))
+    assert {row.sku for row in rows} == {"A", "B"}
+    assert all(not row.complete for row in rows)
+    assert quality.incomplete_skus == ("A", "B")
+
+
+def test_placement_rejects_unrequested_sku():
+    class Client:
+        def post_json(self, *_args, **_kwargs):
+            return {"products_placement": [{"sku": "OTHER", "placement_zone": "ONE"}]}
+    with pytest.raises(ValueError):
+        fetch_placement_zones(Client(), ("SKU",))

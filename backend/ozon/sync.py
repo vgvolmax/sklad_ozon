@@ -60,7 +60,7 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
             record_quality = None
             if name == "clusters":
                 records, item_diagnostics = value.clusters, value.diagnostics
-            elif name in {"orders_fbo", "orders_fbs", "inbound"}:
+            elif name in {"orders_fbo", "orders_fbs", "inbound", "fbo_stock", "seller_stock", "placement_zones"}:
                 if len(value) == 3:
                     records, item_diagnostics, record_quality = value
                 else:  # Compatibility for injected legacy adapter doubles.

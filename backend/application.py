@@ -49,7 +49,7 @@ def aggregate_api_need_availability(
     """Aggregate warehouse FBO and cluster inbound as independent evidence."""
     fbo_values = [row.fbo_quantity for row in records if row.fbo_quantity is not None]
     inbound_values = [row.inbound_quantity for row in records if row.inbound_quantity is not None]
-    fbo = (sum(fbo_values) if fbo_values else 0) if coverage.fbo_stock_complete else None
+    fbo = (sum(fbo_values) if fbo_values else 0) if coverage.fbo_stock_complete_for(sku) else None
     inbound = (sum(inbound_values) if inbound_values else 0) if coverage.inbound_complete_for(sku) else None
     return fbo, inbound
 
@@ -299,8 +299,12 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
     allocations=[]; safe_allocations=[]
     for sku_index, sku in enumerate(skus, 1):
         product=product_map.get(sku); group=placements_by_sku.get(sku, ())
-        stock = ((next(iter(positive_fbs[sku])) if positive_fbs.get(sku) else 0) if sku in fbs and sku not in conflicting_fbs else
-                 (product.available_qty if product and sku not in fbs and not availability_fbs_authoritative else None))
+        seller_evidence_complete = (
+            source_coverage is None or source_coverage.seller_stock_complete_for(sku)
+        )
+        stock = (None if not seller_evidence_complete else
+                 ((next(iter(positive_fbs[sku])) if positive_fbs.get(sku) else 0) if sku in fbs and sku not in conflicting_fbs else
+                  (product.available_qty if product and sku not in fbs and not availability_fbs_authoritative else None)))
         if product and stock is not None and group:
             # Safe is not calculable without the external Ozon ceiling.  The
             # Calculated family remains independent from that evidence.

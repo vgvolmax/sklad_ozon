@@ -1,36 +1,52 @@
 """Exact Ozon placement-zone evidence; no inferred substitutes."""
 
 from backend.domain.contracts import ImportDiagnostic
-from backend.ozon.client import OzonClient, OzonRequestPolicy
+from backend.ozon.adapters.wire import sku as parse_sku
+from backend.ozon.client import OzonRequestPolicy
 from backend.ozon.endpoints import PLACEMENT_ZONE_PATH
-from backend.ozon.source_contracts import PlacementZoneEvidence
+from backend.ozon.source_contracts import OzonRecordQualityEvidence, PlacementZoneEvidence
 
 READ = OzonRequestPolicy(retry_safe=True)
 
 
 def normalize_placement_zones(response: dict):
-    items = response.get("products_placement", [])
-    records = []
-    diagnostics = []
-    for raw in items if isinstance(items, list) else ():
-        sku = str(raw.get("sku", "")).strip()
-        zone = str(raw.get("placement_zone") or "").strip()
-        complete = bool(zone and zone != "UNSPECIFIED")
-        zones = (zone,) if zone else ()
-        if not sku:
-            diagnostics.append(ImportDiagnostic("error", "INVALID_PLACEMENT_ZONE", "Placement-zone SKU is missing"))
-            continue
-        if not complete:
-            diagnostics.append(ImportDiagnostic("warning", "UNKNOWN_PLACEMENT_ZONE", f"Placement zone is unknown for SKU {sku}"))
-        records.append(PlacementZoneEvidence(sku, zones, complete))
-    return tuple(records), tuple(diagnostics)
+    if "products_placement" not in response or not isinstance(response["products_placement"], list):
+        raise ValueError("invalid placement-zone response")
+    evidence, diagnostics, incomplete = {}, [], set(); rejected = 0
+    for raw in response["products_placement"]:
+        if not isinstance(raw, dict): raise ValueError("invalid placement-zone record")
+        try: sku = parse_sku(raw.get("sku"))
+        except ValueError as exc: raise ValueError("invalid placement-zone SKU") from exc
+        value = raw.get("placement_zone")
+        zone = value.strip() if isinstance(value, str) else ""
+        valid = bool(zone and zone != "UNSPECIFIED")
+        current = PlacementZoneEvidence(sku, (zone,) if valid else (), valid)
+        previous = evidence.get(sku)
+        if previous is not None and previous != current:
+            if sku not in incomplete: rejected += 1
+            incomplete.add(sku); evidence[sku] = PlacementZoneEvidence(sku, (), False)
+            diagnostics.append(ImportDiagnostic("warning", "UNKNOWN_PLACEMENT_ZONE", f"Conflicting placement zone for SKU {sku}"))
+        elif previous is None:
+            evidence[sku] = current
+            if not valid:
+                rejected += 1; incomplete.add(sku)
+                diagnostics.append(ImportDiagnostic("warning", "UNKNOWN_PLACEMENT_ZONE", f"Placement zone is unknown for SKU {sku}"))
+    return tuple(evidence.values()), tuple(diagnostics), OzonRecordQualityEvidence(rejected, tuple(sorted(incomplete)))
 
 
-def fetch_placement_zones(client: OzonClient, skus: tuple[str, ...]):
-    records = []
-    diagnostics = []
+def fetch_placement_zones(client, skus: tuple[str, ...]):
+    records, diagnostics, incomplete = [], [], set(); rejected = 0
     for start in range(0, len(skus), 100):
-        response = client.post_json(PLACEMENT_ZONE_PATH, {"skus": list(skus[start:start + 100])}, policy=READ)
-        part, part_diagnostics = normalize_placement_zones(response)
-        records.extend(part); diagnostics.extend(part_diagnostics)
-    return tuple(records), tuple(diagnostics)
+        batch = skus[start:start + 100]
+        part, part_diagnostics, quality = normalize_placement_zones(
+            client.post_json(PLACEMENT_ZONE_PATH, {"skus": list(batch)}, policy=READ))
+        returned = {row.sku for row in part}
+        if not returned.issubset(batch): raise ValueError("placement zones returned unrequested SKU")
+        by_sku = {row.sku: row for row in part}
+        for missing in sorted(set(batch) - returned):
+            by_sku[missing] = PlacementZoneEvidence(missing, (), False)
+            diagnostics.append(ImportDiagnostic("warning", "UNKNOWN_PLACEMENT_ZONE", f"Placement zone is missing for SKU {missing}"))
+            incomplete.add(missing); rejected += 1
+        records.extend(by_sku[sku] for sku in batch)
+        diagnostics.extend(part_diagnostics); incomplete.update(quality.incomplete_skus); rejected += quality.rejected_record_count
+    return tuple(records), tuple(diagnostics), OzonRecordQualityEvidence(rejected, tuple(sorted(incomplete)))

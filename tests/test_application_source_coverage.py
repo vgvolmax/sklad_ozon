@@ -83,6 +83,21 @@ def test_scoped_inbound_gap_overrides_partial_numeric_observation():
     assert aggregate_api_need_availability(records, scoped, sku="SKU-B") == (10, 4)
 
 
+def test_fbo_and_seller_stock_completeness_can_be_scoped_to_sku():
+    scoped = AnalysisSourceCoverage(
+        True, True, True, True,
+        fbo_stock_incomplete_skus=("SKU-B",),
+        seller_stock_complete=True,
+        seller_stock_incomplete_skus=("SKU-B",),
+    )
+    assert scoped.fbo_stock_complete_for("SKU-A") is True
+    assert scoped.fbo_stock_complete_for("SKU-B") is False
+    assert scoped.seller_stock_complete_for("SKU-A") is True
+    assert scoped.seller_stock_complete_for("SKU-B") is False
+    records = (row("W", 10),)
+    assert aggregate_api_need_availability(records, scoped, sku="SKU-B")[0] is None
+
+
 def _need(sku, source_coverage):
     return calculate_need(
         sku=sku,

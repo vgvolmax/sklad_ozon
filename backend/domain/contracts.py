@@ -23,6 +23,9 @@ class AnalysisSourceCoverage:
     inbound_complete: bool
     demand_incomplete_skus: tuple[str, ...] = ()
     inbound_incomplete_skus: tuple[str, ...] = ()
+    fbo_stock_incomplete_skus: tuple[str, ...] = ()
+    seller_stock_complete: bool = True
+    seller_stock_incomplete_skus: tuple[str, ...] = ()
 
     @property
     def demand_complete(self) -> bool:
@@ -35,6 +38,12 @@ class AnalysisSourceCoverage:
     def inbound_complete_for(self, sku: str) -> bool:
         """Return whether inbound evidence is complete for one SKU."""
         return self.inbound_complete and sku not in self.inbound_incomplete_skus
+
+    def fbo_stock_complete_for(self, sku: str) -> bool:
+        return self.fbo_stock_complete and sku not in self.fbo_stock_incomplete_skus
+
+    def seller_stock_complete_for(self, sku: str) -> bool:
+        return self.seller_stock_complete and sku not in self.seller_stock_incomplete_skus
 
 
 class RestrictionCapacityKind(str, Enum):
