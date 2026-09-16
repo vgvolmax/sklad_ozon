@@ -5,11 +5,11 @@ from threading import Barrier, Event, Lock, Thread
 from backend.ozon.client import OzonClientError
 from backend.ozon.contracts import OzonErrorCode
 from backend.ozon.draft_contracts import ValidationState
-from backend.ozon.draft_validation import DraftValidationService
+from backend.ozon.draft_validation import DraftValidationService, MAX_INFO_POLL_ATTEMPTS
 from backend.ozon.endpoints import DRAFT_CREATE_INFO, DRAFT_CROSSDOCK_CREATE, DRAFT_DIRECT_CREATE, DRAFT_MULTI_CLUSTER_CREATE
 from backend.ozon.source_contracts import Cluster
 from backend.shipment.contracts import ShipmentMethod, ShipmentScenario
-from tests.ozon.test_draft_polling import info, slots
+from tests.ozon.test_draft_polling import FakeClient, info, slots
 from tests.ozon.test_supply_drafts import candidate
 
 
@@ -116,6 +116,69 @@ def test_concurrent_same_candidate_uses_one_external_create(monkeypatch):
     assert len(output) == 2
     assert output[0] == output[1]
     assert output[0].state is ValidationState.NO_TIMESLOT
+
+
+def test_concurrent_resume_uses_one_info_poll_flight():
+    in_progress = {"status": "IN_PROGRESS", "clusters": [], "errors": []}
+    seed = FakeClient([{"draft_id": 7, "errors": []}] + [in_progress] * MAX_INFO_POLL_ATTEMPTS)
+    service = make_service(seed)
+    pending = service.validate(
+        (candidate(ShipmentMethod.DIRECT),),
+        SCENARIO,
+        provenance="context:analysis:plan:source",
+        source_clusters=CLUSTERS,
+    )[0]
+    assert pending.reason_codes == ("DRAFT_INFO_TIMEOUT",)
+
+    class BlockingResumeClient:
+        def __init__(self):
+            self.info_entered = Event()
+            self.release_info = Event()
+            self.lock = Lock()
+            self.info_calls = 0
+
+        def post_json(self, path, payload, *, policy):
+            if path == DRAFT_CREATE_INFO:
+                with self.lock:
+                    self.info_calls += 1
+                    self.info_entered.set()
+                assert payload == {"draft_id": 7}
+                assert self.release_info.wait(timeout=2)
+                return info()
+            if path.endswith("/timeslot/info"):
+                return slots([])
+            raise AssertionError(path)
+
+    client = BlockingResumeClient()
+    start = Barrier(3)
+    output = []
+
+    def run():
+        start.wait()
+        output.append(
+            service.validate(
+                (candidate(ShipmentMethod.DIRECT),),
+                SCENARIO,
+                provenance="context:analysis:plan:source",
+                source_clusters=CLUSTERS,
+                client=client,
+            )[0]
+        )
+
+    threads = [Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    assert client.info_entered.wait(timeout=2)
+    client.release_info.set()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+    assert client.info_calls == 1
+    assert len(output) == 2 and output[0] == output[1]
+    assert output[0].state is ValidationState.NO_TIMESLOT
+    assert sum(call[0].endswith("/create") for call in seed.calls) == 1
 
 
 def test_concurrent_different_keys_reserve_only_two_minute_slots(monkeypatch):

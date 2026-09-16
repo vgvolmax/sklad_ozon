@@ -3,7 +3,7 @@ import pytest
 from backend.ozon.client import OzonClientError
 from backend.ozon.contracts import OzonErrorCode
 from backend.ozon.draft_contracts import ValidationState
-from backend.ozon.draft_validation import DraftValidationService,ozon_business_today
+from backend.ozon.draft_validation import DRAFT_RESUME_TTL_SECONDS,DraftValidationService,MAX_INFO_POLL_ATTEMPTS,VALIDATION_CACHE_TTL_SECONDS,ozon_business_today
 from backend.ozon.endpoints import DRAFT_CREATE_INFO,DRAFT_TIMESLOT_INFO
 from backend.ozon.source_contracts import Cluster
 from backend.shipment.contracts import ShipmentMethod,ShipmentScenario
@@ -30,6 +30,83 @@ def test_ambiguous_create_is_once_and_quarantined():
  client=FakeClient([OzonClientError(OzonErrorCode.UNAVAILABLE,"lost")]);svc=service(client)
  assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].state is ValidationState.OUTCOME_UNKNOWN
  assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].state is ValidationState.OUTCOME_UNKNOWN and len(client.calls)==1
+
+def test_info_timeout_resumes_known_draft_without_second_create():
+ client=FakeClient([{"draft_id":7,"errors":[]}]+[{"status":"IN_PROGRESS","clusters":[],"errors":[]}]*MAX_INFO_POLL_ATTEMPTS+[info(),slots(None)])
+ svc=service(client)
+ first=validate(svc,(candidate(ShipmentMethod.DIRECT),))[0]
+ assert first.state is ValidationState.UNAVAILABLE
+ assert first.reason_codes==("DRAFT_INFO_TIMEOUT",) and first.draft_id==7
+ calls_before_retry=len(client.calls)
+ second=validate(svc,(candidate(ShipmentMethod.DIRECT),))[0]
+ assert second.state is ValidationState.NO_TIMESLOT
+ assert client.calls[calls_before_retry][0]==DRAFT_CREATE_INFO
+ assert client.calls[calls_before_retry][1]=={"draft_id":7}
+ assert sum(call[0].endswith("/create") for call in client.calls)==1
+
+def test_repeated_info_timeout_keeps_resuming_same_draft():
+ in_progress={"status":"IN_PROGRESS","clusters":[],"errors":[]}
+ client=FakeClient([{"draft_id":7,"errors":[]}]+[in_progress]*MAX_INFO_POLL_ATTEMPTS*2+[info(),slots(None)])
+ svc=service(client)
+ assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].reason_codes==("DRAFT_INFO_TIMEOUT",)
+ assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].reason_codes==("DRAFT_INFO_TIMEOUT",)
+ assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].state is ValidationState.NO_TIMESLOT
+ assert sum(call[0].endswith("/create") for call in client.calls)==1
+ assert {call[1]["draft_id"] for call in client.calls if call[0]==DRAFT_CREATE_INFO}=={7}
+
+def test_resumable_draft_expires_without_sliding_ttl():
+ now=[0.0];in_progress={"status":"IN_PROGRESS","clusters":[],"errors":[]}
+ client=FakeClient([{"draft_id":7,"errors":[]}]+[in_progress]*MAX_INFO_POLL_ATTEMPTS*2+[{"draft_id":8,"errors":[]},info(),slots(None)])
+ svc=service(client,clock=lambda:now[0])
+ assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].draft_id==7
+ now[0]=DRAFT_RESUME_TTL_SECONDS-1
+ assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].draft_id==7
+ now[0]=DRAFT_RESUME_TTL_SECONDS+1
+ option=validate(svc,(candidate(ShipmentMethod.DIRECT),))[0]
+ assert option.state is ValidationState.NO_TIMESLOT and option.draft_id==8
+ assert sum(call[0].endswith("/create") for call in client.calls)==2
+
+def test_resumed_draft_preserves_preliminary_create_reasons():
+ in_progress={"status":"IN_PROGRESS","clusters":[],"errors":[]}
+ create_errors=[{"error_reasons":["PRELIMINARY_REASON"]}]
+ final_errors=[{"error_reasons":["FINAL_REASON"]}]
+ client=FakeClient([{"draft_id":7,"errors":create_errors}]+[in_progress]*MAX_INFO_POLL_ATTEMPTS+[info(errors=final_errors),slots(None)])
+ svc=service(client)
+ assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].reason_codes==("DRAFT_INFO_TIMEOUT",)
+ option=validate(svc,(candidate(ShipmentMethod.DIRECT),))[0]
+ assert option.reason_codes==("PRELIMINARY_REASON","FINAL_REASON","NO_TIMESLOT")
+
+@pytest.mark.parametrize("terminal_info",[info(),info(status="FAILED")])
+def test_authoritative_info_clears_resumable_draft(terminal_info):
+ now=[0.0];in_progress={"status":"IN_PROGRESS","clusters":[],"errors":[]}
+ client=FakeClient([{"draft_id":7,"errors":[]}]+[in_progress]*MAX_INFO_POLL_ATTEMPTS+[terminal_info]+([] if terminal_info["status"]=="FAILED" else [slots(None)])+[{"draft_id":8,"errors":[]},info(),slots(None)])
+ svc=service(client,clock=lambda:now[0])
+ assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].reason_codes==("DRAFT_INFO_TIMEOUT",)
+ validate(svc,(candidate(ShipmentMethod.DIRECT),))
+ now[0]=VALIDATION_CACHE_TTL_SECONDS+1
+ assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].draft_id==8
+
+def test_different_provenance_does_not_reuse_resumable_draft():
+ in_progress={"status":"IN_PROGRESS","clusters":[],"errors":[]}
+ client=FakeClient([{"draft_id":7,"errors":[]}]+[in_progress]*MAX_INFO_POLL_ATTEMPTS+[{"draft_id":8,"errors":[]},info(),slots(None)])
+ svc=service(client)
+ assert svc.validate((candidate(ShipmentMethod.DIRECT),),SCENARIO,provenance="A",source_clusters=CLUSTERS)[0].draft_id==7
+ option=svc.validate((candidate(ShipmentMethod.DIRECT),),SCENARIO,provenance="B",source_clusters=CLUSTERS)[0]
+ assert option.draft_id==8
+
+def test_resumed_draft_does_not_consume_new_draft_budget(monkeypatch):
+ from dataclasses import replace
+ in_progress={"status":"IN_PROGRESS","clusters":[],"errors":[]}
+ a=replace(candidate(ShipmentMethod.DIRECT),candidate_id="A")
+ b=replace(candidate(ShipmentMethod.DIRECT),candidate_id="B")
+ client=FakeClient([{"draft_id":7,"errors":[]}]+[in_progress]*MAX_INFO_POLL_ATTEMPTS+[info(),slots(None),{"draft_id":8,"errors":[]},info(),slots(None)])
+ svc=service(client)
+ monkeypatch.setattr("backend.ozon.draft_validation.DEFAULT_MAX_NEW_DRAFTS",1)
+ assert validate(svc,(a,))[0].reason_codes==("DRAFT_INFO_TIMEOUT",)
+ resumed,new=validate(svc,(a,b))
+ assert resumed.draft_id==7 and resumed.state is ValidationState.NO_TIMESLOT
+ assert new.draft_id==8 and new.state is ValidationState.NO_TIMESLOT
+ assert sum(call[0].endswith("/create") for call in client.calls)==2
 
 @pytest.mark.parametrize("responses",[
  [OzonClientError(OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED,"changed")],
