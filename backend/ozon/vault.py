@@ -69,6 +69,7 @@ class CredentialVault:
 
     def unlock(self, password: str) -> VaultStatus:
         with self._lock:
+            self._revoke_session_locked()
             return self._unlock(password)
 
     def _unlock(self, password: str) -> VaultStatus:
@@ -85,7 +86,6 @@ class CredentialVault:
             decoded = json.loads(plaintext)
             credentials = OzonCredentials(decoded["client_id"], decoded["api_key"])
         except (InvalidTag, KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
-            self._revoke_session_locked()
             raise OzonVaultError(OzonErrorCode.AUTH_FAILED, "Vault password or encrypted data is invalid") from None
         self._activate_session_locked(credentials)
         return self.status()
