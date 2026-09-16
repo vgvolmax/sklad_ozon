@@ -42,14 +42,17 @@ def _race_lock_against_blocked_commit(monkeypatch, target, attribute, request_ca
     request_thread.start()
     assert entered.wait(5), "live request never reached final commit"
 
+    lock_started = Event()
     lock_done = Event()
 
     def run_lock():
+        lock_started.set()
         responses["lock"] = _lock_request()
         lock_done.set()
 
     lock_thread = Thread(target=run_lock, daemon=True)
     lock_thread.start()
+    assert lock_started.wait(5), "lock request thread never started"
 
     lock_finished_before_release = lock_done.wait(1)
     release.set()
