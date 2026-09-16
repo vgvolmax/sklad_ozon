@@ -499,3 +499,24 @@ def test_wrong_type_warehouse_fallback_is_sku_scoped(warehouse_id):
     assert quality == OzonRecordQualityEvidence(1, ("SKU-B",))
     assert [(item.code, item.severity) for item in diagnostics] == [
         ("UNRESOLVED_SUPPLY_CLUSTER", "warning")]
+
+@pytest.mark.parametrize(("count", "sizes"), [(51, [50, 1]), (101, [50, 50, 1])])
+def test_supply_details_respect_live_batch_limit_and_merge_all_results(count, sizes):
+    class BatchedDetailsClient:
+        def __init__(self):
+            self.calls = []
+
+        def post_json(self, path, payload, **_kwargs):
+            assert path == SUPPLY_ORDER_GET_PATH
+            self.calls.append(payload)
+            return {"orders": [
+                {"order_id": order_id, "supplies": []}
+                for order_id in payload["order_ids"]
+            ]}
+
+    client = BatchedDetailsClient()
+    details = _fetch_details(client, list(range(1, count + 1)))
+
+    assert len(details) == count
+    assert [len(call["order_ids"]) for call in client.calls] == sizes
+    assert all(1 <= len(call["order_ids"]) <= 50 for call in client.calls)

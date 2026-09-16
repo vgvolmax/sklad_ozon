@@ -1,0 +1,24 @@
+{
+  "result": {
+    "postings": [
+      {
+        "posting_number": "FBO-1",
+        "status": "delivered",
+        "in_process_at": "2026-09-15T10:00:00Z",
+        "products": [
+          {
+            "sku": 123,
+            "offer_id": "ART-FBO",
+            "name": "Product",
+            "quantity": 1,
+            "price": {"amount": "100.00", "currency": "RUB"}
+          }
+        ],
+        "analytics_data": {"warehouse_name": "Warehouse"},
+        "financial_data": {"cluster_from": "Москва", "cluster_to": "Пермь"}
+      }
+    ],
+    "has_next": false,
+    "cursor": ""
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "result": {
+    "postings": [
+      {
+        "posting_number": "FBS-1",
+        "status": "delivered",
+        "in_process_at": "2026-09-15T10:00:00Z",
+        "products": [
+          {
+            "sku": 456,
+            "offer_id": "ART-FBS",
+            "name": "Product",
+            "quantity": 1,
+            "price": {"amount": "150.00", "currency": "RUB"}
+          }
+        ],
+        "analytics_data": {},
+        "financial_data": {"cluster_from": "Москва", "cluster_to": "Казань"}
+      }
+    ],
+    "has_next": false,
+    "cursor": ""
+  }
+}

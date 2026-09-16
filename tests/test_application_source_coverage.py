@@ -1,4 +1,6 @@
 from decimal import Decimal
+import json
+from pathlib import Path
 
 import backend.api as api_module
 import backend.ozon.sync as sync_module
@@ -11,6 +13,7 @@ from backend.ozon.endpoints import (
     FBO_STOCK_PATH,
     FBS_STOCK_PATH,
     FBO_POSTINGS_PATH,
+    FBS_POSTINGS_PATH,
     SUPPLY_ORDER_BUNDLE_PATH,
     SUPPLY_ORDER_GET_PATH,
     SUPPLY_ORDER_LIST_PATH,
@@ -34,6 +37,40 @@ def test_demand_completeness_can_be_scoped_to_sku():
         False, True, True, True, demand_incomplete_skus=("SKU-B",))
     assert globally_failed.demand_complete_for("SKU-A") is False
     assert globally_failed.demand_complete_for("SKU-B") is False
+
+
+def test_canonical_posting_wire_contract_reaches_complete_analysis_coverage(monkeypatch):
+    fixtures = Path(__file__).parent / "fixtures" / "ozon"
+    responses = {
+        FBO_POSTINGS_PATH: json.loads(
+            (fixtures / "fbo_v3_postings_canonical.json").read_text(encoding="utf-8")),
+        FBS_POSTINGS_PATH: json.loads(
+            (fixtures / "fbs_v4_postings_canonical.json").read_text(encoding="utf-8")),
+    }
+
+    class CanonicalOrdersClient:
+        def post_json(self, path, _payload, **_kwargs):
+            return responses[path]
+
+    monkeypatch.setattr(sync_module, "next_backfill", lambda _window: None)
+    monkeypatch.setattr(sync_module, "fetch_clusters", lambda _client: ClusterCatalogResult(
+        (Cluster(10, "Москва"),), {}, ()))
+    monkeypatch.setattr(sync_module, "fetch_seller_warehouses", lambda _client: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_product_skus", lambda _client: ("123", "456"))
+    monkeypatch.setattr(sync_module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_seller_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_inbound", lambda *_args: ((), ()))
+    monkeypatch.setattr(sync_module, "fetch_placement_zones", lambda *_args: ((), ()))
+
+    source = sync_ozon_source(CanonicalOrdersClient())
+    evidence = {item.name: item for item in source.endpoint_evidence}
+    coverage = api_module._api_prepared_inputs(source).source_coverage
+
+    assert evidence["orders_fbo"].complete is True
+    assert evidence["orders_fbs"].complete is True
+    assert coverage.demand_complete is True
+    assert [(order.sku, order.article) for order in source.orders] == [
+        ("123", "ART-FBO"), ("456", "ART-FBS")]
 
 
 def test_inbound_completeness_can_be_scoped_to_sku():

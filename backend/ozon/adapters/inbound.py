@@ -10,7 +10,7 @@ from backend.ozon.source_contracts import OzonRecordQualityEvidence
 
 READ = OzonRequestPolicy(retry_safe=True)
 PAGE_SIZE = 100
-DETAIL_BATCH_SIZE = 100
+DETAIL_BATCH_SIZE = 50
 
 # Complete documented filter universe for /v3/supply-order/list.  The list call
 # discovers order IDs only; supply semantics remain owned by the detail state.
