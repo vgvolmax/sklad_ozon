@@ -121,6 +121,46 @@ def test_credential_context_is_stable_until_every_successful_setup(tmp_path):
     assert second and second != first
 
 
+def test_lock_revokes_session_without_changing_persistent_context(tmp_path):
+    vault = CredentialVault(tmp_path / "vault.json")
+    vault.setup(CREDS, "password")
+    first = vault.capture_context()
+
+    vault.lock()
+    assert vault.credential_context_id() == first.context_id
+    assert vault.is_context_active(first) is False
+
+    vault.unlock("password")
+    second = vault.capture_context()
+    assert second.context_id == first.context_id
+    assert second.session_generation != first.session_generation
+    assert vault.is_context_active(first) is False
+    assert vault.is_context_active(second) is True
+
+
+def test_failed_setup_keeps_existing_session_active(tmp_path, monkeypatch):
+    vault = CredentialVault(tmp_path / "vault.json")
+    vault.setup(CREDS, "password")
+    context = vault.capture_context()
+    monkeypatch.setattr("backend.ozon.vault.os.replace", lambda *_args: (_ for _ in ()).throw(OSError()))
+
+    with pytest.raises(OSError):
+        vault.setup(OzonCredentials("replacement", "replacement-key"), "new-password")
+
+    assert vault.is_context_active(context) is True
+
+
+def test_failed_unlock_revokes_existing_session(tmp_path):
+    vault = CredentialVault(tmp_path / "vault.json")
+    vault.setup(CREDS, "password")
+    context = vault.capture_context()
+
+    with pytest.raises(OzonVaultError):
+        vault.unlock("wrong-password")
+
+    assert vault.is_context_active(context) is False
+
+
 @pytest.mark.parametrize("password", ["   ", "\t\n"])
 def test_setup_rejects_whitespace_only_password_without_creating_vault(tmp_path, password):
     path = tmp_path / "vault.json"

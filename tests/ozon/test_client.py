@@ -1,5 +1,6 @@
 import json
 import logging
+from threading import Event, Thread
 
 import pytest
 
@@ -7,15 +8,19 @@ from backend.ozon.client import (
     MAX_VENDOR_MESSAGE_CHARS, OzonClient, OzonClientError, OzonRequestPolicy,
     TransportResponse,
 )
-from backend.ozon.contracts import OzonCredentials, OzonErrorCode
+from backend.ozon.contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import OZON_API_BASE
 
 
 class VaultStub:
     credentials = OzonCredentials("sensitive-client", "sensitive-api-key")
+    context = OzonCredentialContext("context", credentials, 1)
 
-    def require_credentials(self):
-        return self.credentials
+    def capture_context(self):
+        return self.context
+
+    def is_context_active(self, context):
+        return context is self.context
 
 
 class FakeTransport:
@@ -268,3 +273,83 @@ def test_bound_client_rejects_changed_context_before_transport(tmp_path):
     assert error.value.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED
     assert error.value.endpoint == "/v1/test"
     assert transport.calls == []
+
+
+def test_bound_client_rejects_lock_before_transport(tmp_path):
+    from backend.ozon.vault import CredentialVault
+
+    vault = CredentialVault(tmp_path / "vault.json")
+    vault.setup(OzonCredentials("account-a", "key-a"), "password")
+    transport = FakeTransport([response()])
+    bound = OzonClient(vault, transport=transport).bind_context(vault.capture_context())
+    vault.lock()
+
+    with pytest.raises(OzonClientError) as error:
+        bound.post_json("/v1/test", {}, policy=OzonRequestPolicy(False))
+    assert error.value.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED
+    assert transport.calls == []
+
+
+def test_old_bound_client_stays_revoked_after_unlock(tmp_path):
+    from backend.ozon.vault import CredentialVault
+
+    vault = CredentialVault(tmp_path / "vault.json")
+    vault.setup(OzonCredentials("account-a", "key-a"), "password")
+    transport = FakeTransport([response()])
+    client = OzonClient(vault, transport=transport)
+    old = client.bind_context(vault.capture_context())
+    vault.lock()
+    vault.unlock("password")
+
+    with pytest.raises(OzonClientError) as error:
+        old.post_json("/v1/test", {}, policy=OzonRequestPolicy(False))
+    assert error.value.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED
+    assert client.bind_context(vault.capture_context()).post_json(
+        "/v1/test", {}, policy=OzonRequestPolicy(False)) == {"result": "ok"}
+
+
+def test_lock_while_transport_is_in_flight_discards_response(tmp_path):
+    from backend.ozon.vault import CredentialVault
+
+    vault = CredentialVault(tmp_path / "vault.json")
+    vault.setup(OzonCredentials("account-a", "key-a"), "password")
+    entered, release = Event(), Event()
+
+    def blocked_transport(request, timeout):
+        entered.set()
+        assert release.wait(2)
+        return response()
+
+    bound = OzonClient(vault, transport=blocked_transport).bind_context(vault.capture_context())
+    outcomes = []
+    thread = Thread(target=lambda: _capture_client_outcome(outcomes, bound))
+    thread.start()
+    assert entered.wait(2)
+    vault.lock()
+    release.set()
+    thread.join(2)
+    assert isinstance(outcomes[0], OzonClientError)
+    assert outcomes[0].code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED
+
+
+def _capture_client_outcome(outcomes, client):
+    try:
+        outcomes.append(client.post_json("/v1/test", {}, policy=OzonRequestPolicy(False)))
+    except BaseException as exc:
+        outcomes.append(exc)
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_lock_during_retry_sleep_prevents_next_transport(bound, tmp_path):
+    from backend.ozon.vault import CredentialVault
+
+    vault = CredentialVault(tmp_path / "vault.json")
+    vault.setup(OzonCredentials("account-a", "key-a"), "password")
+    transport = FakeTransport([response(503), response()])
+    client = OzonClient(vault, transport=transport, sleeper=lambda _delay: vault.lock())
+    active = client.bind_context(vault.capture_context()) if bound else client
+
+    with pytest.raises(OzonClientError) as error:
+        active.post_json("/v1/test", {}, policy=OzonRequestPolicy(True))
+    assert error.value.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED
+    assert len(transport.calls) == 1

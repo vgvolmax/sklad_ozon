@@ -94,14 +94,15 @@ class OzonClient:
 
     def post_json(self, path: str, payload: dict, *, policy: OzonRequestPolicy) -> dict:
         return self._post_json(path, payload, policy=policy,
-                               credentials=self._vault.require_credentials())
+                               context=self._vault.capture_context())
 
     def bind_context(self, context: OzonCredentialContext) -> "BoundOzonClient":
         return BoundOzonClient(self, context)
 
     def _post_json(self, path: str, payload: dict, *, policy: OzonRequestPolicy,
-                   credentials: OzonCredentials, context_id: str | None = None) -> dict:
+                   context: OzonCredentialContext) -> dict:
         self._validate_path(path)
+        credentials = context.credentials
         request = Request(
             OZON_API_BASE + path,
             data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
@@ -114,15 +115,11 @@ class OzonClient:
         )
         attempts = policy.max_attempts if policy.retry_safe else 1
         for attempt in range(1, attempts + 1):
-            if context_id is not None and self._vault.credential_context_id() != context_id:
-                raise OzonClientError(
-                    OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED,
-                    "Ozon credential context changed",
-                    endpoint=path,
-                )
+            self._assert_context_active(context, path)
             try:
                 response = self._transport(request, self._timeout)
             except Exception:
+                self._assert_context_active(context, path)
                 logger.warning("Ozon request transport failure path=%s attempt=%d", path, attempt)
                 if policy.retry_safe and attempt < attempts:
                     self._sleep(self._backoff(attempt))
@@ -130,6 +127,7 @@ class OzonClient:
                 raise OzonClientError(
                     OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable", endpoint=path,
                 ) from None
+            self._assert_context_active(context, path)
             if response.status in _TRANSIENT_STATUSES and policy.retry_safe and attempt < attempts:
                 self._sleep(self._retry_delay(
                     response, attempt, endpoint=path, credentials=credentials,
@@ -141,6 +139,7 @@ class OzonClient:
                 decoded = json.loads(response.body)
                 if not isinstance(decoded, dict):
                     raise ValueError
+                self._assert_context_active(context, path)
                 return decoded
             except (UnicodeError, json.JSONDecodeError, ValueError):
                 raise OzonClientError(
@@ -153,6 +152,14 @@ class OzonClient:
         raise OzonClientError(
             OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable", endpoint=path,
         )
+
+    def _assert_context_active(self, context: OzonCredentialContext, path: str) -> None:
+        if not self._vault.is_context_active(context):
+            raise OzonClientError(
+                OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED,
+                "Ozon credential context changed",
+                endpoint=path,
+            )
 
 
     @staticmethod
@@ -274,5 +281,4 @@ class BoundOzonClient:
 
     def post_json(self, path: str, payload: dict, *, policy: OzonRequestPolicy) -> dict:
         return self._client._post_json(path, payload, policy=policy,
-                                       credentials=self._context.credentials,
-                                       context_id=self._context.context_id)
+                                       context=self._context)

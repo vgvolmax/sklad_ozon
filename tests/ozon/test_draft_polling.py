@@ -1,4 +1,5 @@
 from datetime import date,datetime,timezone
+import pytest
 from backend.ozon.client import OzonClientError
 from backend.ozon.contracts import OzonErrorCode
 from backend.ozon.draft_contracts import ValidationState
@@ -29,6 +30,17 @@ def test_ambiguous_create_is_once_and_quarantined():
  client=FakeClient([OzonClientError(OzonErrorCode.UNAVAILABLE,"lost")]);svc=service(client)
  assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].state is ValidationState.OUTCOME_UNKNOWN
  assert validate(svc,(candidate(ShipmentMethod.DIRECT),))[0].state is ValidationState.OUTCOME_UNKNOWN and len(client.calls)==1
+
+@pytest.mark.parametrize("responses",[
+ [OzonClientError(OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED,"changed")],
+ [{"draft_id":7,"errors":[]},OzonClientError(OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED,"changed")],
+ [{"draft_id":7,"errors":[]},info(),OzonClientError(OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED,"changed")],
+])
+def test_credential_session_revocation_propagates_from_every_live_stage(responses):
+ client=FakeClient(responses)
+ with pytest.raises(OzonClientError) as error:
+  validate(service(client),(candidate(ShipmentMethod.DIRECT),))
+ assert error.value.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED
 
 def test_in_progress_success_current_timeslot_wire():
  rows=[{"from_in_timezone":"2026-09-11T12:00:00+03:00","to_in_timezone":"2026-09-11T13:00:00+03:00"},{"from_in_timezone":"2026-09-11T09:00:00+03:00","to_in_timezone":"2026-09-11T10:00:00+03:00"}]

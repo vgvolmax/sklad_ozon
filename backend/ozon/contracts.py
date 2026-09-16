@@ -39,6 +39,7 @@ class OzonCredentials:
 class OzonCredentialContext:
     context_id: str
     credentials: OzonCredentials = field(repr=False)
+    session_generation: int = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
