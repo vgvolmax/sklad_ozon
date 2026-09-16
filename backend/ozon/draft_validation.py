@@ -211,11 +211,12 @@ class DraftValidationService:
         if sum(now-x<60 for x in self._create_attempts)>=2 or sum(now-x<3600 for x in self._create_attempts)>=50 or len(self._create_attempts)>=500:return False
         self._create_attempts.append(now)
         return True
+    def _prune_resumable_drafts_locked(self,now):
+        expired=[key for key,draft in self._resumable_drafts.items() if now-draft.created_at>=DRAFT_RESUME_TTL_SECONDS]
+        for expired_key in expired:self._resumable_drafts.pop(expired_key,None)
     def _resumable_draft_locked(self,key,now):
-        draft=self._resumable_drafts.get(key)
-        if draft is not None and now-draft.created_at>=DRAFT_RESUME_TTL_SECONDS:
-            self._resumable_drafts.pop(key,None);return None
-        return draft
+        self._prune_resumable_drafts_locked(now)
+        return self._resumable_drafts.get(key)
     def _remember_resumable_draft(self,key,draft):
         with self._state_lock:self._resumable_drafts[key]=draft
     def _clear_resumable_draft(self,key,draft_id):
@@ -278,6 +279,9 @@ class DraftValidationService:
         if resumable is None:
             try:
                 response=client.post_json(create.path,create.payload,policy=CREATE_POLICY);draft_id=_draft_id(response)
+                if draft_id is not None:
+                    resumable=_ResumableDraft(draft_id,self.clock(),(),())
+                    self._remember_resumable_draft(key,resumable)
                 errors=response.get("errors",[]) if isinstance(response,dict) else []
                 rejected,preliminary_errors,preliminary_rejected_reasons=_normalize_errors(errors,candidate,identities)
                 preliminary_error_reasons=_error_reason_codes(preliminary_errors)
@@ -285,7 +289,7 @@ class DraftValidationService:
                     reasons=_normalized_reason_codes((*preliminary_error_reasons,*preliminary_rejected_reasons))
                     if rejected or reasons:return self._option(candidate,ValidationState.REJECTED,("OZON_REJECTED_CANDIDATE",)+reasons,rejected=rejected)
                     raise InvalidDraftResponse("missing draft_id")
-                resumable=_ResumableDraft(draft_id,self.clock(),preliminary_error_reasons,preliminary_rejected_reasons)
+                resumable=_ResumableDraft(draft_id,resumable.created_at,preliminary_error_reasons,preliminary_rejected_reasons)
                 self._remember_resumable_draft(key,resumable)
             except OzonClientError as exc:
                 if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:raise
