@@ -119,6 +119,25 @@ def test_localized_order_quality_does_not_stop_backfill(monkeypatch):
     assert capability_matrix(source)["demand_flow"]["complete"] is True
 
 
+def test_missing_postings_marks_order_endpoints_globally_incomplete(monkeypatch):
+    class CorruptedOrdersClient:
+        def post_json(self, *_args, **_kwargs):
+            return {"result": {}}
+
+    _patch_non_history(monkeypatch)
+    source = sync_ozon_source(CorruptedOrdersClient())
+    order_evidence = {
+        item.name: item for item in source.endpoint_evidence
+        if item.name in {"orders_fbo", "orders_fbs"}
+    }
+
+    assert order_evidence["orders_fbo"].complete is False
+    assert order_evidence["orders_fbs"].complete is False
+    prepared = api_module._api_prepared_inputs(source)
+    assert prepared.source_coverage.demand_complete_for("SKU-A") is False
+    assert prepared.source_coverage.demand_complete_for("SKU-B") is False
+
+
 def test_localized_inbound_quality_is_preserved_without_global_failure(monkeypatch):
     import backend.ozon.sync as module
 

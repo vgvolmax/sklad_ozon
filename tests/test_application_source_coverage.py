@@ -1,4 +1,7 @@
+from decimal import Decimal
+
 from backend.application import aggregate_api_need_availability
+from backend.decision.need import calculate_need
 from backend.domain.contracts import AnalysisSourceCoverage
 from backend.ingestion.availability import AvailabilityRecord
 
@@ -67,3 +70,35 @@ def test_scoped_inbound_gap_overrides_partial_numeric_observation():
         True, True, True, True, inbound_incomplete_skus=("SKU-A",))
     assert aggregate_api_need_availability(records, scoped, sku="SKU-A") == (10, None)
     assert aggregate_api_need_availability(records, scoped, sku="SKU-B") == (10, 4)
+
+
+def _need(sku, source_coverage):
+    return calculate_need(
+        sku=sku,
+        destination_cluster_id="Москва",
+        weekly_rate=Decimal("7"),
+        horizon_days=14,
+        fbo_stock=3,
+        inbound_qty=1,
+        include_inbound=True,
+        ozon_recommended_qty=10,
+        ozon_horizon_days=14,
+        demand_source_complete=source_coverage.demand_complete_for(sku),
+    )
+
+
+def test_scoped_order_corruption_blocks_only_affected_sku_need():
+    source_coverage = AnalysisSourceCoverage(
+        True, True, True, True, demand_incomplete_skus=("SKU-B",))
+
+    assert _need("SKU-A", source_coverage).calculated_need_qty == 10
+    assert _need("SKU-B", source_coverage).calculated_need_qty is None
+
+
+def test_global_order_corruption_blocks_need_for_every_sku():
+    source_coverage = AnalysisSourceCoverage(False, True, True, True)
+
+    for sku in ("SKU-A", "SKU-B", "SKU-C"):
+        need = _need(sku, source_coverage)
+        assert need.calculated_need_qty is None
+        assert "INCOMPLETE_DEMAND_SOURCE" in need.blocker_codes
