@@ -179,11 +179,13 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
             if demand_relevant or lifecycle is OrderLifecycle.UNKNOWN:
                 incomplete_skus.add(sku)
             continue
-        seller_price, valid_price = _posting_price(product.get("price"))
-        if not valid_price:
-            diagnostics.append(ImportDiagnostic(
-                "warning", "INVALID_ORDER_PRICE",
-                "Posting product has invalid seller price.", field="price"))
+        seller_price = 0.0
+        if "price" in product:
+            seller_price, valid_price = _posting_price(product["price"])
+            if not valid_price:
+                diagnostics.append(ImportDiagnostic(
+                    "warning", "INVALID_ORDER_PRICE",
+                    "Posting product has invalid seller price.", field="price"))
         records.append(OrderRecord(
             sku=sku, quantity=int(quantity), origin_cluster=origin_cluster,
             destination_cluster=destination, lifecycle=lifecycle, accepted_at=accepted,
