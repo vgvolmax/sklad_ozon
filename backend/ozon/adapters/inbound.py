@@ -12,6 +12,22 @@ READ = OzonRequestPolicy(retry_safe=True)
 PAGE_SIZE = 100
 DETAIL_BATCH_SIZE = 100
 
+# Complete documented filter universe for /v3/supply-order/list.  The list call
+# discovers order IDs only; supply semantics remain owned by the detail state.
+SUPPLY_ORDER_STATES = (
+    "DATA_FILLING",
+    "READY_TO_SUPPLY",
+    "ACCEPTED_AT_SUPPLY_WAREHOUSE",
+    "IN_TRANSIT",
+    "ACCEPTANCE_AT_STORAGE_WAREHOUSE",
+    "REPORTS_CONFIRMATION_AWAITING",
+    "REPORT_REJECTED",
+    "COMPLETED",
+    "REJECTED_AT_SUPPLY_WAREHOUSE",
+    "CANCELLED",
+    "OVERDUE",
+)
+
 
 class SupplyState(str, Enum):
     INBOUND = "inbound"
@@ -171,7 +187,12 @@ def _fetch_order_ids(client: OzonClient) -> list[int]:
     last_id = ""
     seen_cursors: set[str] = set()
     while True:
-        payload = {"filter": {}, "limit": PAGE_SIZE, "sort_by": "ORDER_CREATION"}
+        payload = {
+            "filter": {"states": list(SUPPLY_ORDER_STATES)},
+            "limit": PAGE_SIZE,
+            "sort_by": "ORDER_CREATION",
+            "sort_dir": "DESC",
+        }
         if last_id:
             payload["last_id"] = last_id
         root = _root(client.post_json(SUPPLY_ORDER_LIST_PATH, payload, policy=READ), "supply-order list")

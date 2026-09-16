@@ -13,7 +13,7 @@ from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_POSTINGS_PATH
 from backend.ozon.source_contracts import MOSCOW_BUSINESS_TZ, OzonRecordQualityEvidence
 
 READ = OzonRequestPolicy(retry_safe=True)
-PAGE_SIZE = 1000
+POSTINGS_PAGE_SIZE = 100
 
 _FULFILLED = {"delivered"}
 _CANCELLED = {"cancelled", "canceled"}
@@ -194,7 +194,7 @@ def fetch_postings(client: OzonClient, path: str, history_from: date, history_to
     while True:
         payload = {
             "filter": {"since": since, "to": until},
-            "limit": PAGE_SIZE,
+            "limit": POSTINGS_PAGE_SIZE,
             "sort_dir": "ASC",
             "with": {"analytics_data": True, "financial_data": True},
         }

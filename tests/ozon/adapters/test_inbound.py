@@ -1,6 +1,7 @@
 import pytest
 
 from backend.ozon.adapters.inbound import (
+    PAGE_SIZE, SUPPLY_ORDER_STATES,
     SupplyState,
     _fetch_bundles,
     _fetch_details,
@@ -249,7 +250,15 @@ def test_supply_list_last_id_paginates():
 
     client = Paged()
     assert _fetch_order_ids(client) == [1, 2]
+    assert len(client.calls) == 2
     assert client.calls[1]["last_id"] == "next"
+    for payload in client.calls:
+        assert payload["filter"]["states"] == list(SUPPLY_ORDER_STATES)
+        assert payload["filter"] != {}
+        assert payload["limit"] == PAGE_SIZE
+        assert 0 < payload["limit"] <= 100
+        assert payload["sort_by"] == "ORDER_CREATION"
+        assert payload["sort_dir"] == "DESC"
 
 
 @pytest.mark.parametrize("returned", [

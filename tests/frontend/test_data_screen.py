@@ -42,7 +42,7 @@ def test_rejected_request_and_unavailable_have_distinct_causes():
     rejected = view(
         {"operational_allocation": {"complete": False}},
         [{"name": "seller_stock", "complete": False, "api_error": {
-            "code": "OZON_INVALID_RESPONSE", "http_status": 400,
+            "code": "OZON_INVALID_REQUEST", "http_status": 400,
             "vendor_message": "sku or offer_id is required"}}],
         "operational_allocation",
     )

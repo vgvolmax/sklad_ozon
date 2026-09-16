@@ -202,7 +202,8 @@ def ozon_connection_test():
     except OzonClientError as exc:
         if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error()
         statuses={OzonErrorCode.AUTH_FAILED:401,OzonErrorCode.PERMISSION_DENIED:403,OzonErrorCode.RATE_LIMITED:429,
-                  OzonErrorCode.UNAVAILABLE:503,OzonErrorCode.INVALID_RESPONSE:502}
+                  OzonErrorCode.UNAVAILABLE:503,OzonErrorCode.INVALID_REQUEST:400,
+                  OzonErrorCode.INVALID_RESPONSE:502}
         return error(statuses.get(exc.code,502),exc.code.value,str(exc),None)
     except ShipmentPreparationError as exc:
         return error(exc.http_status,exc.code,exc.message,exc.field)

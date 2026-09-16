@@ -34,6 +34,9 @@ def test_real_cursor_contract_and_financial_data_request(path, factory):
     records, diagnostics, quality=fetch_postings(client,path,date(2026,7,1),date(2026,8,1))
     assert len(records)==2 and not diagnostics
     assert client.calls[0][1]["with"]=={"analytics_data":True,"financial_data":True}
+    assert client.calls[0][1]["limit"] == 100
+    assert client.calls[0][1]["limit"] <= 100
+    assert client.calls[1][1]["limit"] == 100
     assert "legal_info" not in client.calls[0][1]["with"]
     assert client.calls[1][1]["cursor"]=="next"
 
