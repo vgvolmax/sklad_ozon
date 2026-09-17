@@ -22,6 +22,9 @@ class OzonApiErrorEvidence:
     vendor_code: str | None
     vendor_message: str | None
     request_id: str | None
+    transport_kind: str | None = None
+    attempts: int | None = None
+    elapsed_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

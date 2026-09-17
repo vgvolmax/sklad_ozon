@@ -6,10 +6,12 @@ from dataclasses import dataclass, field
 import json
 import logging
 import math
+import socket
+import ssl
 import time
 from typing import Callable, Mapping, Protocol
 import unicodedata
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -58,6 +60,9 @@ class OzonClientError(Exception):
         vendor_code: str | None = None,
         vendor_message: str | None = None,
         request_id: str | None = None,
+        transport_kind: str | None = None,
+        attempts: int | None = None,
+        elapsed_ms: int | None = None,
     ) -> None:
         self.code = code
         self.endpoint = endpoint
@@ -65,6 +70,9 @@ class OzonClientError(Exception):
         self.vendor_code = vendor_code
         self.vendor_message = vendor_message
         self.request_id = request_id
+        self.transport_kind = transport_kind
+        self.attempts = attempts
+        self.elapsed_ms = elapsed_ms
         super().__init__(message)
 
 
@@ -114,11 +122,12 @@ class OzonClient:
             method="POST",
         )
         attempts = policy.max_attempts if policy.retry_safe else 1
+        operation_started = time.perf_counter()
         for attempt in range(1, attempts + 1):
             self._assert_context_active(context, path)
             try:
                 response = self._transport(request, self._timeout)
-            except Exception:
+            except Exception as exc:
                 self._assert_context_active(context, path)
                 logger.warning("Ozon request transport failure path=%s attempt=%d", path, attempt)
                 if policy.retry_safe and attempt < attempts:
@@ -126,6 +135,8 @@ class OzonClient:
                     continue
                 raise OzonClientError(
                     OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable", endpoint=path,
+                    transport_kind=self._transport_kind(exc), attempts=attempt,
+                    elapsed_ms=round((time.perf_counter() - operation_started) * 1000),
                 ) from None
             self._assert_context_active(context, path)
             if response.status in _TRANSIENT_STATUSES and policy.retry_safe and attempt < attempts:
@@ -174,6 +185,24 @@ class OzonClient:
     @staticmethod
     def _backoff(attempt: int) -> float:
         return min(0.5 * (2 ** (attempt - 1)), 5.0)
+
+    @staticmethod
+    def _transport_kind(error: Exception) -> str:
+        """Return a small, stable classification without retaining exception text."""
+        cause = error.reason if isinstance(error, URLError) else error
+        if isinstance(cause, (TimeoutError, socket.timeout)):
+            return "timeout"
+        if isinstance(cause, ConnectionResetError):
+            return "connection_reset"
+        if isinstance(cause, socket.gaierror):
+            return "dns"
+        if isinstance(cause, ssl.SSLError):
+            return "tls"
+        if isinstance(cause, (ConnectionError, ConnectionRefusedError, BrokenPipeError)):
+            return "connection"
+        if isinstance(error, (URLError, OSError)):
+            return "network"
+        return "unknown_transport"
 
     def _retry_delay(
         self,

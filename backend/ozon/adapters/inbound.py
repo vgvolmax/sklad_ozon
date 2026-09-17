@@ -181,7 +181,7 @@ def normalize_inbound(details: list[dict], bundle_items: dict[str, list[dict]], 
     return records, tuple(diagnostics), quality
 
 
-def _fetch_order_ids(client: OzonClient) -> list[int]:
+def _fetch_order_ids(client: OzonClient, progress_callback=None) -> list[int]:
     order_ids: list[int] = []
     seen_ids: set[int] = set()
     last_id = ""
@@ -206,6 +206,9 @@ def _fetch_order_ids(client: OzonClient) -> list[int]:
                 raise ValueError("duplicate supply-order ID")
             seen_ids.add(value)
             order_ids.append(value)
+        if progress_callback:
+            progress_callback(detail="Поиск заявок", current=len(order_ids), total=None,
+                              unit="orders")
         cursor = root.get("last_id", "")
         if cursor is None:
             raise ValueError("invalid supply-order cursor")
@@ -221,7 +224,7 @@ def _fetch_order_ids(client: OzonClient) -> list[int]:
     return order_ids
 
 
-def _fetch_details(client: OzonClient, order_ids: list[int]) -> list[dict]:
+def _fetch_details(client: OzonClient, order_ids: list[int], progress_callback=None) -> list[dict]:
     details = []
     for start in range(0, len(order_ids), DETAIL_BATCH_SIZE):
         batch = order_ids[start:start + DETAIL_BATCH_SIZE]
@@ -243,10 +246,13 @@ def _fetch_details(client: OzonClient, order_ids: list[int]) -> list[dict]:
         if set(returned_ids) != set(batch):
             raise ValueError("supply-order details do not match requested IDs")
         details.extend(returned)
+        if progress_callback:
+            progress_callback(detail="Получение деталей заявок", current=len(details),
+                              total=len(order_ids), unit="orders")
     return details
 
 
-def _fetch_bundles(client: OzonClient, bundle_ids: list[str]) -> dict[str, list[dict]]:
+def _fetch_bundles(client: OzonClient, bundle_ids: list[str], progress_callback=None) -> dict[str, list[dict]]:
     result: dict[str, list[dict]] = {bundle_id: [] for bundle_id in bundle_ids}
     for bundle_id in bundle_ids:
         last_id = ""
@@ -288,13 +294,18 @@ def _fetch_bundles(client: OzonClient, bundle_ids: list[str]) -> dict[str, list[
                 raise ValueError("non-progressing supply bundle cursor")
             seen_cursors.add(next_id)
             last_id = next_id
+        if progress_callback:
+            progress_callback(detail="Получение состава поставок",
+                              current=bundle_ids.index(bundle_id) + 1,
+                              total=len(bundle_ids), unit="bundles")
     return result
 
 
 def fetch_inbound(client: OzonClient, cluster_by_id: dict[int, str] | None = None,
-                  warehouse_to_macrolocal: dict[int, int] | None = None):
-    order_ids = _fetch_order_ids(client)
-    details = _fetch_details(client, order_ids)
+                  warehouse_to_macrolocal: dict[int, int] | None = None,
+                  progress_callback=None):
+    order_ids = _fetch_order_ids(client, progress_callback)
+    details = _fetch_details(client, order_ids, progress_callback)
     bundle_ids: set[str] = set()
     for order in details:
         supplies = order.get("supplies")
@@ -305,5 +316,5 @@ def fetch_inbound(client: OzonClient, cluster_by_id: dict[int, str] | None = Non
                 raise ValueError(f"supply order {order['order_id']} contains invalid supply evidence")
             if classify_supply_state(supply.get("state")) is not SupplyState.FINAL:
                 bundle_ids.add(_bundle_id(supply))
-    bundles = _fetch_bundles(client, sorted(bundle_ids))
+    bundles = _fetch_bundles(client, sorted(bundle_ids), progress_callback)
     return normalize_inbound(details, bundles, cluster_by_id or {}, warehouse_to_macrolocal or {})

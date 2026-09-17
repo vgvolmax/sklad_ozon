@@ -34,8 +34,9 @@ def normalize_placement_zones(response: dict):
     return tuple(evidence.values()), tuple(diagnostics), OzonRecordQualityEvidence(rejected, tuple(sorted(incomplete)))
 
 
-def fetch_placement_zones(client, skus: tuple[str, ...]):
+def fetch_placement_zones(client, skus: tuple[str, ...], progress_callback=None):
     records, diagnostics, incomplete = [], [], set(); rejected = 0
+    if progress_callback: progress_callback(current=0, total=len(skus), unit="sku")
     for start in range(0, len(skus), 100):
         batch = skus[start:start + 100]
         part, part_diagnostics, quality = normalize_placement_zones(
@@ -49,4 +50,6 @@ def fetch_placement_zones(client, skus: tuple[str, ...]):
             incomplete.add(missing); rejected += 1
         records.extend(by_sku[sku] for sku in batch)
         diagnostics.extend(part_diagnostics); incomplete.update(quality.incomplete_skus); rejected += quality.rejected_record_count
+        if progress_callback:
+            progress_callback(current=min(start + len(batch), len(skus)), total=len(skus), unit="sku")
     return tuple(records), tuple(diagnostics), OzonRecordQualityEvidence(rejected, tuple(sorted(incomplete)))
