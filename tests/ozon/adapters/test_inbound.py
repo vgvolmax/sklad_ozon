@@ -48,6 +48,30 @@ def test_direct_macrolocal_cluster_works_without_warehouse_mapping():
     assert quality.rejected_record_count == 0
 
 
+@pytest.mark.parametrize("direct", ["10", " 10 ", "000010"])
+def test_numeric_string_direct_cluster_uses_confirmed_catalog_id(direct):
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": direct,
+        "bundle_id": UUID,
+    }], {UUID: [{"sku": "S", "quantity": 3}]})
+
+    assert [(row.sku, row.cluster, row.inbound_quantity) for row in rows] == [
+        ("S", "Москва", 3)]
+    assert diagnostics == ()
+    assert quality == OzonRecordQualityEvidence(0, ())
+
+
+def test_unknown_numeric_string_direct_cluster_fails_closed_without_fallback():
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": "999",
+        "storage_warehouse": {"warehouse_id": 501}, "bundle_id": UUID,
+    }], {UUID: [{"sku": "S", "quantity": 3}]}, mapping={501: 10})
+
+    assert rows == ()
+    assert [item.code for item in diagnostics] == ["UNRESOLVED_SUPPLY_CLUSTER"]
+    assert quality == OzonRecordQualityEvidence(1, ("S",))
+
+
 def test_warehouse_mapping_remains_absent_direct_id_fallback():
     rows, diagnostics, _quality = _normalize([{
         "state": "IN_TRANSIT", "storage_warehouse": {"warehouse_id": 501},
@@ -57,7 +81,7 @@ def test_warehouse_mapping_remains_absent_direct_id_fallback():
     assert not diagnostics
 
 
-@pytest.mark.parametrize("direct", [0, None])
+@pytest.mark.parametrize("direct", [0, "0", None])
 def test_empty_direct_cluster_uses_storage_warehouse_fallback(direct):
     rows, diagnostics, quality = _normalize([{
         "state": "IN_TRANSIT", "macrolocal_cluster_id": direct,
@@ -85,6 +109,16 @@ def test_zero_direct_cluster_with_unresolved_warehouse_is_scoped_unknown():
     assert quality == OzonRecordQualityEvidence(2, ("A", "B"))
 
 
+def test_string_zero_direct_cluster_without_warehouse_is_scoped_unknown():
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": "0", "bundle_id": UUID,
+    }], {UUID: [{"sku": "S", "quantity": 3}]})
+
+    assert rows == ()
+    assert [item.code for item in diagnostics] == ["UNRESOLVED_SUPPLY_CLUSTER"]
+    assert quality == OzonRecordQualityEvidence(1, ("S",))
+
+
 def test_zero_direct_cluster_fallback_accepts_every_bundle_item():
     rows, diagnostics, quality = _normalize([{
         "state": "IN_TRANSIT", "macrolocal_cluster_id": 0,
@@ -94,6 +128,24 @@ def test_zero_direct_cluster_fallback_accepts_every_bundle_item():
         {"sku": "B", "quantity": 3},
         {"sku": "C", "quantity": 1},
     ]}, mapping={501: 10})
+
+    assert [(row.sku, row.cluster, row.inbound_quantity) for row in rows] == [
+        ("A", "Москва", 2),
+        ("B", "Москва", 3),
+        ("C", "Москва", 1),
+    ]
+    assert diagnostics == ()
+    assert quality == OzonRecordQualityEvidence(0, ())
+
+
+def test_numeric_string_direct_cluster_accepts_every_bundle_item():
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": "10", "bundle_id": UUID,
+    }], {UUID: [
+        {"sku": "A", "quantity": 2},
+        {"sku": "B", "quantity": 3},
+        {"sku": "C", "quantity": 1},
+    ]})
 
     assert [(row.sku, row.cluster, row.inbound_quantity) for row in rows] == [
         ("A", "Москва", 2),
@@ -119,7 +171,6 @@ def test_direct_cluster_beats_conflicting_warehouse_fallback():
     (True, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
     (False, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
     (-1, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
-    ("10", "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
     ("", "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
     ([], "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
     ({}, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
@@ -139,7 +190,6 @@ def test_explicit_invalid_direct_cluster_is_not_hidden_by_fallback(direct, code)
 
 
 @pytest.mark.parametrize(("direct", "shape"), [
-    ("10", "numeric_string"),
     (" ", "blank_string"),
     (-1, "negative_int"),
     (10.0, "float_integral"),
@@ -164,7 +214,7 @@ def test_invalid_direct_cluster_summary_is_aggregated_sorted_and_private():
     private_bundle = "private-bundle-999999"
     supplies = [
         *[{
-            "state": "IN_TRANSIT", "macrolocal_cluster_id": "777777",
+            "state": "IN_TRANSIT", "macrolocal_cluster_id": "abc",
             "storage_warehouse": {"warehouse_id": 501}, "bundle_id": UUID,
         } for _ in range(2)],
         {
@@ -196,9 +246,26 @@ def test_invalid_direct_cluster_summary_is_aggregated_sorted_and_private():
         "Invalid supply cluster wire shapes: "
         "blank_string/storage_missing=1; "
         "negative_int/fallback_unmapped=3; "
-        "numeric_string/fallback_resolvable=2.")
+        "other_string/fallback_resolvable=2.")
     for private_value in ("501", "502", "10", "777777", "888888", "999999"):
         assert private_value not in summaries[0].message
+
+
+@pytest.mark.parametrize("direct", [
+    "-1", "+10", "10.0", "1e2", "", " ", "abc", "１２３",
+])
+def test_malformed_direct_cluster_strings_remain_invalid(direct):
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": direct,
+        "storage_warehouse": {"warehouse_id": 501}, "bundle_id": UUID,
+    }], {UUID: [{"sku": "S", "quantity": 3}]}, mapping={501: 10})
+
+    assert rows == ()
+    assert [item.code for item in diagnostics] == [
+        "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID",
+        "SUPPLY_CLUSTER_WIRE_SUMMARY",
+    ]
+    assert quality == OzonRecordQualityEvidence(1, ("S",))
 
 
 def test_disputed_supply_is_scoped_unknown_and_quantity_is_not_counted():
