@@ -1,20 +1,21 @@
 {
-  "result": [
+  "expires_at": "2027-12-31T23:59:59Z",
+  "roles": [
     {
-      "name": "Seller API",
-      "roles": [
-        {
-          "name": "Application access",
-          "expires_at": "2027-12-31T23:59:59Z",
-          "methods": [
-            {"name": "/v3/posting/fbo/list", "is_available": true},
-            {"name": "/v4/posting/fbs/list", "is_available": true},
-            {"name": "/v3/product/list", "is_available": true},
-            {"name": "/v3/supply-order/list", "is_available": true},
-            {"name": "/v3/supply-order/get", "is_available": true},
-            {"name": "/v1/warehouse/fbo/seller/list", "is_available": true}
-          ]
-        }
+      "name": "Admin read only",
+      "methods": [
+        "/v3/posting/fbo/list",
+        "/v4/posting/fbs/list",
+        "/v2/cluster/list",
+        "/v1/cluster/list",
+        "/v1/warehouse/fbo/seller/list",
+        "/v3/product/list",
+        "/v1/analytics/stocks",
+        "/v2/product/info/stocks-by-warehouse/fbs",
+        "/v3/supply-order/list",
+        "/v3/supply-order/get",
+        "/v1/supply-order/bundle",
+        "/v1/product/placement-zone/info"
       ]
     }
   ]

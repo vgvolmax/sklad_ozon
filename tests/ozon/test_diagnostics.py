@@ -13,6 +13,20 @@ from backend.ozon.diagnostics import (
 )
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "ozon" / "roles_v1_full.json"
+REQUIRED_SYNC_METHODS = (
+    "/v3/posting/fbo/list",
+    "/v4/posting/fbs/list",
+    "/v2/cluster/list",
+    "/v1/cluster/list",
+    "/v1/warehouse/fbo/seller/list",
+    "/v3/product/list",
+    "/v1/analytics/stocks",
+    "/v2/product/info/stocks-by-warehouse/fbs",
+    "/v3/supply-order/list",
+    "/v3/supply-order/get",
+    "/v1/supply-order/bundle",
+    "/v1/product/placement-zone/info",
+)
 
 
 class Client:
@@ -76,32 +90,46 @@ def test_seller_info_uses_one_attempt_and_short_timeout():
     assert client.calls == [("/v1/seller/info", 1, 10.0)]
 
 
-def test_roles_full_and_expiry():
-    result = diagnose_roles(Client([full_roles()]))
+def test_roles_current_wire_full_and_expiry():
+    payload = full_roles()
+    assert payload["roles"][0]["methods"] == list(REQUIRED_SYNC_METHODS)
+    result = diagnose_roles(Client([payload]))
     assert result.status == "ok" and all(result.permissions.values())
     assert result.expires_at == "2027-12-31T23:59:59Z"
 
 
-def test_roles_missing_empty_and_malformed_fail_closed():
-    missing = full_roles()
-    missing["result"][0]["roles"][0]["methods"].pop()
-    result = diagnose_roles(Client([missing]))
-    assert result.code == "OZON_PERMISSION_MISSING"
-    assert result.permissions["warehouses"] is False
-    for payload in ({"result": []}, {"unexpected": []},
-                    {"result": [{"name": "x", "roles": [{"name": "r", "methods": [{}]}]}]},
-                    {"result": [{"name": "x", "roles": [{"name": "r", "methods": "bad"}]}]}):
-        if payload == {"result": []}:
-            permissions, expiry = parse_roles(payload)
-            assert not any(permissions.values()) and expiry is None
-        else:
-            assert diagnose_roles(Client([payload])).code == "OZON_ROLES_INVALID_RESPONSE"
-
-
-def test_roles_expiry_is_optional():
+@pytest.mark.parametrize("method", REQUIRED_SYNC_METHODS)
+def test_roles_requires_every_endpoint_used_by_heavy_sync(method):
     payload = full_roles()
-    del payload["result"][0]["roles"][0]["expires_at"]
+    payload["roles"][0]["methods"].remove(method)
+    result = diagnose_roles(Client([payload]))
+    assert result.code == "OZON_PERMISSION_MISSING"
+    assert result.status == "failed"
+
+
+def test_roles_empty_and_malformed_fail_closed():
+    permissions, expiry = parse_roles({"roles": []})
+    assert not any(permissions.values()) and expiry is None
+
+    malformed = (
+        {"unexpected": []},
+        {"roles": [{"name": "x", "methods": [{}]}]},
+        {"roles": [{"name": "x", "methods": "bad"}]},
+        {"result": [{"name": "legacy-invented-shape", "roles": []}]},
+    )
+    for payload in malformed:
+        assert diagnose_roles(Client([payload])).code == "OZON_ROLES_INVALID_RESPONSE"
+
+
+def test_roles_expiry_is_optional_but_must_be_a_nonblank_string_when_present():
+    payload = full_roles()
+    del payload["expires_at"]
     assert diagnose_roles(Client([payload])).expires_at is None
+
+    for invalid in ("", 123, [], {}):
+        payload = full_roles()
+        payload["expires_at"] = invalid
+        assert diagnose_roles(Client([payload])).code == "OZON_ROLES_INVALID_RESPONSE"
 
 
 def test_fail_fast_marks_later_checks_not_run():
