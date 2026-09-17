@@ -1,4 +1,7 @@
 from datetime import date
+import json
+from pathlib import Path
+
 import pytest
 from backend.ozon.adapters.orders import fetch_postings, normalize_fbo_posting, normalize_fbs_posting
 from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_POSTINGS_PATH
@@ -16,10 +19,16 @@ def fbo(number="1", destination="Москва", status="delivered"):
 
 def fbs(number="2", destination="Сибирь"):
     financial = {"cluster_from": "Урал", "cluster_to": destination} if destination is not None else {"cluster_from": "Урал"}
-    return {"posting_number": number, "status_alias": "delivered",
+    return {"posting_number": number, "status": "delivered",
             "in_process_at": "2026-08-01T10:00:00Z", "financial_data": financial,
             "analytics_data": {"region": "WRONG", "city": "WRONG"},
-            "products": [{"product_id": 456, "product_offer_id": "FBS-ART", "product_name": "FBS product", "quantity": 1, "price": "55"}]}
+            "products": [{"sku": 456, "offer_id": "FBS-ART", "name": "FBS product",
+                          "quantity": 1, "price": {"amount": "55", "currency": "RUB"}}]}
+
+
+def fixture(name):
+    path = Path(__file__).parents[2] / "fixtures" / "ozon" / name
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 class Client:
@@ -184,7 +193,7 @@ def test_missing_products_collection_fails_endpoint(normalizer, factory):
 
 @pytest.mark.parametrize("normalizer,factory,sku_field", [
     (normalize_fbo_posting, fbo, "sku"),
-    (normalize_fbs_posting, fbs, "product_id"),
+    (normalize_fbs_posting, fbs, "sku"),
 ])
 @pytest.mark.parametrize("sku", [None, "", "   "])
 def test_missing_product_identity_fails_endpoint(normalizer, factory, sku_field, sku):
@@ -196,7 +205,7 @@ def test_missing_product_identity_fails_endpoint(normalizer, factory, sku_field,
 
 @pytest.mark.parametrize("normalizer,factory,sku_field", [
     (normalize_fbo_posting, fbo, "sku"),
-    (normalize_fbs_posting, fbs, "product_id"),
+    (normalize_fbs_posting, fbs, "sku"),
 ])
 @pytest.mark.parametrize("sku", [{}, [], True, 1.5, 0, -1])
 def test_wrong_type_or_nonpositive_product_identity_fails_endpoint(normalizer, factory, sku_field, sku):
@@ -208,7 +217,7 @@ def test_wrong_type_or_nonpositive_product_identity_fails_endpoint(normalizer, f
 
 @pytest.mark.parametrize("normalizer,factory,sku_field", [
     (normalize_fbo_posting, fbo, "sku"),
-    (normalize_fbs_posting, fbs, "product_id"),
+    (normalize_fbs_posting, fbs, "sku"),
 ])
 def test_invalid_quantity_is_scoped_to_known_sku(normalizer, factory, sku_field):
     posting = factory()
@@ -312,3 +321,83 @@ def test_unscoped_missing_destination_remains_blocking():
     posting["products"] = [{"sku": "", "quantity": 1}]
     with pytest.raises(ValueError):
         normalize_fbo_posting(posting)
+
+@pytest.mark.parametrize(("path", "fixture_name", "sku", "price"), [
+    (FBO_POSTINGS_PATH, "fbo_v3_postings_canonical.json", "123", 100.0),
+    (FBS_POSTINGS_PATH, "fbs_v4_postings_canonical.json", "456", 150.0),
+])
+def test_canonical_live_wire_fixture_fetches_complete_records(path, fixture_name, sku, price):
+    records, diagnostics, quality = fetch_postings(
+        Client([fixture(fixture_name)]), path, date(2026, 9, 1), date(2026, 9, 15))
+
+    assert [(record.sku, record.seller_price) for record in records] == [(sku, price)]
+    assert diagnostics == ()
+    assert quality.rejected_record_count == 0
+    assert quality.incomplete_skus == ()
+
+
+def test_fbs_legacy_wire_fixture_remains_an_explicit_compatibility_path():
+    records, diagnostics, quality = fetch_postings(
+        Client([fixture("fbs_v4_postings_legacy.json")]),
+        FBS_POSTINGS_PATH, date(2026, 9, 1), date(2026, 9, 15))
+
+    assert (records[0].sku, records[0].article, records[0].product_name) == (
+        "456", "ART-FBS", "Product")
+    assert records[0].raw_status == "delivered"
+    assert diagnostics == ()
+    assert quality.rejected_record_count == 0
+
+
+def test_fbs_canonical_fields_take_priority_over_legacy_aliases():
+    posting = fbs()
+    posting["status_alias"] = "cancelled"
+    posting["products"][0].update({
+        "product_id": "999", "product_offer_id": "WRONG", "product_name": "Wrong"})
+
+    records, _, _ = normalize_fbs_posting(posting)
+
+    assert (records[0].sku, records[0].article, records[0].product_name) == (
+        "456", "FBS-ART", "FBS product")
+    assert records[0].raw_status == "delivered"
+
+
+def test_fbs_malformed_canonical_sku_is_not_hidden_by_legacy_alias():
+    posting = fbs()
+    posting["products"][0].update({"sku": {}, "product_id": "456"})
+
+    with pytest.raises(ValueError, match="no usable SKU"):
+        normalize_fbs_posting(posting)
+
+
+def test_fbs_malformed_canonical_status_is_not_hidden_by_legacy_alias():
+    posting = fbs()
+    posting.update({"status": {}, "status_alias": "delivered"})
+
+    records, diagnostics, quality = normalize_fbs_posting(posting)
+
+    assert records == ()
+    assert quality.incomplete_skus == ("456",)
+    assert any(item.code == "UNKNOWN_ORDER_STATUS" for item in diagnostics)
+
+
+@pytest.mark.parametrize("price", ["1200.0000", 1200, {"amount": "1200.0000", "currency": "RUB"}])
+def test_supported_posting_price_shapes_are_normalized(price):
+    posting = fbo()
+    posting["products"][0]["price"] = price
+
+    records, diagnostics, _ = normalize_fbo_posting(posting)
+
+    assert records[0].seller_price == 1200.0
+    assert not any(item.code == "INVALID_ORDER_PRICE" for item in diagnostics)
+
+
+def test_malformed_posting_price_warns_without_losing_demand_record():
+    posting = fbo()
+    posting["products"][0]["price"] = {"currency": "RUB"}
+
+    records, diagnostics, quality = normalize_fbo_posting(posting)
+
+    assert records[0].seller_price == 0.0
+    assert quality.incomplete_skus == ()
+    assert [(item.code, item.severity) for item in diagnostics] == [
+        ("INVALID_ORDER_PRICE", "warning")]

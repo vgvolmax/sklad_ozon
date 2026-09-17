@@ -25,7 +25,7 @@ _IN_PROGRESS = {
 
 
 def _lifecycle(status: object) -> OrderLifecycle:
-    value = _text(status).casefold()
+    value = _wire_text(status).casefold()
     if value in _FULFILLED:
         return OrderLifecycle.FULFILLED
     if value in _CANCELLED:
@@ -53,6 +53,42 @@ def _sku_text(value: object) -> str:
     return ""
 
 
+def _fallback_value(source: dict, canonical: str, legacy: str, *, fbs: bool) -> object:
+    """Use an FBS legacy alias only when canonical evidence is absent or blank."""
+    value = source.get(canonical)
+    if fbs and (value is None or (isinstance(value, str) and not value.strip())):
+        return source.get(legacy)
+    return value
+
+
+def _product_sku(product: dict, *, fbs: bool) -> str:
+    return _sku_text(_fallback_value(product, "sku", "product_id", fbs=fbs))
+
+
+def _product_text(product: dict, canonical: str, legacy: str, *, fbs: bool) -> str:
+    return _wire_text(_fallback_value(product, canonical, legacy, fbs=fbs))
+
+
+def _posting_status(posting: dict, *, fbs: bool) -> str:
+    return _wire_text(_fallback_value(posting, "status", "status_alias", fbs=fbs))
+
+
+def _posting_price(value: object) -> tuple[float, bool]:
+    """Parse only the documented scalar and money-object posting price shapes."""
+    candidate = value.get("amount") if isinstance(value, dict) else value
+    if isinstance(candidate, bool) or not isinstance(candidate, (int, float, str)):
+        return 0.0, False
+    if isinstance(candidate, str) and not candidate.strip():
+        return 0.0, False
+    try:
+        price = float(candidate)
+    except (TypeError, ValueError):
+        return 0.0, False
+    if not isfinite(price) or price < 0:
+        return 0.0, False
+    return price, True
+
+
 def _business_timestamp(value: object, field: str, diagnostics: list[ImportDiagnostic]) -> str:
     raw = _text(value)
     if not raw:
@@ -78,11 +114,10 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
         raise ValueError("posting has no usable products collection")
     if any(not isinstance(product, dict) for product in products):
         raise ValueError("posting contains a non-object product")
-    sku_field = "product_id" if fbs else "sku"
-    if any(not _sku_text(product.get(sku_field)) for product in products):
+    if any(not _product_sku(product, fbs=fbs) for product in products):
         raise ValueError("posting product has no usable SKU")
 
-    status = _text(posting.get("status_alias" if fbs else "status"))
+    status = _posting_status(posting, fbs=fbs)
     analytics = posting.get("analytics_data")
     if not isinstance(analytics, dict):
         analytics = {}
@@ -120,7 +155,7 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
     rejected_record_count = 0
     incomplete_skus: set[str] = set()
     for product in products:
-        sku = _sku_text(product.get(sku_field))
+        sku = _product_sku(product, fbs=fbs)
         quantity = product.get("quantity")
         invalid_quantity = (
             isinstance(quantity, bool)
@@ -144,15 +179,23 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
             if demand_relevant or lifecycle is OrderLifecycle.UNKNOWN:
                 incomplete_skus.add(sku)
             continue
+        seller_price = 0.0
+        if "price" in product:
+            seller_price, valid_price = _posting_price(product["price"])
+            if not valid_price:
+                diagnostics.append(ImportDiagnostic(
+                    "warning", "INVALID_ORDER_PRICE",
+                    "Posting product has invalid seller price.", field="price"))
         records.append(OrderRecord(
             sku=sku, quantity=int(quantity), origin_cluster=origin_cluster,
             destination_cluster=destination, lifecycle=lifecycle, accepted_at=accepted,
             planned_ship_at=planned_ship or None,
             handed_to_delivery_at=handed_to_delivery or None,
             delivered_at=delivered or None,
-            raw_status=status, article=_text(product.get("product_offer_id" if fbs else "offer_id")),
-            product_name=_text(product.get("product_name" if fbs else "name")), origin_warehouse=origin_warehouse,
-            seller_price=float(product.get("price") or 0),
+            raw_status=status,
+            article=_product_text(product, "offer_id", "product_offer_id", fbs=fbs),
+            product_name=_product_text(product, "name", "product_name", fbs=fbs),
+            origin_warehouse=origin_warehouse, seller_price=seller_price,
         ))
     if not destination and lifecycle in {OrderLifecycle.FULFILLED, OrderLifecycle.IN_PROGRESS}:
         diagnostics.append(ImportDiagnostic(
