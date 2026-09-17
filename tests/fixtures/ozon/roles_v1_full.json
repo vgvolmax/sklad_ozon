@@ -1,0 +1,21 @@
+{
+  "result": [
+    {
+      "name": "Seller API",
+      "roles": [
+        {
+          "name": "Application access",
+          "expires_at": "2027-12-31T23:59:59Z",
+          "methods": [
+            {"name": "/v3/posting/fbo/list", "is_available": true},
+            {"name": "/v4/posting/fbs/list", "is_available": true},
+            {"name": "/v3/product/list", "is_available": true},
+            {"name": "/v3/supply-order/list", "is_available": true},
+            {"name": "/v3/supply-order/get", "is_available": true},
+            {"name": "/v1/warehouse/fbo/seller/list", "is_available": true}
+          ]
+        }
+      ]
+    }
+  ]
+}

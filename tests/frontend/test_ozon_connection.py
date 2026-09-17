@@ -6,7 +6,7 @@ def node(expr):
     return json.loads(subprocess.check_output(['node','-e',script],text=True))
 def test_connection_state_is_safe_and_status_only():
     state=node("SkladOzon.createInitialState()")
-    assert state['ozonConnection']=={'configured':False,'locked':True,'maskedClientIdSuffix':None,'lastConnectionCheck':None,'credentialContextId':None,'busy':False,'error':None}
+    assert state['ozonConnection']=={'configured':False,'locked':True,'maskedClientIdSuffix':None,'lastConnectionCheck':None,'credentialContextId':None,'busy':False,'error':None,'diagnostic':None,'diagnosticForSync':False}
     serialized=json.dumps(state)
     for secret in ('apiKey','passwordConfirmation','decryptedCredentials'):
         assert secret not in serialized
@@ -15,6 +15,23 @@ def test_source_failure_preserves_evidence_and_mode():
     assert result['mode']=='api' and result['snapshotId']=='os_old' and result['syncError']=='fail'
 def test_stale_source_response_is_ignored():
     assert node("(()=>{let s=SkladOzon.beginSourceRun(SkladOzon.createInitialState());s=SkladOzon.beginSourceRun(s);return SkladOzon.applySourceSuccess(s,1,{source:{source_snapshot_id:'old'}})===s})()") is True
+
+
+def test_preflight_state_keeps_connection_valid_separate_from_sync_readiness():
+    result=node("(()=>{let s=SkladOzon.beginOzonDiagnostic(SkladOzon.createInitialState(),true);return SkladOzon.applyOzonDiagnostic(s,{status:'failed',connection_valid:true,sync_ready:false,checks:[{name:'roles',status:'failed',code:'OZON_PERMISSION_MISSING'}]}).ozonConnection})()")
+    assert result['busy'] is False and result['diagnosticForSync'] is True
+    assert result['diagnostic']['connection_valid'] is True
+    assert result['diagnostic']['sync_ready'] is False
+
+
+def test_sync_uses_diagnostic_endpoint_before_stream_and_fail_fast_copy_is_present():
+    source=(ROOT/'frontend/assets/js/app.js').read_text()
+    diagnose=source.index("apiFetch('/api/ozon/connection/diagnose'")
+    stream=source.index("apiFetch('/api/ozon/sync/stream'")
+    assert diagnose > stream  # functions are separate; the diagnostic calls streamSource conditionally
+    assert "if(forSync&&data.sync_ready===true)await streamSource()" in source
+    assert "Синхронизация данных не запускалась." in source
+    assert "Seller API" in source and "timeout" not in source  # reason comes from safe backend wire
 
 
 def test_source_progress_is_stateful_and_stale_events_are_ignored():

@@ -1,7 +1,9 @@
 """Fixed Ozon Seller API origin and PR-API1 connection probe."""
 
-OZON_API_BASE = "https://api-seller.ozon.ru"
+OZON_API_HOST = "api-seller.ozon.ru"
+OZON_API_BASE = f"https://{OZON_API_HOST}"
 CONNECTION_TEST_PATH = "/v1/seller/info"
+ROLES_PATH = "/v1/roles"
 FBO_POSTINGS_PATH = "/v3/posting/fbo/list"
 FBS_POSTINGS_PATH = "/v4/posting/fbs/list"
 CLUSTERS_V2_PATH = "/v2/cluster/list"

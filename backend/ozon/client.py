@@ -100,16 +100,22 @@ class OzonClient:
         self._timeout = float(timeout)
         self._sleep = sleeper
 
-    def post_json(self, path: str, payload: dict, *, policy: OzonRequestPolicy) -> dict:
+    def post_json(
+        self, path: str, payload: dict, *, policy: OzonRequestPolicy,
+        timeout: float | None = None,
+    ) -> dict:
         return self._post_json(path, payload, policy=policy,
-                               context=self._vault.capture_context())
+                               context=self._vault.capture_context(), timeout=timeout)
 
     def bind_context(self, context: OzonCredentialContext) -> "BoundOzonClient":
         return BoundOzonClient(self, context)
 
     def _post_json(self, path: str, payload: dict, *, policy: OzonRequestPolicy,
-                   context: OzonCredentialContext) -> dict:
+                   context: OzonCredentialContext, timeout: float | None = None) -> dict:
         self._validate_path(path)
+        request_timeout = self._timeout if timeout is None else float(timeout)
+        if isinstance(timeout, bool) or not 0 < request_timeout < 60:
+            raise ValueError("timeout must be finite and between 0 and 60 seconds")
         credentials = context.credentials
         request = Request(
             OZON_API_BASE + path,
@@ -126,7 +132,7 @@ class OzonClient:
         for attempt in range(1, attempts + 1):
             self._assert_context_active(context, path)
             try:
-                response = self._transport(request, self._timeout)
+                response = self._transport(request, request_timeout)
             except Exception as exc:
                 self._assert_context_active(context, path)
                 logger.warning("Ozon request transport failure path=%s attempt=%d", path, attempt)
@@ -312,6 +318,9 @@ class BoundOzonClient:
     def context_id(self) -> str:
         return self._context.context_id
 
-    def post_json(self, path: str, payload: dict, *, policy: OzonRequestPolicy) -> dict:
+    def post_json(
+        self, path: str, payload: dict, *, policy: OzonRequestPolicy,
+        timeout: float | None = None,
+    ) -> dict:
         return self._client._post_json(path, payload, policy=policy,
-                                       context=self._context)
+                                       context=self._context, timeout=timeout)

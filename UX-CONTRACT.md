@@ -82,7 +82,15 @@ SellerWarehouseSelector
 HandoffPointSelector
 ShipmentManifest
 OzonValidationStatus
+OzonConnectionDiagnostic
 ```
+
+`OzonConnectionDiagnostic` is the shared manual and pre-sync preflight. It
+shows the sequential DNS, protected-connection, Seller API and API-permission
+checks with separate elapsed times. A failed check leaves later checks visibly
+not run and, when invoked by `Обновить данные`, states that data synchronization
+was not started. Only a fully ready preflight may continue into streaming sync;
+successful Seller API authorization and application readiness remain distinct.
 
 The old `SupplyNetworkSelector` is not an active future owner.
 
