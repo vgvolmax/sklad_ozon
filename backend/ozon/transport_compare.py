@@ -14,6 +14,15 @@ from .contracts import OzonCredentials
 from .endpoints import CONNECTION_TEST_PATH, OZON_API_BASE
 
 URLLIB_TIMEOUT = 10.0
+# Matches the timeout profile used by the known-working
+# WB_OZON_Yandex Ozon httpx integration.
+HTTPX_REFERENCE_TIMEOUT = httpx.Timeout(
+    90.0,
+    connect=15.0,
+    read=60.0,
+    write=30.0,
+    pool=15.0,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +102,7 @@ def _probe_httpx(credentials: OzonCredentials, *, httpx_client_factory: HttpxCli
                 OZON_API_BASE + CONNECTION_TEST_PATH,
                 headers={"Client-Id": credentials.client_id, "Api-Key": credentials.api_key,
                          "Content-Type": "application/json"},
-                json={}, timeout=httpx.Timeout(15.0, connect=5.0))
+                json={}, timeout=HTTPX_REFERENCE_TIMEOUT)
     except httpx.TransportError as error:
         return TransportProbeResult("httpx", False, "transport_error", _elapsed(started, clock),
                                     transport_kind=_httpx_transport_kind(error))
