@@ -86,13 +86,14 @@ def _sku(value: object) -> str:
 def _resolve_supply_cluster(
         supply: dict, clusters: dict[int, str],
         warehouse_to_macrolocal: dict[int, int]) -> tuple[str | None, str | None]:
-    """Resolve canonical direct cluster evidence, falling back only when absent."""
+    """Resolve canonical direct cluster evidence, including empty API sentinels."""
     if "macrolocal_cluster_id" in supply:
         direct = supply["macrolocal_cluster_id"]
-        if not _positive_int(direct):
+        if type(direct) is int and direct > 0:
+            cluster = clusters.get(direct)
+            return (cluster, None) if cluster is not None else (None, "UNRESOLVED_SUPPLY_CLUSTER")
+        if direct is not None and not (type(direct) is int and direct == 0):
             return None, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"
-        cluster = clusters.get(direct)
-        return (cluster, None) if cluster is not None else (None, "UNRESOLVED_SUPPLY_CLUSTER")
 
     storage = supply.get("storage_warehouse")
     warehouse_id = storage.get("warehouse_id") if isinstance(storage, dict) else None
