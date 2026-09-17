@@ -1,5 +1,6 @@
 import json
 import logging
+import socket
 from threading import Event, Thread
 
 import pytest
@@ -228,6 +229,37 @@ def test_errors_and_logs_do_not_expose_credentials(caplog):
     assert error.value.vendor_code is None
     assert error.value.vendor_message is None
     assert error.value.request_id is None
+
+
+@pytest.mark.parametrize("failure,kind", [
+    (TimeoutError("secret timeout detail"), "timeout"),
+    (ConnectionResetError("secret reset detail"), "connection_reset"),
+    (socket.gaierror("secret dns detail"), "dns"),
+])
+def test_transport_failures_have_safe_bounded_diagnostics(failure, kind):
+    transport = FakeTransport([failure, failure, failure])
+    client = OzonClient(VaultStub(), transport=transport, sleeper=lambda _delay: None)
+
+    with pytest.raises(OzonClientError) as error:
+        client.post_json("/v1/test", {}, policy=OzonRequestPolicy(True))
+
+    assert error.value.transport_kind == kind
+    assert error.value.attempts == 3
+    assert error.value.elapsed_ms is not None and error.value.elapsed_ms >= 0
+    assert "secret" not in str(error.value)
+
+
+def test_http_503_is_not_misclassified_as_transport_timeout():
+    client = OzonClient(VaultStub(), transport=FakeTransport([
+        response(503, b'{"code":"TEMP","message":"retry"}',
+                 {"X-O3-Trace-ID": "trace-503"}),
+    ]))
+    with pytest.raises(OzonClientError) as error:
+        client.post_json("/v1/test", {}, policy=OzonRequestPolicy(False))
+    assert error.value.status == 503
+    assert error.value.request_id == "trace-503"
+    assert error.value.vendor_code == "TEMP"
+    assert error.value.transport_kind is None
 
 
 @pytest.mark.parametrize("max_attempts", [0, -1, 1.5, True])

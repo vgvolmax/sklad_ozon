@@ -225,7 +225,8 @@ def _result(response: dict) -> dict:
     return value
 
 
-def fetch_postings(client: OzonClient, path: str, history_from: date, history_to: date):
+def fetch_postings(client: OzonClient, path: str, history_from: date, history_to: date,
+                   progress_callback=None):
     since = datetime.combine(history_from, time.min, MOSCOW_BUSINESS_TZ).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     until = datetime.combine(history_to, time.max, MOSCOW_BUSINESS_TZ).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     records: list[OrderRecord] = []
@@ -254,6 +255,9 @@ def fetch_postings(client: OzonClient, path: str, history_from: date, history_to
             diagnostics.extend(page_diagnostics)
             rejected_record_count += page_quality.rejected_record_count
             incomplete_skus.update(page_quality.incomplete_skus)
+        if progress_callback:
+            progress_callback(current=len(records) + rejected_record_count,
+                              total=None, unit="records")
         has_next = result.get("has_next")
         if not isinstance(has_next, bool):
             raise ValueError("postings response has invalid has_next")

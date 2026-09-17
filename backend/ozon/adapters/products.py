@@ -8,7 +8,7 @@ READ = OzonRequestPolicy(retry_safe=True)
 PAGE_SIZE = 1000
 
 
-def fetch_product_skus(client: OzonClient) -> tuple[str, ...]:
+def fetch_product_skus(client: OzonClient, progress_callback=None) -> tuple[str, ...]:
     skus: list[str] = []
     seen_skus: set[str] = set()
     fetched = 0
@@ -40,6 +40,8 @@ def fetch_product_skus(client: OzonClient) -> tuple[str, ...]:
             if normalized not in seen_skus:
                 seen_skus.add(normalized); skus.append(normalized)
         fetched += len(items)
+        if progress_callback:
+            progress_callback(current=len(skus), total=total, unit="sku")
         if fetched > total:
             raise ValueError("product-list item count exceeds total")
         if fetched == total:

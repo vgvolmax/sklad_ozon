@@ -249,6 +249,51 @@ def ozon_sync():
         return error(503,exc.code.value,str(exc),None)
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
 
+@router.post('/api/ozon/sync/stream')
+def ozon_sync_stream():
+    """Stream sync observations while retaining the regular sync's commit path."""
+    events=Queue()
+
+    def worker():
+        try:
+            context=OZON_VAULT.capture_context()
+            snapshot=sync_ozon_source(
+                OZON_CLIENT.bind_context(context), credential_context_id=context.context_id,
+                progress_callback=events.put)
+            data=commit_active_credential_context(
+                context,lambda:(OZON_SOURCE_STORE.put(snapshot),
+                                {'api_version':1,'source':wire(snapshot),
+                                 'capabilities':capability_matrix(snapshot)})[1])
+            events.put({'type':'result','data':data})
+        except OzonVaultError as exc:
+            events.put({'type':'error','error':{
+                'code':exc.code.value,'message':'Unlock the Ozon credential vault first.'}})
+        except OzonClientError as exc:
+            code=('OZON_CREDENTIAL_CONTEXT_CHANGED'
+                  if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED else exc.code.value)
+            message=(CREDENTIAL_CONTEXT_MESSAGE
+                     if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED else str(exc))
+            events.put({'type':'error','error':{'code':code,'message':message}})
+        except ShipmentPreparationError as exc:
+            events.put({'type':'error','error':{'code':exc.code,'message':exc.message}})
+        except Exception:
+            logger.exception('Ozon source sync stream failed')
+            events.put({'type':'error','error':{
+                'code':'OZON_SYNC_FAILED','message':'Не удалось обновить данные Ozon.'}})
+        finally:
+            events.put(None)
+
+    async def stream():
+        thread=Thread(target=worker,name='ozon-sync');thread.start()
+        try:
+            while True:
+                item=await asyncio.to_thread(events.get)
+                if item is None:break
+                yield json.dumps(item,ensure_ascii=False,separators=(',',':'))+'\n'
+        finally:
+            await asyncio.shield(asyncio.to_thread(thread.join))
+    return StreamingResponse(stream(),media_type='application/x-ndjson')
+
 @router.get('/api/ozon/source/{source_snapshot_id}/status')
 def ozon_source_status(source_snapshot_id:str):
     try:snapshot=current_source(source_snapshot_id)

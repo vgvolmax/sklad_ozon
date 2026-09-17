@@ -17,6 +17,20 @@ def test_stale_source_response_is_ignored():
     assert node("(()=>{let s=SkladOzon.beginSourceRun(SkladOzon.createInitialState());s=SkladOzon.beginSourceRun(s);return SkladOzon.applySourceSuccess(s,1,{source:{source_snapshot_id:'old'}})===s})()") is True
 
 
+def test_source_progress_is_stateful_and_stale_events_are_ignored():
+    result=node("(()=>{let s=SkladOzon.beginSourceRun(SkladOzon.createInitialState()),id=s.source.runId;s=SkladOzon.applySourceProgress(s,id,{stage:'inbound',stage_index:8,stage_count:9,label:'Поставки в пути',detail:'Получение состава поставок',current:12,total:19,unit:'bundles'});const same=SkladOzon.applySourceProgress(s,id-1,{stage:'old',stage_index:1,stage_count:9,label:'old'});return {progress:s.source.syncProgress,staleIgnored:same===s,busy:s.source.syncBusy};})()")
+    assert result['busy'] is True and result['staleIgnored'] is True
+    assert result['progress']['stage']=='inbound'
+    assert result['progress']['current']==12 and result['progress']['total']==19
+
+
+def test_transport_diagnostics_are_allowlisted_for_presentation():
+    rows=node("SkladOzon.buildSourceStatusRows({capabilities:{shipment_compatibility:{complete:false}},endpointStates:[{name:'placement_zones',complete:false,record_count:0,diagnostics:[],api_error:{code:'OZON_UNAVAILABLE',endpoint:'/v1/product/placement-zone/info',transport_kind:'timeout',attempts:3,elapsed_ms:46100,raw_exception:'secret'}}]})")
+    technical=next(row for row in rows if row['key']=='shipment_compatibility')['endpoints'][0]['technical']
+    assert technical['transportKind']=='timeout' and technical['attempts']==3
+    assert technical['elapsedMs']==46100 and 'raw_exception' not in technical
+
+
 def test_context_switch_drops_api_snapshot_source_and_shipment_state():
     result=node("(()=>{let s=SkladOzon.createInitialState();s={...s,analysisRunId:3,snapshot:{snapshot_id:'A',source_mode:'api'},source:{...s.source,snapshotId:'S',source:{source_snapshot_id:'S'},runId:4},ozonConnection:{...s.ozonConnection,credentialContextId:'ctx-a'},shipmentView:{...s.shipmentView,candidates:[1],plan:{shipment_plan_id:'P'},resolvedHandoffPoints:[{warehouse_id:2}],runId:5,handoff:{...s.shipmentView.handoff,items:[{warehouse_id:2}],runId:6}}};return SkladOzon.applyConnectionStatus(s,{configured:true,locked:false,credential_context_id:'ctx-b'});})()")
     assert result['snapshot'] is None

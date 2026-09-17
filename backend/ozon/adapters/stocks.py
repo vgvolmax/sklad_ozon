@@ -97,8 +97,10 @@ def normalize_fbs_stock(response: dict):
     return tuple(records), tuple(diagnostics), OzonRecordQualityEvidence(rejected, tuple(sorted(incomplete)))
 
 
-def fetch_fbo_stock(client: OzonClient, skus: tuple[str, ...], cluster_by_warehouse=None):
+def fetch_fbo_stock(client: OzonClient, skus: tuple[str, ...], cluster_by_warehouse=None,
+                    progress_callback=None):
     records, diagnostics, incomplete = [], [], set(); rejected = 0
+    if progress_callback: progress_callback(current=0, total=len(skus), unit="sku")
     for start in range(0, len(skus), 100):
         batch = skus[start:start + 100]
         page, page_diagnostics, quality = normalize_fbo_stock(
@@ -107,11 +109,14 @@ def fetch_fbo_stock(client: OzonClient, skus: tuple[str, ...], cluster_by_wareho
             raise ValueError("FBO stock returned unrequested SKU")
         records.extend(page); diagnostics.extend(page_diagnostics)
         rejected += quality.rejected_record_count; incomplete.update(quality.incomplete_skus)
+        if progress_callback:
+            progress_callback(current=min(start + len(batch), len(skus)), total=len(skus), unit="sku")
     return tuple(records), tuple(diagnostics), OzonRecordQualityEvidence(rejected, tuple(sorted(incomplete)))
 
 
-def fetch_seller_stock(client: OzonClient, skus: tuple[str, ...]):
+def fetch_seller_stock(client: OzonClient, skus: tuple[str, ...], progress_callback=None):
     records, diagnostics, incomplete = [], [], set(); rejected = 0
+    if progress_callback: progress_callback(current=0, total=len(skus), unit="sku")
     for start in range(0, len(skus), 1000):
         batch = skus[start:start + 1000]; cursor = ""; seen = {cursor}
         while True:
@@ -131,4 +136,6 @@ def fetch_seller_stock(client: OzonClient, skus: tuple[str, ...]):
             if not isinstance(next_cursor, str) or not next_cursor.strip() or next_cursor.strip() in seen:
                 raise ValueError("non-progressing seller-stock cursor")
             cursor = next_cursor.strip(); seen.add(cursor)
+        if progress_callback:
+            progress_callback(current=min(start + len(batch), len(skus)), total=len(skus), unit="sku")
     return tuple(records), tuple(diagnostics), OzonRecordQualityEvidence(rejected, tuple(sorted(incomplete)))

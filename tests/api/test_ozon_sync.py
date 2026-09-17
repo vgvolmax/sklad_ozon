@@ -260,6 +260,23 @@ def test_sync_preserves_structured_ozon_api_error_evidence(monkeypatch):
     assert "details" not in serialized
 
 
+def test_sync_preserves_only_normalized_transport_evidence(monkeypatch):
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
+        _orders(end, 8) if path == FBO_POSTINGS_PATH else (), ()))
+    _patch_non_history(monkeypatch)
+    monkeypatch.setattr(module, "fetch_seller_stock", lambda *_args: (_ for _ in ()).throw(
+        OzonClientError(OzonErrorCode.UNAVAILABLE, "safe", endpoint=FBS_STOCK_PATH,
+                        transport_kind="timeout", attempts=3, elapsed_ms=46001)))
+
+    source = sync_ozon_source(object())
+    error = next(item.api_error for item in source.endpoint_evidence
+                 if item.name == "seller_stock")
+    assert (error.transport_kind, error.attempts, error.elapsed_ms) == (
+        "timeout", 3, 46001)
+    assert "sensitive" not in repr(asdict(source))
+
+
 def test_generic_sync_exception_has_no_ozon_api_error(monkeypatch):
     import backend.ozon.sync as module
     monkeypatch.setattr(module, "fetch_postings", lambda _client, path, start, end: (
