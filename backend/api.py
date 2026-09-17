@@ -42,6 +42,7 @@ from backend.project import (EconomicsSettings, OptimizerThresholds, Project,
 from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
 from backend.ozon.contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import CONNECTION_TEST_PATH
+from backend.ozon.diagnostics import diagnose_connection
 from backend.ozon.vault import CredentialVault, OzonVaultError
 from backend.ozon.handoff import HandoffPointStore, handoff_supply_types, search_handoff_points
 from backend.ozon.source_store import OzonSourceSnapshotStore
@@ -208,6 +209,25 @@ def ozon_connection_test():
     except ShipmentPreparationError as exc:
         return error(exc.http_status,exc.code,exc.message,exc.field)
     return vault_response(status)
+
+@router.post('/api/ozon/connection/diagnose')
+def ozon_connection_diagnose():
+    """Run the single fast preflight used by both manual checks and sync UX."""
+    try:
+        context=OZON_VAULT.capture_context()
+        diagnostic=diagnose_connection(OZON_CLIENT.bind_context(context))
+        if diagnostic.connection_valid:
+            commit_active_credential_context(context,OZON_VAULT.record_connection_check)
+        else:
+            commit_active_credential_context(context,lambda:None)
+        return wire(diagnostic)
+    except OzonVaultError as exc:
+        return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
+    except OzonClientError as exc:
+        if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error()
+        return error(503,exc.code.value,'Не удалось выполнить диагностику Ozon.',None)
+    except ShipmentPreparationError as exc:
+        return error(exc.http_status,exc.code,exc.message,exc.field)
 
 @router.post('/api/ozon/handoff/search')
 async def ozon_handoff_search(request:Request):

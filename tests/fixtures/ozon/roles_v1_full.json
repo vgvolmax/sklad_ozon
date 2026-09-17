@@ -1,0 +1,22 @@
+{
+  "expires_at": "2027-12-31T23:59:59Z",
+  "roles": [
+    {
+      "name": "Admin read only",
+      "methods": [
+        "/v3/posting/fbo/list",
+        "/v4/posting/fbs/list",
+        "/v2/cluster/list",
+        "/v1/cluster/list",
+        "/v1/warehouse/fbo/seller/list",
+        "/v3/product/list",
+        "/v1/analytics/stocks",
+        "/v2/product/info/stocks-by-warehouse/fbs",
+        "/v3/supply-order/list",
+        "/v3/supply-order/get",
+        "/v1/supply-order/bundle",
+        "/v1/product/placement-zone/info"
+      ]
+    }
+  ]
+}

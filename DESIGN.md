@@ -210,7 +210,7 @@ Motion минимален и сообщает состояние: открыти
 
 ## Shipped API-first Plan and Data ownership
 
-`Данные` is API-first: `OzonConnectionPanel` and `CredentialVaultDialog` own setup, restart unlock, lock, connection checks, explicit sync, and domain-level freshness. `SourceModePanel` exposes FILES only as an explicit reserve analytical workflow; one analysis run never mixes API and file source evidence.
+`Данные` is API-first: `OzonConnectionPanel` and `CredentialVaultDialog` own setup, restart unlock, lock, connection checks, explicit sync, and domain-level freshness. The connection panel presents one compact ordered DNS → TLS → Seller API → permissions diagnostic with per-stage timings; the same diagnostic gates heavy sync and preserves a stable panel while it runs. `SourceModePanel` exposes FILES only as an explicit reserve analytical workflow; one analysis run never mixes API and file source evidence.
 
 `План` has `Товары | Отгрузки`. `ArticlePlanSelector` is article-first in presentation and SKU-backed in identity. `PlanProductWorkspace` keeps `Ozon → Наша потребность → План`, whole-pack quantities, exact cluster evidence, and `Не рассчитано` for unknowns.
 
