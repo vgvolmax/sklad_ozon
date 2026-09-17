@@ -59,3 +59,25 @@ def test_windows_portable_smoke_validates_aesgcm_import():
     assert "from cryptography.hazmat.primitives.ciphers.aead import AESGCM" in smoke
     assert "'cryptography':'50.0.1'" in smoke
     assert "'httpx':'0.28.1'" in smoke
+
+
+def test_start_script_validates_the_complete_production_dependency_contract():
+    requirements = dict(
+        line.split("==", maxsplit=1)
+        for line in (ROOT / "requirements.txt").read_text().splitlines()
+    )
+    script = (ROOT / "start.bat").read_text()
+
+    for distribution, expected_version in requirements.items():
+        assert f"'{distribution}':'{expected_version}'" in script
+    assert "import fastapi,uvicorn,openpyxl,multipart,httpx" in script
+    assert "from cryptography.hazmat.primitives.ciphers.aead import AESGCM" in script
+
+
+def test_windows_portable_smoke_covers_stale_runtime_dependency_upgrades():
+    smoke = (ROOT / "tests/windows/portable-smoke.ps1").read_text()
+
+    assert "stale runtime missing httpx" in smoke.lower()
+    assert "stale runtime missing cryptography" in smoke.lower()
+    assert 'Remove-RuntimePackage $runtime "httpx"' in smoke
+    assert 'Remove-RuntimePackage $runtime "cryptography"' in smoke
