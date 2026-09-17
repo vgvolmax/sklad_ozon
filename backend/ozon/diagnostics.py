@@ -12,7 +12,23 @@ from typing import Callable, Mapping, Protocol
 
 from .client import BoundOzonClient, OzonClientError, OzonRequestPolicy
 from .contracts import OzonErrorCode
-from .endpoints import CONNECTION_TEST_PATH, OZON_API_HOST, ROLES_PATH
+from .endpoints import (
+    CLUSTERS_V1_PATH,
+    CLUSTERS_V2_PATH,
+    CONNECTION_TEST_PATH,
+    FBO_POSTINGS_PATH,
+    FBO_STOCK_PATH,
+    FBS_POSTINGS_PATH,
+    FBS_STOCK_PATH,
+    OZON_API_HOST,
+    PLACEMENT_ZONE_PATH,
+    PRODUCT_LIST_PATH,
+    ROLES_PATH,
+    SELLER_WAREHOUSES_PATH,
+    SUPPLY_ORDER_BUNDLE_PATH,
+    SUPPLY_ORDER_GET_PATH,
+    SUPPLY_ORDER_LIST_PATH,
+)
 
 
 DNS_TIMEOUT = 5.0
@@ -146,46 +162,50 @@ def diagnose_seller_info(client: DiagnosticClient, *,
     return OzonDiagnosticCheck("seller_info", "ok", _elapsed(started, clock))
 
 
-# The documented RoleAPI response is result[] -> roles[] -> methods[].  We only
-# recognize explicit method availability and fail closed on every other shape.
+# Current /v1/roles wire: top-level expires_at + roles[], with methods as
+# endpoint-path strings.  Every endpoint used by the heavy sync must be present
+# before the preflight may declare sync_ready.
 _PERMISSION_METHODS = {
-    "orders": frozenset({"/v3/posting/fbo/list", "/v4/posting/fbs/list"}),
-    "products": frozenset({"/v3/product/list"}),
-    "fbo_supply": frozenset({"/v3/supply-order/list", "/v3/supply-order/get"}),
-    "warehouses": frozenset({"/v1/warehouse/fbo/seller/list"}),
+    "orders": frozenset({FBO_POSTINGS_PATH, FBS_POSTINGS_PATH}),
+    "products": frozenset({
+        PRODUCT_LIST_PATH, FBO_STOCK_PATH, FBS_STOCK_PATH, PLACEMENT_ZONE_PATH,
+    }),
+    "fbo_supply": frozenset({
+        CLUSTERS_V2_PATH, CLUSTERS_V1_PATH, SUPPLY_ORDER_LIST_PATH,
+        SUPPLY_ORDER_GET_PATH, SUPPLY_ORDER_BUNDLE_PATH,
+    }),
+    "warehouses": frozenset({SELLER_WAREHOUSES_PATH}),
 }
 
 
 def parse_roles(payload: object) -> tuple[dict[str, bool], str | None]:
-    if not isinstance(payload, dict) or not isinstance(payload.get("result"), list):
+    if not isinstance(payload, dict) or not isinstance(payload.get("roles"), list):
         raise ValueError("invalid roles response")
+
+    expiry = payload.get("expires_at")
+    if expiry is not None:
+        if not isinstance(expiry, str) or not expiry.strip():
+            raise ValueError("invalid expiry")
+        expiry = expiry.strip()
+
     available: set[str] = set()
-    expiries: set[str] = set()
-    for group in payload["result"]:
-        if not isinstance(group, dict) or not isinstance(group.get("name"), str) \
-                or not isinstance(group.get("roles"), list):
-            raise ValueError("invalid role group")
-        for role in group["roles"]:
-            if not isinstance(role, dict) or not isinstance(role.get("name"), str) \
-                    or not isinstance(role.get("methods"), list):
-                raise ValueError("invalid role")
-            expiry = role.get("expires_at")
-            if expiry is not None:
-                if not isinstance(expiry, str) or not expiry.strip():
-                    raise ValueError("invalid expiry")
-                expiries.add(expiry)
-            for method in role["methods"]:
-                if not isinstance(method, dict) or not isinstance(method.get("name"), str) \
-                        or type(method.get("is_available")) is not bool:
-                    raise ValueError("invalid role method")
-                if method["is_available"]:
-                    name = method["name"].strip()
-                    if name.startswith("POST "):
-                        name = name[5:].strip()
-                    available.add(name)
+    for role in payload["roles"]:
+        if not isinstance(role, dict):
+            raise ValueError("invalid role")
+        name = role.get("name")
+        if name is not None and (not isinstance(name, str) or not name.strip()):
+            raise ValueError("invalid role name")
+        methods = role.get("methods")
+        if not isinstance(methods, list):
+            raise ValueError("invalid role methods")
+        for method in methods:
+            if not isinstance(method, str) or not method.strip():
+                raise ValueError("invalid role method")
+            available.add(method.strip())
+
     permissions = {name: methods.issubset(available)
                    for name, methods in _PERMISSION_METHODS.items()}
-    return permissions, min(expiries) if expiries else None
+    return permissions, expiry
 
 
 def diagnose_roles(client: DiagnosticClient, *,
