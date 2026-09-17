@@ -1,4 +1,8 @@
+import json
+import socket
+
 import httpx
+import pytest
 
 from backend.ozon.client import OzonClientError
 from backend.ozon.contracts import OzonCredentials, OzonErrorCode
@@ -17,26 +21,36 @@ class UrllibProbe:
         return {"ok": True}
 
 
-def httpx_transport(status=200, *, error=None, on_request=None):
-    calls = []
-    timeouts = []
+def sync_transport(status=200, *, error=None):
+    calls, clients = [], []
 
     def handler(request):
         calls.append(request)
-        if on_request:
-            on_request()
         if error:
             raise error
-        return httpx.Response(status, headers={"x-request-id": "req-safe"}, json={})
+        return httpx.Response(status, headers={"x-request-id": "sync-id"}, json={})
 
-    class RecordingClient(httpx.Client):
-        def post(self, *args, **kwargs):
-            timeouts.append(kwargs.get("timeout"))
-            return super().post(*args, **kwargs)
+    def factory(**kwargs):
+        clients.append(kwargs)
+        return httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
 
-    return lambda **kwargs: RecordingClient(
-        transport=httpx.MockTransport(handler), **kwargs
-    ), calls, timeouts
+    return factory, calls, clients
+
+
+def async_transport(status=200, *, error=None):
+    calls, clients = [], []
+
+    async def handler(request):
+        calls.append(request)
+        if error:
+            raise error
+        return httpx.Response(status, headers={"x-o3-trace-id": "async-id"}, json={})
+
+    def factory(**kwargs):
+        clients.append(kwargs)
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs)
+
+    return factory, calls, clients
 
 
 def failure(kind="timeout", status=None):
@@ -46,95 +60,105 @@ def failure(kind="timeout", status=None):
     )
 
 
-def run(urllib_error=None, http_status=200, http_error=None):
+async def run(urllib_error=None, sync_status=200, async_status=200,
+              sync_error=None, async_error=None, dns_resolver=None):
     urllib = UrllibProbe(urllib_error)
-    factory, calls, _ = httpx_transport(http_status, error=http_error)
-    result = compare_transports(
+    sync_factory, sync_calls, sync_clients = sync_transport(sync_status, error=sync_error)
+    async_factory, async_calls, async_clients = async_transport(async_status, error=async_error)
+    result = await compare_transports(
         urllib, OzonCredentials("client-secret", "key-secret"),
-        httpx_client_factory=factory,
+        httpx_client_factory=sync_factory,
+        httpx_async_client_factory=async_factory,
+        dns_resolver=dns_resolver or (lambda *args, **kwargs: []),
     )
-    return result, urllib, calls
+    return result, urllib, sync_calls, async_calls, sync_clients, async_clients
 
 
-def test_urllib_timeout_and_httpx_200():
-    result, _, _ = run(failure())
-    assert result.outcome == "httpx_only_reached_http"
-    assert not result.urllib.reached_http and result.urllib.transport_kind == "timeout"
-    assert result.httpx.reached_http and result.httpx.http_status == 200
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("urllib_error", "sync_error", "async_error", "expected"),
+    [
+        (failure(), httpx.ConnectTimeout("sync"), None, "async_only_reached_http"),
+        (None, None, None, "all_reached_http"),
+        (failure(), httpx.ConnectTimeout("sync"), httpx.ReadTimeout("async"), "none_reached_http"),
+        (failure(), None, httpx.ReadTimeout("async"), "mixed"),
+    ],
+)
+async def test_outcomes(urllib_error, sync_error, async_error, expected):
+    result, *_ = await run(urllib_error, sync_error=sync_error, async_error=async_error)
+    assert result.outcome == expected
 
 
-def test_both_200_reach_http():
-    result, _, _ = run()
-    assert result.outcome == "both_reached_http"
+@pytest.mark.anyio
+async def test_all_http_responses_count_as_reached_http():
+    result, *_ = await run(failure(status=401), sync_status=403, async_status=500)
+    assert result.outcome == "all_reached_http"
+    assert result.urllib.reached_http and result.urllib.http_status == 401
+    assert result.httpx_sync.reached_http and result.httpx_sync.http_status == 403
+    assert result.httpx_async.reached_http and result.httpx_async.http_status == 500
 
 
-def test_urllib_200_httpx_timeout():
-    request = httpx.Request("POST", "https://api-seller.ozon.ru/v1/seller/info")
-    result, _, _ = run(http_error=httpx.ReadTimeout("private raw details", request=request))
-    assert result.outcome == "urllib_only_reached_http"
-    assert result.httpx.status == "transport_error"
-    assert result.httpx.transport_kind == "read_timeout"
-
-
-def test_both_transport_failures_do_not_reach_http():
-    request = httpx.Request("POST", "https://api-seller.ozon.ru/v1/seller/info")
-    result, _, _ = run(failure(), http_error=httpx.ConnectTimeout("secret", request=request))
-    assert result.outcome == "neither_reached_http"
-    assert result.httpx.transport_kind == "connect_timeout"
-
-
-def test_http_errors_count_as_reached_http():
-    for status in (401, 403, 500):
-        result, _, _ = run(failure(status=401), http_status=status)
-        assert result.outcome == "both_reached_http"
-        assert result.httpx.reached_http is True
-        assert result.httpx.http_status == status
-        assert result.httpx.status == "http_error"
-
-
-def test_both_transports_send_same_post_and_empty_json():
-    urllib = UrllibProbe()
-    factory, calls, timeouts = httpx_transport()
-    result = compare_transports(
-        urllib, OzonCredentials("client-secret", "key-secret"),
-        httpx_client_factory=factory,
-    )
+@pytest.mark.anyio
+async def test_all_transports_send_same_post_headers_and_empty_json():
+    result, urllib, sync_calls, async_calls, sync_clients, async_clients = await run()
     path, payload, policy, timeout = urllib.calls[0]
     assert path == result.endpoint == "/v1/seller/info"
     assert payload == {} and policy.max_attempts == 1 and timeout == 10.0
-    request = calls[0]
-    assert request.method == "POST"
-    assert request.url == httpx.URL("https://api-seller.ozon.ru/v1/seller/info")
-    assert request.content == b"{}"
-    assert request.headers["Client-Id"] == "client-secret"
-    assert request.headers["Api-Key"] == "key-secret"
-    assert request.headers["Content-Type"] == "application/json"
-    timeout = timeouts[0]
-    assert timeout.connect == 15.0
-    assert timeout.read == 60.0
-    assert timeout.write == 30.0
-    assert timeout.pool == 15.0
+    for request in (*sync_calls, *async_calls):
+        assert request.method == "POST"
+        assert request.url == httpx.URL("https://api-seller.ozon.ru/v1/seller/info")
+        assert request.content == b"{}"
+        assert request.headers["Client-Id"] == "client-secret"
+        assert request.headers["Api-Key"] == "key-secret"
+        assert request.headers["Content-Type"] == "application/json"
+    assert async_clients[0]["follow_redirects"] is True
+    timeout = async_clients[0]["timeout"]
+    assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (15.0, 60.0, 30.0, 15.0)
 
 
-def test_httpx_response_after_eight_seconds_reaches_http_without_real_wait():
-    now = [0.0]
-    factory, _, _ = httpx_transport(on_request=lambda: now.__setitem__(0, 8.0))
-
-    result = compare_transports(
-        UrllibProbe(failure()), OzonCredentials("client-secret", "key-secret"),
-        httpx_client_factory=factory, clock=lambda: now[0],
+@pytest.mark.anyio
+async def test_async_timeout_kinds_and_no_raw_exception_or_credentials():
+    result, *_ = await run(
+        failure(), sync_error=httpx.ConnectTimeout("client-secret"),
+        async_error=httpx.ReadTimeout("key-secret raw exception"),
     )
-
-    assert result.httpx.reached_http is True
-    assert result.httpx.http_status == 200
-    assert result.httpx.elapsed_ms == 8_000
-
-
-def test_response_has_no_raw_exception_or_credentials():
-    request = httpx.Request("POST", "https://api-seller.ozon.ru/v1/seller/info")
-    result, _, _ = run(failure(), http_error=httpx.ConnectError(
-        "client-secret key-secret raw exception", request=request))
+    assert result.httpx_sync.transport_kind == "connect_timeout"
+    assert result.httpx_async.transport_kind == "read_timeout"
     rendered = repr(result)
-    assert result.httpx.transport_kind == "connect_error"
     assert "client-secret" not in rendered and "key-secret" not in rendered
     assert "raw exception" not in rendered
+
+
+@pytest.mark.anyio
+async def test_dns_topology_deduplicates_family_and_address_without_serializing_ips():
+    entries = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 443)),
+        (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("192.0.2.1", 443)),
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::1", 443, 0, 0)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.2", 443)),
+    ]
+    seen = []
+
+    def resolver(*args, **kwargs):
+        seen.append((args, kwargs))
+        return entries
+
+    result, *_ = await run(dns_resolver=resolver)
+    assert seen == [(('api-seller.ozon.ru', 443), {'type': socket.SOCK_STREAM})]
+    assert result.dns.candidate_count == 3
+    assert result.dns.ipv4_count == 2 and result.dns.ipv6_count == 1
+    assert result.dns.families_in_order == ("ipv4", "ipv6", "ipv4")
+    serialized = json.dumps(result.dns.__dict__ if hasattr(result.dns, "__dict__") else repr(result.dns))
+    assert "192.0.2" not in serialized and "2001:db8" not in serialized
+
+
+@pytest.mark.anyio
+async def test_runtime_fingerprint_is_bounded_and_has_no_executable_path():
+    result, *_ = await run()
+    assert result.runtime.python
+    assert result.runtime.implementation
+    assert result.runtime.architecture
+    assert result.runtime.httpx == httpx.__version__
+    rendered = repr(result.runtime)
+    assert "executable" not in rendered.lower()
+    assert "/" not in rendered and "\\" not in rendered

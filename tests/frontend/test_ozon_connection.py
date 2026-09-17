@@ -49,9 +49,9 @@ def test_transport_diagnostics_are_allowlisted_for_presentation():
 
 
 def test_transport_comparison_state_is_bounded_and_replaces_previous_result():
-    result=node("(()=>{let s=SkladOzon.createInitialState();s=SkladOzon.beginTransportComparison(s);s=SkladOzon.applyTransportComparison(s,{endpoint:'/v1/seller/info',outcome:'both_reached_http'});return s.ozonConnection})()")
+    result=node("(()=>{let s=SkladOzon.createInitialState();s=SkladOzon.beginTransportComparison(s);s=SkladOzon.applyTransportComparison(s,{endpoint:'/v1/seller/info',outcome:'all_reached_http'});return s.ozonConnection})()")
     assert result['transportComparisonBusy'] is False
-    assert result['transportComparison']['outcome']=='both_reached_http'
+    assert result['transportComparison']['outcome']=='all_reached_http'
     assert result['transportComparisonError'] is None
 
 
@@ -59,7 +59,11 @@ def test_transport_comparison_ui_is_explicit_and_calls_dedicated_endpoint():
     source=(ROOT/'frontend/assets/js/app.js').read_text()
     assert "Сравнить HTTP-транспорт" in source
     assert "Тот же endpoint:" in source
-    assert "httpx достиг HTTP" in source and "оба транспорта не достигли HTTP" in source
+    assert "urllib / production" in source
+    assert "httpx sync" in source and "httpx async / рабочий профиль" in source
+    assert "Среда" in source and "DNS" in source
+    assert "HTTP достигнут" in source
+    assert "только httpx async достиг HTTP" in source and "ни один транспорт не достиг HTTP" in source
     assert "apiFetch('/api/ozon/connection/transport-compare',{method:'POST'})" in source
 
 
