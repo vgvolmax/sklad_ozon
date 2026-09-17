@@ -67,6 +67,7 @@ def test_empty_direct_cluster_uses_storage_warehouse_fallback(direct):
     assert [(row.sku, row.cluster, row.inbound_quantity) for row in rows] == [
         ("S", "Москва", 3)]
     assert diagnostics == ()
+    assert not any(item.code == "SUPPLY_CLUSTER_WIRE_SUMMARY" for item in diagnostics)
     assert quality == OzonRecordQualityEvidence(0, ())
 
 
@@ -130,7 +131,74 @@ def test_explicit_invalid_direct_cluster_is_not_hidden_by_fallback(direct, code)
         "storage_warehouse": {"warehouse_id": 501}, "bundle_id": UUID,
     }], {UUID: [{"sku": "S", "quantity": 3}]}, mapping={501: 10})
     assert rows == ()
-    assert [item.code for item in diagnostics] == [code]
+    assert diagnostics[0].code == code
+    expected_summary_codes = (["SUPPLY_CLUSTER_WIRE_SUMMARY"]
+                              if code == "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"
+                              else [])
+    assert [item.code for item in diagnostics[1:]] == expected_summary_codes
+
+
+@pytest.mark.parametrize(("direct", "shape"), [
+    ("10", "numeric_string"),
+    (" ", "blank_string"),
+    (-1, "negative_int"),
+    (10.0, "float_integral"),
+])
+def test_invalid_direct_cluster_reports_shape_and_resolvable_fallback(direct, shape):
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": direct,
+        "storage_warehouse": {"warehouse_id": 501}, "bundle_id": UUID,
+    }], {UUID: [{"sku": "S", "quantity": 3}]}, mapping={501: 10})
+
+    assert rows == ()
+    assert quality == OzonRecordQualityEvidence(1, ("S",))
+    assert [item.code for item in diagnostics] == [
+        "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID",
+        "SUPPLY_CLUSTER_WIRE_SUMMARY",
+    ]
+    assert diagnostics[-1].message == (
+        f"Invalid supply cluster wire shapes: {shape}/fallback_resolvable=1.")
+
+
+def test_invalid_direct_cluster_summary_is_aggregated_sorted_and_private():
+    private_bundle = "private-bundle-999999"
+    supplies = [
+        *[{
+            "state": "IN_TRANSIT", "macrolocal_cluster_id": "777777",
+            "storage_warehouse": {"warehouse_id": 501}, "bundle_id": UUID,
+        } for _ in range(2)],
+        {
+            "state": "IN_TRANSIT", "macrolocal_cluster_id": " ",
+            "bundle_id": private_bundle,
+        },
+        *[{
+            "state": "IN_TRANSIT", "macrolocal_cluster_id": -888888,
+            "storage_warehouse": {"warehouse_id": 502}, "bundle_id": UUID,
+        } for _ in range(3)],
+    ]
+    rows, diagnostics, quality = _normalize(
+        supplies,
+        {
+            UUID: [{"sku": "S", "quantity": 3}],
+            private_bundle: [{"sku": "T", "quantity": 1}],
+        },
+        clusters={10: "Москва"},
+        mapping={501: 10},
+    )
+
+    assert rows == ()
+    assert quality == OzonRecordQualityEvidence(6, ("S", "T"))
+    summaries = [
+        item for item in diagnostics if item.code == "SUPPLY_CLUSTER_WIRE_SUMMARY"]
+    assert len(summaries) == 1
+    assert summaries[0].severity == "warning"
+    assert summaries[0].message == (
+        "Invalid supply cluster wire shapes: "
+        "blank_string/storage_missing=1; "
+        "negative_int/fallback_unmapped=3; "
+        "numeric_string/fallback_resolvable=2.")
+    for private_value in ("501", "502", "10", "777777", "888888", "999999"):
+        assert private_value not in summaries[0].message
 
 
 def test_disputed_supply_is_scoped_unknown_and_quantity_is_not_counted():
@@ -524,6 +592,7 @@ def test_unknown_state_and_unresolved_cluster_are_sku_scoped():
     assert {(item.code, item.severity) for item in diagnostics} == {
         ("UNKNOWN_SUPPLY_STATE", "warning"),
         ("INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID", "warning"),
+        ("SUPPLY_CLUSTER_WIRE_SUMMARY", "warning"),
     }
 
 

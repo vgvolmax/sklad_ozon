@@ -1,5 +1,6 @@
 """Inbound FBO supply-order wire adapter."""
 
+from collections import Counter
 from enum import Enum
 
 from backend.domain.contracts import ImportDiagnostic
@@ -104,10 +105,49 @@ def _resolve_supply_cluster(
     return (cluster, None) if cluster is not None else (None, "UNRESOLVED_SUPPLY_CLUSTER")
 
 
+def _classify_invalid_direct(value: object) -> str:
+    """Return a bounded, value-free token for malformed direct cluster evidence."""
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return "blank_string"
+        return "numeric_string" if normalized.isdigit() else "other_string"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int) and value < 0:
+        return "negative_int"
+    if isinstance(value, float):
+        return "float_integral" if value.is_integer() else "float_fractional"
+    if isinstance(value, list):
+        return "list"
+    if isinstance(value, dict):
+        return "dict"
+    return "other"
+
+
+def _classify_warehouse_fallback(
+        supply: dict, clusters: dict[int, str],
+        warehouse_to_macrolocal: dict[int, int]) -> str:
+    """Passively classify fallback evidence without resolving the supply."""
+    storage = supply.get("storage_warehouse")
+    if not isinstance(storage, dict):
+        return "storage_missing"
+    warehouse_id = storage.get("warehouse_id")
+    if not _positive_int(warehouse_id):
+        return "storage_invalid"
+    if warehouse_id not in warehouse_to_macrolocal:
+        return "fallback_unmapped"
+    macrolocal_id = warehouse_to_macrolocal[warehouse_id]
+    if macrolocal_id not in clusters:
+        return "fallback_unknown_cluster"
+    return "fallback_resolvable"
+
+
 def normalize_inbound(details: list[dict], bundle_items: dict[str, list[dict]], clusters: dict[int, str],
                       warehouse_to_macrolocal: dict[int, int]):
     totals: dict[tuple[str, str], int] = {}
     diagnostics: list[ImportDiagnostic] = []
+    invalid_cluster_shapes: Counter[tuple[str, str]] = Counter()
     rejected_record_count = 0
     incomplete_skus: set[str] = set()
     for order in details:
@@ -167,6 +207,12 @@ def normalize_inbound(details: list[dict], bundle_items: dict[str, list[dict]], 
                                if cluster_error == "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"
                                else f"Supply order {order_id} has unresolved placement cluster.")
                     diagnostics.append(ImportDiagnostic("warning", cluster_error, message))
+                    if cluster_error == "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID":
+                        invalid_cluster_shapes[(
+                            _classify_invalid_direct(supply["macrolocal_cluster_id"]),
+                            _classify_warehouse_fallback(
+                                supply, clusters, warehouse_to_macrolocal),
+                        )] += 1
 
             for sku, quantity in parsed:
                 if uncertainty_code is not None or quantity is None:
@@ -174,6 +220,16 @@ def normalize_inbound(details: list[dict], bundle_items: dict[str, list[dict]], 
                     incomplete_skus.add(sku)
                 else:
                     totals[(sku, cluster)] = totals.get((sku, cluster), 0) + quantity
+
+    if invalid_cluster_shapes:
+        summary = "; ".join(
+            f"{direct_shape}/{fallback_state}={count}"
+            for (direct_shape, fallback_state), count
+            in sorted(invalid_cluster_shapes.items())
+        )
+        diagnostics.append(ImportDiagnostic(
+            "warning", "SUPPLY_CLUSTER_WIRE_SUMMARY",
+            f"Invalid supply cluster wire shapes: {summary}."))
 
     records = tuple(AvailabilityRecord(sku, cluster, cluster, 0.0, None, fbo_quantity=None, inbound_quantity=quantity)
                     for (sku, cluster), quantity in sorted(totals.items()))
