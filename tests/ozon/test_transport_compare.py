@@ -17,16 +17,26 @@ class UrllibProbe:
         return {"ok": True}
 
 
-def httpx_transport(status=200, *, error=None):
+def httpx_transport(status=200, *, error=None, on_request=None):
     calls = []
+    timeouts = []
 
     def handler(request):
         calls.append(request)
+        if on_request:
+            on_request()
         if error:
             raise error
         return httpx.Response(status, headers={"x-request-id": "req-safe"}, json={})
 
-    return lambda **kwargs: httpx.Client(transport=httpx.MockTransport(handler), **kwargs), calls
+    class RecordingClient(httpx.Client):
+        def post(self, *args, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            return super().post(*args, **kwargs)
+
+    return lambda **kwargs: RecordingClient(
+        transport=httpx.MockTransport(handler), **kwargs
+    ), calls, timeouts
 
 
 def failure(kind="timeout", status=None):
@@ -38,7 +48,7 @@ def failure(kind="timeout", status=None):
 
 def run(urllib_error=None, http_status=200, http_error=None):
     urllib = UrllibProbe(urllib_error)
-    factory, calls = httpx_transport(http_status, error=http_error)
+    factory, calls, _ = httpx_transport(http_status, error=http_error)
     result = compare_transports(
         urllib, OzonCredentials("client-secret", "key-secret"),
         httpx_client_factory=factory,
@@ -83,17 +93,41 @@ def test_http_errors_count_as_reached_http():
 
 
 def test_both_transports_send_same_post_and_empty_json():
-    result, urllib, calls = run()
+    urllib = UrllibProbe()
+    factory, calls, timeouts = httpx_transport()
+    result = compare_transports(
+        urllib, OzonCredentials("client-secret", "key-secret"),
+        httpx_client_factory=factory,
+    )
     path, payload, policy, timeout = urllib.calls[0]
     assert path == result.endpoint == "/v1/seller/info"
     assert payload == {} and policy.max_attempts == 1 and timeout == 10.0
     request = calls[0]
     assert request.method == "POST"
-    assert request.url.host == "api-seller.ozon.ru" and request.url.path == path
+    assert request.url == httpx.URL("https://api-seller.ozon.ru/v1/seller/info")
     assert request.content == b"{}"
     assert request.headers["Client-Id"] == "client-secret"
     assert request.headers["Api-Key"] == "key-secret"
     assert request.headers["Content-Type"] == "application/json"
+    timeout = timeouts[0]
+    assert timeout.connect == 15.0
+    assert timeout.read == 60.0
+    assert timeout.write == 30.0
+    assert timeout.pool == 15.0
+
+
+def test_httpx_response_after_eight_seconds_reaches_http_without_real_wait():
+    now = [0.0]
+    factory, _, _ = httpx_transport(on_request=lambda: now.__setitem__(0, 8.0))
+
+    result = compare_transports(
+        UrllibProbe(failure()), OzonCredentials("client-secret", "key-secret"),
+        httpx_client_factory=factory, clock=lambda: now[0],
+    )
+
+    assert result.httpx.reached_http is True
+    assert result.httpx.http_status == 200
+    assert result.httpx.elapsed_ms == 8_000
 
 
 def test_response_has_no_raw_exception_or_credentials():
