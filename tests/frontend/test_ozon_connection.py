@@ -6,7 +6,7 @@ def node(expr):
     return json.loads(subprocess.check_output(['node','-e',script],text=True))
 def test_connection_state_is_safe_and_status_only():
     state=node("SkladOzon.createInitialState()")
-    assert state['ozonConnection']=={'configured':False,'locked':True,'maskedClientIdSuffix':None,'lastConnectionCheck':None,'credentialContextId':None,'busy':False,'error':None,'diagnostic':None,'diagnosticForSync':False}
+    assert state['ozonConnection']=={'configured':False,'locked':True,'maskedClientIdSuffix':None,'lastConnectionCheck':None,'credentialContextId':None,'busy':False,'error':None,'diagnostic':None,'diagnosticForSync':False,'transportComparison':None,'transportComparisonBusy':False,'transportComparisonError':None}
     serialized=json.dumps(state)
     for secret in ('apiKey','passwordConfirmation','decryptedCredentials'):
         assert secret not in serialized
@@ -46,6 +46,21 @@ def test_transport_diagnostics_are_allowlisted_for_presentation():
     technical=next(row for row in rows if row['key']=='shipment_compatibility')['endpoints'][0]['technical']
     assert technical['transportKind']=='timeout' and technical['attempts']==3
     assert technical['elapsedMs']==46100 and 'raw_exception' not in technical
+
+
+def test_transport_comparison_state_is_bounded_and_replaces_previous_result():
+    result=node("(()=>{let s=SkladOzon.createInitialState();s=SkladOzon.beginTransportComparison(s);s=SkladOzon.applyTransportComparison(s,{endpoint:'/v1/seller/info',outcome:'both_reached_http'});return s.ozonConnection})()")
+    assert result['transportComparisonBusy'] is False
+    assert result['transportComparison']['outcome']=='both_reached_http'
+    assert result['transportComparisonError'] is None
+
+
+def test_transport_comparison_ui_is_explicit_and_calls_dedicated_endpoint():
+    source=(ROOT/'frontend/assets/js/app.js').read_text()
+    assert "Сравнить HTTP-транспорт" in source
+    assert "Тот же endpoint:" in source
+    assert "httpx достиг HTTP" in source and "оба транспорта не достигли HTTP" in source
+    assert "apiFetch('/api/ozon/connection/transport-compare',{method:'POST'})" in source
 
 
 def test_context_switch_drops_api_snapshot_source_and_shipment_state():
