@@ -235,7 +235,8 @@ def ozon_connection_transport_compare():
     """Compare transports directly; never run the raw DNS/TLS preflight."""
     try:
         context=OZON_VAULT.capture_context()
-        comparison=compare_transports(OZON_CLIENT.bind_context(context),context.credentials)
+        comparison=asyncio.run(compare_transports(
+            OZON_CLIENT.bind_context(context),context.credentials))
         return commit_active_credential_context(context,lambda:wire(comparison))
     except OzonVaultError as exc:
         return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
