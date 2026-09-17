@@ -38,7 +38,7 @@ exit /b %errorlevel%
 :runtime_valid
 if not exist "%PYTHON%" exit /b 1
 "%PYTHON%" -c "import sys; raise SystemExit(sys.version_info[:3] != (3,13,14))" >nul 2>&1 || exit /b 1
-"%PYTHON%" -c "import fastapi,uvicorn,openpyxl,multipart; from importlib.metadata import version; expected={'fastapi':'0.139.2','uvicorn':'0.51.0','openpyxl':'3.1.5','python-multipart':'0.0.32'}; raise SystemExit(any(version(k)!=v for k,v in expected.items()))" >nul 2>&1 || exit /b 1
+"%PYTHON%" -c "import fastapi,uvicorn,openpyxl,multipart,httpx; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from importlib.metadata import version; expected={'fastapi':'0.139.2','uvicorn':'0.51.0','openpyxl':'3.1.5','python-multipart':'0.0.32','cryptography':'50.0.1','httpx':'0.28.1'}; raise SystemExit(any(version(k)!=v for k,v in expected.items()))" >nul 2>&1 || exit /b 1
 exit /b 0
 
 :rebuild_fail

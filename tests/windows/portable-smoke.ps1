@@ -96,7 +96,7 @@ function Invoke-StartBat([string]$WorkingDirectory, [int]$TimeoutSeconds = 300, 
 function Test-RuntimeValid([string]$Runtime) {
     $python = Join-Path $Runtime "python.exe"
     if (-not (Test-Path $python)) { return $false }
-    & $python -c "import sys,fastapi,uvicorn,openpyxl,multipart; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from importlib.metadata import version; expected={'fastapi':'0.139.2','uvicorn':'0.51.0','openpyxl':'3.1.5','python-multipart':'0.0.32','cryptography':'50.0.1'}; raise SystemExit(sys.version_info[:3] != (3,13,14) or any(version(k)!=v for k,v in expected.items()))"
+    & $python -c "import sys,fastapi,uvicorn,openpyxl,multipart,httpx; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; from importlib.metadata import version; expected={'fastapi':'0.139.2','uvicorn':'0.51.0','openpyxl':'3.1.5','python-multipart':'0.0.32','cryptography':'50.0.1','httpx':'0.28.1'}; raise SystemExit(sys.version_info[:3] != (3,13,14) or any(version(k)!=v for k,v in expected.items()))"
     return $LASTEXITCODE -eq 0
 }
 function Assert-Sentinel([string]$Path, [string]$Stage) {
@@ -121,6 +121,13 @@ function Get-RuntimeFingerprint([string]$Runtime) {
         $relative = $_.FullName.Substring($Runtime.Length).TrimStart('\')
         "$relative|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)"
     } | Sort-Object))
+}
+function Remove-RuntimePackage([string]$Runtime, [string]$Package) {
+    $sitePackages = Join-Path $Runtime "Lib\site-packages"
+    $packagePath = Join-Path $sitePackages $Package
+    if (-not (Test-Path $packagePath)) { throw "Required $Package package directory is missing before stale-runtime test" }
+    Remove-Item $packagePath -Recurse -Force
+    Get-ChildItem $sitePackages -Directory -Filter "$Package-*.dist-info" | Remove-Item -Recurse -Force
 }
 function Write-FailureDiagnostics([string]$WorkingDirectory, [string]$Phase, [string]$Destination) {
     try {
@@ -177,14 +184,56 @@ try {
     Write-Host $currentPhase
     Stop-SmokeServer $sandbox
 
-    $currentPhase = "Phase E: corrupt required runtime package"
+    $currentPhase = "Phase E: stale runtime missing httpx"
+    Write-Host $currentPhase
+    Remove-RuntimePackage $runtime "httpx"
+    if (Test-RuntimeValid $runtime) { throw "Stale runtime without httpx unexpectedly validates" }
+    $result = Invoke-StartBat $sandbox
+    if ($result.ExitCode -ne 0) { throw "httpx upgrade repair exited $($result.ExitCode)" }
+    Wait-Health; Assert-WebApplication; Assert-LoopbackListener "httpx upgrade repair"
+    if (-not (Test-RuntimeValid $runtime)) { throw "httpx upgrade repair did not restore a valid runtime" }
+    Assert-NoPart $runtime; Assert-Sentinel $sentinel "after httpx upgrade repair"
+
+    $currentPhase = "Phase F: stop httpx-repaired server"
+    Write-Host $currentPhase
+    Stop-SmokeServer $sandbox
+
+    $currentPhase = "Phase G: offline reuse after httpx repair"
+    Write-Host $currentPhase
+    $before = Get-RuntimeFingerprint $runtime
+    $result = Invoke-StartBat $sandbox -Offline
+    if ($result.ExitCode -ne 0) { throw "Offline reuse after httpx repair exited $($result.ExitCode)" }
+    Wait-Health 30; Assert-WebApplication; Assert-LoopbackListener "Offline reuse after httpx repair"
+    $after = Get-RuntimeFingerprint $runtime
+    if (Compare-Object $before $after) { throw "Offline reuse reinstalled the httpx-repaired runtime" }
+    Assert-NoPart $runtime; Assert-Sentinel $sentinel "after offline reuse of httpx-repaired runtime"
+
+    $currentPhase = "Phase H: stop reused httpx-repaired server"
+    Write-Host $currentPhase
+    Stop-SmokeServer $sandbox
+
+    $currentPhase = "Phase I: stale runtime missing cryptography"
+    Write-Host $currentPhase
+    Remove-RuntimePackage $runtime "cryptography"
+    if (Test-RuntimeValid $runtime) { throw "Stale runtime without cryptography unexpectedly validates" }
+    $result = Invoke-StartBat $sandbox
+    if ($result.ExitCode -ne 0) { throw "cryptography upgrade repair exited $($result.ExitCode)" }
+    Wait-Health; Assert-WebApplication; Assert-LoopbackListener "cryptography upgrade repair"
+    if (-not (Test-RuntimeValid $runtime)) { throw "cryptography upgrade repair did not restore a valid runtime" }
+    Assert-NoPart $runtime; Assert-Sentinel $sentinel "after cryptography upgrade repair"
+
+    $currentPhase = "Phase J: stop cryptography-repaired server"
+    Write-Host $currentPhase
+    Stop-SmokeServer $sandbox
+
+    $currentPhase = "Phase K: corrupt required runtime package"
     Write-Host $currentPhase
     $fastapi = Join-Path $runtime "Lib\site-packages\fastapi"
     if (-not (Test-Path $fastapi)) { throw "Required fastapi package directory is missing before corruption" }
     Remove-Item $fastapi -Recurse -Force
     if (Test-RuntimeValid $runtime) { throw "Damaged runtime unexpectedly validates" }
 
-    $currentPhase = "Phase F: corrupt runtime offline rejection"
+    $currentPhase = "Phase L: corrupt runtime offline rejection"
     Write-Host $currentPhase
     $result = Invoke-StartBat $sandbox -TimeoutSeconds 30 -Offline
     if ($result.ExitCode -eq 0) { throw "Corrupt offline launch unexpectedly succeeded" }
@@ -198,7 +247,7 @@ try {
     if ($status.message -notmatch "(?i)connect to the internet" -or $status.message -notmatch "(?i)run start\.bat again" -or $status.message -notmatch "(?i)preserved") { throw "Repair guidance is not actionable" }
     Write-Host "Offline rejection exit=$($result.ExitCode), elapsed=$([Math]::Round($result.ElapsedSeconds, 2))s"
 
-    $currentPhase = "Phase G: online recovery"
+    $currentPhase = "Phase M: online recovery"
     Write-Host $currentPhase
     $result = Invoke-StartBat $sandbox
     if ($result.ExitCode -ne 0) { throw "Online recovery exited $($result.ExitCode)" }
@@ -206,7 +255,7 @@ try {
     if (-not (Test-RuntimeValid $runtime)) { throw "Recovered runtime validation failed" }
     Assert-NoPart $runtime; Assert-Sentinel $sentinel "after online recovery"
 
-    $currentPhase = "Phase H: final cleanup"
+    $currentPhase = "Phase N: final cleanup"
     Write-Host $currentPhase
     Stop-SmokeServer $sandbox
     Write-Host "Offline portable release acceptance passed."
