@@ -57,6 +57,52 @@ def test_warehouse_mapping_remains_absent_direct_id_fallback():
     assert not diagnostics
 
 
+@pytest.mark.parametrize("direct", [0, None])
+def test_empty_direct_cluster_uses_storage_warehouse_fallback(direct):
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": direct,
+        "storage_warehouse": {"warehouse_id": 501}, "bundle_id": UUID,
+    }], {UUID: [{"sku": "S", "quantity": 3}]}, mapping={501: 10})
+
+    assert [(row.sku, row.cluster, row.inbound_quantity) for row in rows] == [
+        ("S", "Москва", 3)]
+    assert diagnostics == ()
+    assert quality == OzonRecordQualityEvidence(0, ())
+
+
+def test_zero_direct_cluster_with_unresolved_warehouse_is_scoped_unknown():
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": 0,
+        "storage_warehouse": {"warehouse_id": 999}, "bundle_id": UUID,
+    }], {UUID: [
+        {"sku": "A", "quantity": 2},
+        {"sku": "B", "quantity": 3},
+    ]})
+
+    assert rows == ()
+    assert [item.code for item in diagnostics] == ["UNRESOLVED_SUPPLY_CLUSTER"]
+    assert quality == OzonRecordQualityEvidence(2, ("A", "B"))
+
+
+def test_zero_direct_cluster_fallback_accepts_every_bundle_item():
+    rows, diagnostics, quality = _normalize([{
+        "state": "IN_TRANSIT", "macrolocal_cluster_id": 0,
+        "storage_warehouse": {"warehouse_id": 501}, "bundle_id": UUID,
+    }], {UUID: [
+        {"sku": "A", "quantity": 2},
+        {"sku": "B", "quantity": 3},
+        {"sku": "C", "quantity": 1},
+    ]}, mapping={501: 10})
+
+    assert [(row.sku, row.cluster, row.inbound_quantity) for row in rows] == [
+        ("A", "Москва", 2),
+        ("B", "Москва", 3),
+        ("C", "Москва", 1),
+    ]
+    assert diagnostics == ()
+    assert quality == OzonRecordQualityEvidence(0, ())
+
+
 def test_direct_cluster_beats_conflicting_warehouse_fallback():
     rows, diagnostics, _quality = _normalize([{
         "state": "IN_TRANSIT", "macrolocal_cluster_id": 10,
@@ -70,9 +116,13 @@ def test_direct_cluster_beats_conflicting_warehouse_fallback():
 @pytest.mark.parametrize(("direct", "code"), [
     (999, "UNRESOLVED_SUPPLY_CLUSTER"),
     (True, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
+    (False, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
     (-1, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
     ("10", "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
+    ("", "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
     ([], "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
+    ({}, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
+    (1.5, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"),
 ])
 def test_explicit_invalid_direct_cluster_is_not_hidden_by_fallback(direct, code):
     rows, diagnostics, _quality = _normalize([{
