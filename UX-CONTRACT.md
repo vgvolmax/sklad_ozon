@@ -75,8 +75,9 @@ API-first PR-E adds/standardizes:
 OzonConnectionPanel
 CredentialVaultDialog
 SourceModePanel
-ArticlePlanSelector
+PlanEntitySelector
 PlanProductWorkspace
+PlanClusterWorkspace
 ShipmentIntentForm
 SellerWarehouseSelector
 HandoffPointSelector

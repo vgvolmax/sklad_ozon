@@ -150,3 +150,68 @@ def test_product_cluster_columns_place_ordered_demand_after_inbound():
 def test_search_selection_reconciles_against_visible_items():
     app=(ROOT/'frontend/assets/js/app.js').read_text()
     assert 'selected=S.reconcileSelectedSku(visible,state.planView.selectedSku)' in app
+
+
+def test_cluster_plan_items_group_matrix_by_cluster_without_collapsing_skus():
+    snapshot = {
+        'decision_rows': [
+            {'sku': '100', 'article': '40750', 'product_name': 'Кран A', 'destination_cluster_id': 'Москва'},
+            {'sku': '200', 'article': '40750', 'product_name': 'Кран B', 'destination_cluster_id': 'Москва'},
+            {'sku': '100', 'article': '40750', 'product_name': 'Кран A', 'destination_cluster_id': 'Казань'},
+        ],
+        'shippable_plan': {'lines': [
+            {'sku': '100', 'destination_cluster_id': 'Москва', 'shippable_qty': 12},
+            {'sku': '200', 'destination_cluster_id': 'Москва', 'shippable_qty': None},
+            {'sku': '100', 'destination_cluster_id': 'Казань', 'shippable_qty': 0},
+        ]},
+    }
+    items = node(f"SkladOzon.buildClusterPlanItems({json.dumps(snapshot, ensure_ascii=False)})")
+    assert [item['clusterId'] for item in items] == ['Москва', 'Казань']
+    assert [row['sku'] for row in items[0]['productRows']] == ['100', '200']
+    assert items[0]['knownShippableQty'] == 12
+    assert items[0]['hasUnknownShippable'] is True
+    assert items[0]['unknownSkuCount'] == 1
+    assert items[0]['positiveSkuCount'] == 1
+    assert items[1]['knownShippableQty'] == 0
+    assert items[1]['hasUnknownShippable'] is False
+    assert len(items[0]['productRows']) + len(items[1]['productRows']) == 3
+
+
+def test_cluster_sort_search_and_selection_reconciliation():
+    items = "[{clusterId:'Zero',knownShippableQty:0,hasUnknownShippable:false},{clusterId:'Unknown 2',knownShippableQty:0,hasUnknownShippable:true},{clusterId:'Москва 10',knownShippableQty:20,hasUnknownShippable:false},{clusterId:'Москва 2',knownShippableQty:20,hasUnknownShippable:false}]"
+    ordered = node(f"SkladOzon.sortClusterPlanItems({items}).map(x=>x.clusterId)")
+    assert ordered == ['Москва 2', 'Москва 10', 'Unknown 2', 'Zero']
+    visible = node(f"SkladOzon.filterClusterPlanItems(SkladOzon.sortClusterPlanItems({items}),'МОСКВА').map(x=>x.clusterId)")
+    assert visible == ['Москва 2', 'Москва 10']
+    assert node(f"SkladOzon.reconcileSelectedCluster({items},'Unknown 2')") == 'Unknown 2'
+    assert node(f"SkladOzon.reconcileSelectedCluster({items},'missing')") == 'Zero'
+    assert node("SkladOzon.reconcileSelectedCluster([], 'Москва')") is None
+
+
+def test_cluster_summary_is_fail_closed_but_preserves_zero():
+    complete = "{productRows:[{need:{ozon_recommended_qty:10,calculated_need_qty:8},calculated_plan_qty:6,shippable:{shippable_qty:6,total_volume_l:1.2,placement_zones:['SORT']}},{need:{ozon_recommended_qty:0,calculated_need_qty:0},calculated_plan_qty:0,shippable:{shippable_qty:0,total_volume_l:0,placement_zones:['NON_SORT']}}]}"
+    summary = node(f"SkladOzon.buildClusterPlanSummary({complete})")
+    assert summary['skuCount'] == 2
+    assert summary['ozonRecommendedQty'] == 10
+    assert summary['calculatedNeedQty'] == 8
+    assert summary['calculatedPlanQty'] == 6
+    assert summary['shippableQty'] == 6
+    assert summary['totalVolumeL'] == 1.2
+    assert summary['placementZones'] == ['NON_SORT', 'SORT']
+    assert summary['unknownRowCount'] == 0
+    partial = node("SkladOzon.buildClusterPlanSummary({productRows:[{need:{ozon_recommended_qty:0,calculated_need_qty:0},calculated_plan_qty:0,shippable:{shippable_qty:0,total_volume_l:0,placement_zones:['SORT']}},{need:{ozon_recommended_qty:null,calculated_need_qty:undefined},calculated_plan_qty:'',shippable:{shippable_qty:null,total_volume_l:NaN,placement_zones:[]}}]})")
+    assert partial['ozonRecommendedQty'] is None
+    assert partial['calculatedNeedQty'] is None
+    assert partial['calculatedPlanQty'] is None
+    assert partial['shippableQty'] is None
+    assert partial['totalVolumeL'] is None
+    assert partial['unknownRowCount'] == 1
+    assert partial['hasUnknownZones'] is True
+
+
+def test_cluster_workspace_reuses_existing_ordered_demand_and_status_helpers():
+    app = (ROOT / 'frontend/assets/js/app.js').read_text()
+    assert 'function clusterWorkspace(item,snap)' in app
+    assert 'S.presentOrderedDemand(row,horizon)' in app
+    assert '(sh.reason_codes||[]).map(S.shippableReasonLabel)' in app
+    assert "['Товар','FBO','В пути',orderedHeading,'Ozon','Потребность'" in app
