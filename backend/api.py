@@ -36,10 +36,15 @@ from backend.analytics._weeks import (ObservationCoverage,
 from backend.ingestion.tariffs import import_tariffs
 from backend.ingestion.product_economics import import_product_economics
 from backend.ingestion.unitka import import_unitka_bundle
+from backend.ingestion.supplier_packaging import normalize_supplier_article
 from backend.ingestion.api_product_economics import merge_api_product_economics
 from backend.project import (EconomicsSettings, OptimizerThresholds, Project,
                              ProjectValidationError, load_project_if_exists,
                              save_project_atomic)
+from backend.pack_multiplicity import (export_xlsx, parse_import_xlsx,
+                                       reset_override,
+                                       resolve_pack_multiplicity, set_override,
+                                       sync_unitka_baseline)
 from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
 from backend.ozon.contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import CONNECTION_TEST_PATH
@@ -71,6 +76,7 @@ ANALYSIS_STORE=AnalysisSnapshotStore()
 DRAFT_VALIDATION_SERVICE=DraftValidationService(OZON_CLIENT)
 SHIPMENT_PLAN_STORE=ShipmentPlanStore()
 OZON_CONTEXT_COMMIT_LOCK=RLock()
+PROJECT_PERSISTENCE_LOCK=RLock()
 DECIMAL_NAMES=['acquiring_rate','advertising_rate','buyout_rate','fixed_fbo_fee','income_tax_rate','vat_rate','co_invest_rate','min_profit_per_unit','min_margin_rate','min_roi']
 STAGES={
     "preparing":(1,"Подготовка файлов"), "reports":(2,"Чтение отчётов"),
@@ -573,6 +579,9 @@ async def import_unitka(request:Request):
     data=await read(upload,'file'); context=meta(upload)
     bundle=import_unitka_bundle(data,context)
     products, tariffs, packs = bundle.product_economics, bundle.tariffs, bundle.pack_multiplicity
+    with PROJECT_PERSISTENCE_LOCK:
+        project=sync_unitka_baseline(load_project_if_exists(PROJECT_PATH),packs.records)
+        save_project_atomic(PROJECT_PATH,project)
     return {"api_version":1,"kind":"unitka","product_economics":wire(products.records),"tariffs":wire(tariffs.records),
             "pack_multiplicity":wire(packs.records),
             "diagnostics":wire(products.diagnostics+tariffs.diagnostics+packs.diagnostics),"meta":wire(context),
@@ -789,10 +798,14 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         bundle=import_unitka_bundle(raw[economics_offset][1],meta(raw[economics_offset][0]),timing=unitka_timing)
         tariffs,products=bundle.tariffs,bundle.product_economics
         pack_evidence=bundle.pack_multiplicity.records
+        with PROJECT_PERSISTENCE_LOCK:
+            project=sync_unitka_baseline(load_project_if_exists(PROJECT_PATH),pack_evidence)
+            save_project_atomic(PROJECT_PATH,project)
     else:
         tariffs=timed("tariffs_import",import_tariffs,raw[economics_offset][1],meta(raw[economics_offset][0])); products=timed("product_economics_import",import_product_economics,raw[economics_offset+1][1],meta(raw[economics_offset+1][0]))
         pack_evidence=()
-    project=load_project_if_exists(PROJECT_PATH)
+    with PROJECT_PERSISTENCE_LOCK:
+        project=load_project_if_exists(PROJECT_PATH)
     resolution = resolve_analysis_clusters(
         availability.records, restrictions.records, orders.records, tariffs.records,
         project.manual_cluster_mappings
@@ -1021,8 +1034,77 @@ async def put_project_mappings(request: Request):
     if not isinstance(payload,dict) or any(not isinstance(k,str) or not k.strip() or not isinstance(v,str) or not v.strip() for k,v in payload.items()):
         return error(400,"INVALID_MAPPINGS","Expected nonblank string keys and values.","mappings")
     mappings={k.strip():v.strip() for k,v in payload.items()}
-    project=load_project_if_exists(PROJECT_PATH)
-    project=replace(project,manual_cluster_mappings=mappings)
-    try: save_project_atomic(PROJECT_PATH,project)
+    try:
+        with PROJECT_PERSISTENCE_LOCK:
+            project=load_project_if_exists(PROJECT_PATH)
+            project=replace(project,manual_cluster_mappings=mappings)
+            save_project_atomic(PROJECT_PATH,project)
     except ProjectValidationError: return error(400,"INVALID_MAPPINGS","Mappings are invalid.","mappings")
     return {"api_version":1,"mappings":dict(sorted(mappings.items()))}
+
+
+def _pack_items(project):
+    catalog={}
+    for product in project.product_economics:
+        if not product.article: continue
+        try: article=normalize_supplier_article(product.article)
+        except ValueError: continue
+        catalog.setdefault(article,set()).add(str(product.sku))
+    articles=sorted(set(catalog)|set(project.pack_multiplicity))
+    items=[]
+    for article in articles:
+        resolved=resolve_pack_multiplicity(project.pack_multiplicity.get(article))
+        items.append({"article":article,"pack_multiple":resolved.pack_multiple,"source":resolved.source,
+                      "unitka_pack_multiple":resolved.unitka_pack_multiple,"override_pack_multiple":resolved.override_pack_multiple,
+                      "updated_at":resolved.updated_at,"product_name":None,"skus":sorted(catalog.get(article,()))})
+    return items
+
+
+@router.get("/api/project/pack-multiplicity")
+def get_pack_multiplicity():
+    with PROJECT_PERSISTENCE_LOCK: project=load_project_if_exists(PROJECT_PATH)
+    return {"api_version":1,"items":_pack_items(project)}
+
+
+@router.put("/api/project/pack-multiplicity/{article}")
+async def put_pack_multiplicity(article: str, request: Request):
+    try: payload=await request.json()
+    except Exception: return error(400,"INVALID_PACK_MULTIPLICITY","Expected a JSON object.","pack_multiple")
+    if not isinstance(payload,dict) or set(payload)!={"pack_multiple"}:
+        return error(400,"INVALID_PACK_MULTIPLICITY","Expected pack_multiple only.","pack_multiple")
+    try:
+        with PROJECT_PERSISTENCE_LOCK:
+            project, normalized=set_override(load_project_if_exists(PROJECT_PATH),article,payload["pack_multiple"],"manual")
+            save_project_atomic(PROJECT_PATH,project)
+    except (ValueError,ProjectValidationError): return error(400,"INVALID_PACK_MULTIPLICITY","Кратность должна быть положительным целым числом.","pack_multiple")
+    return {"api_version":1,"item":next(item for item in _pack_items(project) if item["article"]==normalized)}
+
+
+@router.delete("/api/project/pack-multiplicity/{article}")
+def delete_pack_multiplicity(article: str):
+    try:
+        with PROJECT_PERSISTENCE_LOCK:
+            project, normalized=reset_override(load_project_if_exists(PROJECT_PATH),article)
+            save_project_atomic(PROJECT_PATH,project)
+    except (ValueError,ProjectValidationError): return error(400,"INVALID_ARTICLE","Некорректный артикул.","article")
+    return {"api_version":1,"item":next(item for item in _pack_items(project) if item["article"]==normalized)}
+
+
+@router.post("/api/project/pack-multiplicity/import")
+async def import_pack_multiplicity(request: Request):
+    form=await request.form(); upload=form.get("file")
+    if upload is None:return error(400,"MISSING_FIELD","Required multipart field is missing.","file")
+    try: values, diagnostics=parse_import_xlsx(await read(upload,"file"))
+    except (ValueError,OverflowError) as exc:return error(400,"INVALID_PACK_MULTIPLICITY_FILE",str(exc),"file")
+    with PROJECT_PERSISTENCE_LOCK:
+        project=load_project_if_exists(PROJECT_PATH)
+        for article,value in values.items(): project,_=set_override(project,article,value,"import")
+        save_project_atomic(PROJECT_PATH,project)
+    return {"api_version":1,"accepted":len(values),"rejected":len(diagnostics),"diagnostics":wire(diagnostics)}
+
+
+@router.get("/api/project/pack-multiplicity/export")
+def export_pack_multiplicity():
+    with PROJECT_PERSISTENCE_LOCK: items=_pack_items(load_project_if_exists(PROJECT_PATH))
+    return Response(export_xlsx(items),media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition":"attachment; filename*=UTF-8''%D0%9A%D1%80%D0%B0%D1%82%D0%BD%D0%BE%D1%81%D1%82%D1%8C_%D1%83%D0%BF%D0%B0%D0%BA%D0%BE%D0%B2%D0%BA%D0%B8.xlsx"})
