@@ -1,7 +1,7 @@
 """Pure assembly of the immutable Product Completion business snapshot."""
 
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
 from uuid import uuid4
 
@@ -192,6 +192,29 @@ def _flow_daily_locality(daily_locality, included_weeks):
                  if tuple(point.day.isocalendar()[:2]) in weeks)
 
 
+def _observed_demand_qty(daily_locality, *, sku, destination_cluster_id,
+                         analysis_as_of, days, demand_window,
+                         demand_complete):
+    """Sum canonical destination demand only when the calendar window is known."""
+    if not demand_complete or demand_window is None:
+        return None
+    if isinstance(days, bool) or not isinstance(days, int) or days <= 0:
+        raise ValueError("days must be a positive integer")
+    period_start = analysis_as_of - timedelta(days=days - 1)
+    if (demand_window.coverage_start is None
+            or demand_window.coverage_end is None
+            or demand_window.coverage_start > period_start
+            or demand_window.coverage_end < analysis_as_of):
+        return None
+    return sum(
+        point.destination_demand_qty
+        for point in daily_locality
+        if point.sku == sku
+        and point.destination_cluster_id == destination_cluster_id
+        and period_start <= point.day <= analysis_as_of
+    )
+
+
 def _views(flows, products, opportunities, product_identities=None,
            daily_locality=(),
            *, evidence_source="observed"):
@@ -345,9 +368,21 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
         identity=product_identities.get(need.sku, ("", ""))
         article=first_nonblank(identity[0], getattr(p,"article", ""))
         name=first_nonblank(identity[1], getattr(p,"product_name", ""))
+        demand_complete = "INCOMPLETE_DEMAND_SOURCE" not in need.blocker_codes
+        ordered_qty_56d = _observed_demand_qty(
+            daily_locality, sku=need.sku,
+            destination_cluster_id=need.destination_cluster_id,
+            analysis_as_of=analysis_as_of, days=56,
+            demand_window=demand_window, demand_complete=demand_complete)
+        ordered_qty_horizon = _observed_demand_qty(
+            daily_locality, sku=need.sku,
+            destination_cluster_id=need.destination_cluster_id,
+            analysis_as_of=analysis_as_of, days=scenario.horizon_days,
+            demand_window=demand_window, demand_complete=demand_complete)
         row = DecisionRow(need.sku,article,name,need.destination_cluster_id,
             demand.get(key),need,None if s is None else s.allocation_qty,None if c is None else c.allocation_qty,
             need.current_fbo_stock,need.inbound_qty,
+            ordered_qty_56d,ordered_qty_horizon,
             _external_share(observed_routes,key),
             route_margin,route_rubles,
             None if c is None else c.expected_profit,

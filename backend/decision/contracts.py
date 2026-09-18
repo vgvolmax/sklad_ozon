@@ -310,6 +310,7 @@ class DecisionRow:
     demand: DemandEstimate | None; need: NeedComparison
     safe_plan_qty: int | None; calculated_plan_qty: int | None
     current_fbo_stock: int | None; inbound_qty: int | None
+    ordered_qty_56d: int | None; ordered_qty_horizon: int | None
     route_external_share: Decimal | None
     route_margin_opportunity_pp: Decimal | None
     observed_profit_opportunity_rub: Decimal | None

@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -6,9 +7,84 @@ import pytest
 from backend.decision import FlowView, HorizonComparability, NeedComparison
 from backend.decision.explanations import explain_decision
 from backend.decision.snapshot import (_is_incomplete_row, _route_aggregate,
+                                       _observed_demand_qty,
                                        _signal_status_codes,
                                        _total_safe_plan_qty, _views,
                                        first_nonblank)
+from backend.analytics._weeks import AnalyticsWindow
+
+
+def _demand_window(start, end):
+    return AnalyticsWindow(end, end.isocalendar().year, end.isocalendar().week,
+                           (), 0, 0, 0, start, end, True)
+
+
+def _point(sku, cluster, day, quantity, origin=None):
+    return SimpleNamespace(
+        sku=sku, destination_cluster_id=cluster, day=day,
+        destination_demand_qty=quantity, origin_cluster_id=origin,
+    )
+
+
+def _observed(points, *, days, start, complete=True, cluster="Краснодар"):
+    as_of = date(2026, 9, 18)
+    return _observed_demand_qty(
+        points, sku="SKU", destination_cluster_id=cluster,
+        analysis_as_of=as_of, days=days,
+        demand_window=_demand_window(start, as_of),
+        demand_complete=complete,
+    )
+
+
+def test_observed_demand_uses_inclusive_calendar_days_including_current_week():
+    as_of = date(2026, 9, 18)
+    points = tuple(_point("SKU", "Краснодар", day, qty) for day, qty in (
+        (date(2026, 9, 11), 100), (date(2026, 9, 12), 2),
+        (date(2026, 9, 15), 3), (as_of, 4),
+    ))
+
+    assert _observed(points, days=7, start=date(2026, 7, 1)) == 9
+
+
+def test_observed_demand_56_day_boundary_is_exact():
+    as_of = date(2026, 9, 18)
+    points = (
+        _point("SKU", "Краснодар", as_of - timedelta(days=55), 5),
+        _point("SKU", "Краснодар", as_of - timedelta(days=56), 100),
+    )
+
+    assert _observed(points, days=56, start=date(2026, 7, 1)) == 5
+
+
+def test_observed_demand_uses_destination_not_fulfillment_origin():
+    as_of = date(2026, 9, 18)
+    points = (_point("SKU", "Краснодар", as_of, 5, origin="Москва"),)
+    start = date(2026, 7, 1)
+
+    assert _observed(points, days=56, start=start, cluster="Краснодар") == 5
+    assert _observed(points, days=56, start=start, cluster="Москва") == 0
+
+
+def test_observed_demand_preserves_zero_and_fails_closed_per_window():
+    as_of = date(2026, 9, 18)
+    ninety_day_start = as_of - timedelta(days=89)
+    points = (_point("SKU", "Краснодар", as_of, 34),)
+
+    assert _observed((), days=56, start=ninety_day_start) == 0
+    assert _observed(points, days=56, start=ninety_day_start) == 34
+    assert _observed(points, days=120, start=ninety_day_start) is None
+    assert _observed(points, days=56, start=as_of - timedelta(days=54)) is None
+
+
+def test_observed_demand_incomplete_sku_fails_closed_and_56_horizon_matches():
+    as_of = date(2026, 9, 18)
+    points = (_point("SKU", "Краснодар", as_of, 31),)
+    start = as_of - timedelta(days=100)
+
+    assert _observed(points, days=56, start=start, complete=False) is None
+    assert _observed(points, days=56, start=start) == 31
+    assert _observed(points, days=56, start=start) == _observed(
+        points, days=56, start=start)
 
 
 def test_flow_view_rejects_non_business_mode():
