@@ -84,16 +84,31 @@ def _sku(value: object) -> str:
     raise ValueError("supply bundle item has invalid SKU")
 
 
+def _normalize_direct_cluster_id(value: object) -> tuple[int | None, str]:
+    """Normalize canonical direct cluster evidence without guessing identity."""
+    if value is None or (type(value) is int and value == 0):
+        return None, "empty"
+    if type(value) is int:
+        return (value, "direct") if value > 0 else (None, "invalid")
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized and all("0" <= char <= "9" for char in normalized):
+            parsed = int(normalized)
+            return (parsed, "direct") if parsed > 0 else (None, "empty")
+    return None, "invalid"
+
+
 def _resolve_supply_cluster(
         supply: dict, clusters: dict[int, str],
         warehouse_to_macrolocal: dict[int, int]) -> tuple[str | None, str | None]:
     """Resolve canonical direct cluster evidence, including empty API sentinels."""
     if "macrolocal_cluster_id" in supply:
-        direct = supply["macrolocal_cluster_id"]
-        if type(direct) is int and direct > 0:
+        direct, direct_state = _normalize_direct_cluster_id(
+            supply["macrolocal_cluster_id"])
+        if direct_state == "direct":
             cluster = clusters.get(direct)
             return (cluster, None) if cluster is not None else (None, "UNRESOLVED_SUPPLY_CLUSTER")
-        if direct is not None and not (type(direct) is int and direct == 0):
+        if direct_state == "invalid":
             return None, "INVALID_SUPPLY_MACROLOCAL_CLUSTER_ID"
 
     storage = supply.get("storage_warehouse")
@@ -111,7 +126,8 @@ def _classify_invalid_direct(value: object) -> str:
         normalized = value.strip()
         if not normalized:
             return "blank_string"
-        return "numeric_string" if normalized.isdigit() else "other_string"
+        is_ascii_numeric = all("0" <= char <= "9" for char in normalized)
+        return "numeric_string" if is_ascii_numeric else "other_string"
     if isinstance(value, bool):
         return "bool"
     if isinstance(value, int) and value < 0:
