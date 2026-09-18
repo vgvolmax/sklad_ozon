@@ -164,3 +164,40 @@ def test_api_source_reaches_positive_calculated_shippable_and_candidate_before_l
     candidates = candidate_response.json()["candidates"]
     assert candidates
     assert candidates[0]["method"] == "direct"
+
+
+def test_api_product_facts_feed_economics_and_plan_instead_of_unitka_values():
+    from decimal import Decimal
+    from backend.ozon.adapters.product_facts import ProductApiFacts
+
+    base = _api_parity_fixture()
+    source = replace(
+        base,
+        source_snapshot_id="api-product-facts",
+        operational_seller_stock=(replace(base.operational_seller_stock[0],
+                                          available_quantity=24, fbs_quantity=24),),
+        product_facts=(ProductApiFacts(
+            "SKU-1", "ART-1", 101, Decimal("550"), Decimal("0.41"),
+            Decimal("0.35")),),
+    )
+    api_module.OZON_SOURCE_STORE.put(source)
+    unitka = make_real_unitka(
+        product_rows=[["ART-1", "Product", 100, 500, "20%", None]],
+        tariff_rows=[(0, "0-0,500 л", "Москва", "Москва", 18, 69)],
+        pack_rows=[["ART-1", "36/6"]],
+        economics_scheme_fbo=True,
+    )
+
+    response = CLIENT.post("/api/analysis", files={"unitka_file": ("unitka.xlsx", unitka)},
+                           data=_analysis_data(source_mode="api",
+                                               source_snapshot_id=source.source_snapshot_id))
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    economics = next(item for item in payload["economics"] if item["sku"] == "SKU-1")
+    assert economics["price"] == "550"
+    assert economics["commission"] == "225.5"
+    assert economics["cost"] == "100"
+    line = next(item for item in payload["snapshot"]["shippable_plan"]["lines"]
+                if item["sku"] == "SKU-1")
+    assert line["unit_volume_l"] == "0.35"
+    assert line["resolved_seller_stock"] == 24

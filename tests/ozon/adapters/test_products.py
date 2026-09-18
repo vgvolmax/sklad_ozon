@@ -121,3 +121,13 @@ def test_product_continuation_cursor_is_strict(cursor):
 def test_product_page_must_make_raw_progress():
     with pytest.raises(ValueError):
         fetch_product_skus(ProductClient([page([], 1, "next")]))
+
+
+def test_identity_catalog_preserves_product_id_and_offer_without_second_request():
+    from backend.ozon.adapters.products import ProductCatalogItem, fetch_product_catalog
+    client = ProductClient([page([{
+        "sku": 123, "product_id": 456, "offer_id": " ART-1 ",
+    }], 1, "terminal")])
+
+    assert fetch_product_catalog(client) == (ProductCatalogItem("123", 456, "ART-1"),)
+    assert len(client.calls) == 1

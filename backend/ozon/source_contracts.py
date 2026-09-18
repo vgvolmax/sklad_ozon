@@ -85,3 +85,4 @@ class OzonSourceSnapshot:
     endpoint_evidence: tuple[EndpointEvidence, ...]
     diagnostics: tuple[Any, ...]
     credential_context_id: str | None = None
+    product_facts: tuple[Any, ...] = ()
