@@ -123,3 +123,23 @@ def test_missing_legacy_partial_and_corrupt_preferences_preserve_scenario_defaul
         merged = node(expression)
         assert merged == expected
         assert "objective" not in merged
+
+
+def test_plan_perspective_defaults_and_survives_switches_with_both_selections():
+    plan = node("SkladOzon.createInitialState().planView")
+    assert plan['perspective'] == 'product'
+    assert plan['clusterQuery'] == ''
+    assert plan['selectedClusterId'] is None
+    result = node("(()=>{let s={...SkladOzon.createInitialState(),planView:{...SkladOzon.createInitialState().planView,selectedSku:'123',selectedClusterId:'Москва'}};s=SkladOzon.setPlanPerspective(s,'cluster');s=SkladOzon.setPlanPerspective(s,'product');return s.planView})()")
+    assert result['perspective'] == 'product'
+    assert result['selectedSku'] == '123'
+    assert result['selectedClusterId'] == 'Москва'
+
+
+def test_only_valid_plan_perspective_is_loaded_and_persisted():
+    loaded = node("SkladOzon.loadPreferences({getItem:()=>JSON.stringify({planPerspective:'cluster'})}).planView")
+    assert loaded['perspective'] == 'cluster'
+    invalid = node("SkladOzon.loadPreferences({getItem:()=>JSON.stringify({planPerspective:'other'})}).planView")
+    assert 'perspective' not in invalid
+    saved = node("(()=>{let value;const s={...SkladOzon.createInitialState(),planView:{...SkladOzon.createInitialState().planView,perspective:'cluster'}};SkladOzon.savePreferences({setItem:(_,x)=>value=x},s);return JSON.parse(value)})()")
+    assert saved['planPerspective'] == 'cluster'

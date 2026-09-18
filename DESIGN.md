@@ -212,7 +212,7 @@ Motion минимален и сообщает состояние: открыти
 
 `Данные` is API-first: `OzonConnectionPanel` and `CredentialVaultDialog` own setup, restart unlock, lock, connection checks, explicit sync, and domain-level freshness. The connection panel presents one compact ordered DNS → TLS → Seller API → permissions diagnostic with per-stage timings; the same diagnostic gates heavy sync and preserves a stable panel while it runs. `SourceModePanel` exposes FILES only as an explicit reserve analytical workflow; one analysis run never mixes API and file source evidence.
 
-`План` has `Товары | Отгрузки`. `ArticlePlanSelector` is article-first in presentation and SKU-backed in identity. `PlanProductWorkspace` keeps `Ozon → Наша потребность → План`, whole-pack quantities, exact cluster evidence, and `Не рассчитано` for unknowns.
+`План` has `Товары | Отгрузки`. Inside `Товары`, `По товарам | По кластерам` changes only the direction in which the same immutable `SKU × destination_cluster_id` matrix is viewed. Product perspective remains article-first and SKU-backed; cluster perspective groups the same decision and shippable rows by destination cluster without changing shipment intent. The shared `PlanEntitySelector` owns bounded listbox behavior, while explicit product and cluster workspaces keep `Ozon → Наша потребность → План`, exact whole-pack evidence, and `Не рассчитано` for incomplete totals.
 
 `ShipmentIntentForm` uses native date inputs and checkboxes. `SellerWarehouseSelector` uses a native `<select>` only when several active warehouses require choice. `HandoffPointSelector` is the single authored asynchronous combobox: remote search begins after four trimmed characters and resolved points remain backend evidence only for the current process.
 
