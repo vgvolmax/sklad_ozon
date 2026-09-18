@@ -10,8 +10,8 @@ from datetime import date
 
 from backend.domain.contracts import ProductEconomicsInput, ReportMeta, TariffRow
 
-SCHEMA_VERSION = 1
-_TOP_FIELDS = {"schema_version", "tariffs", "tariff_meta", "product_economics", "product_economics_meta", "seller_available_stock", "manual_cluster_mappings", "economics_settings", "optimizer_thresholds", "operational_snapshots"}
+SCHEMA_VERSION = 2
+_TOP_FIELDS = {"schema_version", "tariffs", "tariff_meta", "product_economics", "product_economics_meta", "seller_available_stock", "manual_cluster_mappings", "economics_settings", "optimizer_thresholds", "operational_snapshots", "pack_multiplicity"}
 _FORBIDDEN = {"buyer_name", "customer_name", "address", "phone", "email", "inn", "kpp", "raw_row", "raw_report", "raw_bytes", "raw_csv", "raw_xlsx", "base64_report", "payment_data"}
 _SNAPSHOT_FIELDS = {
     "availability": {"sku", "warehouse", "cluster", "available_quantity"},
@@ -49,6 +49,14 @@ class OperationalSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class PackMultiplicityRecord:
+    unitka_pack_multiple: int | None = None
+    override_pack_multiple: int | None = None
+    override_origin: str | None = None
+    override_updated_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Project:
     schema_version: int = field(default=SCHEMA_VERSION, init=False)
     tariffs: tuple[TariffRow, ...] = ()
@@ -60,6 +68,7 @@ class Project:
     economics_settings: EconomicsSettings | None = None
     optimizer_thresholds: OptimizerThresholds | None = None
     operational_snapshots: tuple[OperationalSnapshot, ...] = ()
+    pack_multiplicity: dict[str, PackMultiplicityRecord] = field(default_factory=dict)
 
 
 def _decimal(value: object) -> Decimal:
@@ -98,8 +107,14 @@ def _validate_snapshot(snapshot: OperationalSnapshot):
         if not all(value is None or isinstance(value, (str, int, float, bool)) for value in record.values()): raise ProjectValidationError("Snapshot values must be normalized scalars.")
 
 
+def _positive_integer(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ProjectValidationError("Pack multiplicity must be a positive integer.")
+    return value
+
+
 def _validate(project: Project):
-    if type(project) is not Project or project.schema_version != 1: raise ProjectValidationError("Unsupported project schema version.")
+    if type(project) is not Project or project.schema_version != SCHEMA_VERSION: raise ProjectValidationError("Unsupported project schema version.")
     for row in project.tariffs:
         for value in (row.min_volume_liters, row.max_volume_liters, row.min_price, row.max_price, row.logistics_fee):
             if value is not None: _decimal(value)
@@ -123,12 +138,21 @@ def _validate(project: Project):
     if project.optimizer_thresholds:
         for name in OptimizerThresholds.__slots__: _decimal(getattr(project.optimizer_thresholds, name))
     for snapshot in project.operational_snapshots: _validate_snapshot(snapshot)
+    for article, record in project.pack_multiplicity.items():
+        if not isinstance(article, str) or not article or type(record) is not PackMultiplicityRecord:
+            raise ProjectValidationError("Invalid pack multiplicity record.")
+        for value in (record.unitka_pack_multiple, record.override_pack_multiple):
+            if value is not None: _positive_integer(value)
+        if record.override_pack_multiple is None:
+            if record.override_origin is not None or record.override_updated_at is not None: raise ProjectValidationError("Override metadata requires a value.")
+        elif record.override_origin not in {"manual", "import"} or not isinstance(record.override_updated_at, str) or not record.override_updated_at:
+            raise ProjectValidationError("Invalid pack multiplicity override metadata.")
 
 
 def _to_payload(project: Project):
     _validate(project)
     payload = {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "tariffs": [{"origin_cluster_id": r.origin_cluster_id, "destination_cluster_id": r.destination_cluster_id, "min_volume_liters": _decimal_json(r.min_volume_liters), "max_volume_liters": _decimal_json(r.max_volume_liters), "min_price": _decimal_json(r.min_price), "max_price": _decimal_json(r.max_price), "logistics_fee": _decimal_json(r.logistics_fee)} for r in project.tariffs],
         "tariff_meta": _meta_json(project.tariff_meta),
         "product_economics": [{"sku": r.sku, "article": r.article, "cost": _decimal_json(r.cost), "available_qty": r.available_qty, "price": _decimal_json(r.price), "commission_rate": _decimal_json(r.commission_rate), "volume_liters": _decimal_json(r.volume_liters)} for r in project.product_economics],
@@ -138,6 +162,7 @@ def _to_payload(project: Project):
         "economics_settings": None if project.economics_settings is None else {name: (getattr(project.economics_settings, name) if name == "tax_system" else _decimal_json(getattr(project.economics_settings, name))) for name in EconomicsSettings.__slots__},
         "optimizer_thresholds": None if project.optimizer_thresholds is None else {name: _decimal_json(getattr(project.optimizer_thresholds, name)) for name in OptimizerThresholds.__slots__},
         "operational_snapshots": [{"kind": s.kind, "report_date": s.report_date, "period_start": s.period_start, "period_end": s.period_end, "records": list(s.records)} for s in project.operational_snapshots],
+        "pack_multiplicity": {article: {name: getattr(record, name) for name in PackMultiplicityRecord.__slots__} for article, record in sorted(project.pack_multiplicity.items())},
     }
     _reject_forbidden_keys(payload)
     return payload
@@ -184,8 +209,12 @@ def _meta(value):
 def load_project(path: Path) -> Project:
     try: payload = json.loads(Path(path).read_text("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc: raise ProjectValidationError("Project is not valid UTF-8 JSON.") from exc
-    _reject_forbidden_keys(payload); _strict(payload, _TOP_FIELDS, "project")
-    if type(payload.get("schema_version")) is not int or payload["schema_version"] != 1: raise ProjectValidationError("Missing or unsupported schema version.")
+    _reject_forbidden_keys(payload)
+    if isinstance(payload, dict) and payload.get("schema_version") == 1:
+        _strict(payload, _TOP_FIELDS - {"pack_multiplicity"}, "project")
+        payload = {**payload, "schema_version": SCHEMA_VERSION, "pack_multiplicity": {}}
+    _strict(payload, _TOP_FIELDS, "project")
+    if type(payload.get("schema_version")) is not int or payload["schema_version"] != SCHEMA_VERSION: raise ProjectValidationError("Missing or unsupported schema version.")
     if not isinstance(payload["tariffs"], list) or not isinstance(payload["product_economics"], list) or not isinstance(payload["operational_snapshots"], list): raise ProjectValidationError("Project collections must be lists.")
     tariffs = []
     for raw in payload["tariffs"]:
@@ -208,7 +237,12 @@ def load_project(path: Path) -> Project:
         snapshots.append(OperationalSnapshot(raw["kind"], raw["report_date"], raw["period_start"], raw["period_end"], tuple(raw["records"])))
     if not isinstance(payload["seller_available_stock"], dict) or not isinstance(payload["manual_cluster_mappings"], dict): raise ProjectValidationError("Stock and mappings must be objects.")
     if not all(isinstance(k, str) and isinstance(v, str) and k and v for k, v in payload["manual_cluster_mappings"].items()): raise ProjectValidationError("Manual mappings must contain nonblank strings.")
-    project = Project(tuple(tariffs), _meta(payload["tariff_meta"]), tuple(products), _meta(payload["product_economics_meta"]), payload["seller_available_stock"], payload["manual_cluster_mappings"], econ, thresholds, tuple(snapshots))
+    if not isinstance(payload["pack_multiplicity"], dict): raise ProjectValidationError("Pack multiplicity must be an object.")
+    packs = {}
+    for article, raw in payload["pack_multiplicity"].items():
+        _strict(raw, PackMultiplicityRecord.__slots__, "pack multiplicity")
+        packs[article] = PackMultiplicityRecord(**raw)
+    project = Project(tuple(tariffs), _meta(payload["tariff_meta"]), tuple(products), _meta(payload["product_economics_meta"]), payload["seller_available_stock"], payload["manual_cluster_mappings"], econ, thresholds, tuple(snapshots), packs)
     _validate(project); return project
 
 

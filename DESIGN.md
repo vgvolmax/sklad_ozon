@@ -217,3 +217,9 @@ Motion минимален и сообщает состояние: открыти
 `ShipmentIntentForm` uses native date inputs and checkboxes. `SellerWarehouseSelector` uses a native `<select>` only when several active warehouses require choice. `HandoffPointSelector` is the single authored asynchronous combobox: remote search begins after four trimmed characters and resolved points remain backend evidence only for the current process.
 
 `ShipmentManifest` and `OzonValidationStatus` render backend order and causal acceptance states without recalculation. The browser calls candidates then ShipmentPlan, displays every returned timeslot, and downloads backend-built XLSX/ZIP artifacts. Temporary drafts are disclosed; no UI claims or performs real supply creation.
+
+## Persistent pack-multiplicity directory (PR1)
+
+Pack multiplicity is article-level master data stored in Project schema v2. Each record keeps the Unitka baseline separately from a manual or XLSX-imported override; resolution is `override → Unitka → unknown`. The directory is persisted atomically in `data/project.json`, and importing a newer Unitka workbook refreshes only the baseline.
+
+This directory is deliberately not connected to `ShippablePlan`, the optimizer, or shipment candidates in PR1. In PR2, one resolved article multiplicity will constrain **each `SKU × destination_cluster_id` line independently**. For example, Moscow need 25 and Rostov need 5 with pack 50 are two separate choices from `0 / 50 / 100 / …`; they must never be summed into one shared pack across clusters.
