@@ -71,6 +71,7 @@
   S.formatPercentFraction=S.presentPercentFraction;
   S.presentPercentagePoints=function(value){const n=S.presentNumber(value,{maximumFractionDigits:2});return n==='Не рассчитано'?n:`${n.replace(/^-/,'−')} п.п.`;};
   S.presentIsoDate=function(value){const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value||''));return m?`${m[3]}.${m[2]}.${m[1]}`:'Не указано';};
+  S.presentOrderedDemand=function(row,horizonDays){const horizon=Number(horizonDays),fixed=S.presentNumber(row?.ordered_qty_56d),current=S.presentNumber(row?.ordered_qty_horizon);return horizon===56?{heading:'Заказано, 56 дн.',value:fixed}:{heading:`Заказано, 56 дн. / ${S.presentNumber(horizon)} дн.`,value:`${fixed} / ${current}`};};
   S.presentDateTime=function(value){if(!value)return 'Не указано';const d=new Date(value);return Number.isNaN(d.valueOf())?'Не указано':new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short'}).format(d);};
   const comparabilityLabels={same_horizon:'Горизонты совпадают',different_horizon:'Горизонты различаются',ozon_horizon_unknown:'Горизонт Ozon неизвестен',ozon_recommendation_missing:'Рекомендация Ozon отсутствует'};
   S.presentHorizonComparability=value=>comparabilityLabels[value]||'Не рассчитано';

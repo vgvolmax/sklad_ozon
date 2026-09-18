@@ -131,6 +131,22 @@ def test_product_summary_aggregates_every_cluster_and_preserves_unknowns():
     assert summary['sellerStock']==17 and summary['wholePackAvailable']==12 and summary['packMultiple']==6
     assert node("SkladOzon.buildProductPlanSummary({clusterRows:[{need:{ozon_recommended_qty:10}},{need:{ozon_recommended_qty:null}}]}).ozonRecommendedQty") is None
 
+
+def test_ordered_demand_presentation_preserves_partial_unknowns_and_zero():
+    cases = node("[SkladOzon.presentOrderedDemand({ordered_qty_56d:31,ordered_qty_horizon:18},28),SkladOzon.presentOrderedDemand({ordered_qty_56d:31,ordered_qty_horizon:31},56),SkladOzon.presentOrderedDemand({ordered_qty_56d:31,ordered_qty_horizon:null},120),SkladOzon.presentOrderedDemand({ordered_qty_56d:0,ordered_qty_horizon:0},28)]")
+    assert cases == [
+        {'heading': 'Заказано, 56 дн. / 28 дн.', 'value': '31 / 18'},
+        {'heading': 'Заказано, 56 дн.', 'value': '31'},
+        {'heading': 'Заказано, 56 дн. / 120 дн.', 'value': '31 / Не рассчитано'},
+        {'heading': 'Заказано, 56 дн. / 28 дн.', 'value': '0 / 0'},
+    ]
+
+
+def test_product_cluster_columns_place_ordered_demand_after_inbound():
+    app = (ROOT / 'frontend/assets/js/app.js').read_text()
+    columns = "['Кластер','FBO','В пути',orderedHeading,'Ozon','Потребность'"
+    assert columns in app
+
 def test_search_selection_reconciles_against_visible_items():
     app=(ROOT/'frontend/assets/js/app.js').read_text()
     assert 'selected=S.reconcileSelectedSku(visible,state.planView.selectedSku)' in app
