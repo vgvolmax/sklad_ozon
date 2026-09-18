@@ -36,6 +36,7 @@ from backend.analytics._weeks import (ObservationCoverage,
 from backend.ingestion.tariffs import import_tariffs
 from backend.ingestion.product_economics import import_product_economics
 from backend.ingestion.unitka import import_unitka_bundle
+from backend.ingestion.api_product_economics import merge_api_product_economics
 from backend.project import (EconomicsSettings, OptimizerThresholds, Project,
                              ProjectValidationError, load_project_if_exists,
                              save_project_atomic)
@@ -493,6 +494,7 @@ class PreparedAnalysisInputs:
     operational_availability: tuple
     placement_zone_evidence: tuple = ()
     source_coverage: AnalysisSourceCoverage | None = None
+    product_facts: tuple = ()
 
 
 def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedAnalysisInputs:
@@ -551,6 +553,7 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
             seller_stock_complete=completeness.get("seller_stock", False),
             seller_stock_incomplete_skus=seller_stock_incomplete_skus,
         ),
+        tuple(snapshot.product_facts),
     )
 
 _IMPORTERS={"availability":import_availability,"restrictions":import_restrictions,"orders":import_orders,"tariffs":import_tariffs,"product-economics":import_product_economics}
@@ -803,11 +806,19 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     current_article_skus={}
     for item in analysis_availability:
         if item.article:current_article_skus.setdefault(item.article,set()).add(item.sku)
+    if source_inputs is not None:
+        for item in source_inputs.product_facts:
+            if item.article:current_article_skus.setdefault(item.article,set()).add(item.sku)
     primary={}; primary_conflicts=set()
     for item in analysis_availability:
         if not item.article: continue
         if item.article in primary and primary[item.article]!=item.sku: primary_conflicts.add(item.article)
         else: primary[item.article]=item.sku
+    if source_inputs is not None:
+        for item in source_inputs.product_facts:
+            if not item.article: continue
+            if item.article in primary and primary[item.article]!=item.sku: primary_conflicts.add(item.article)
+            else: primary[item.article]=item.sku
     fallback={}
     for item in analysis_orders:
         if item.article:fallback.setdefault(item.article,set()).add(item.sku)
@@ -830,6 +841,14 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
             join_diags.append(ImportDiagnostic('warning','MISSING_ARTICLE_TO_SKU','Unitka article is outside the current SKU universe.'))
             quality_facts.append(DataQualityFact('MISSING_ARTICLE_TO_SKU','article',product.article,product.article,'warning',article=product.article,source_name=products.meta.source_name,source_row=source_row))
     products=replace(products,records=tuple(joined),diagnostics=products.diagnostics+tuple(join_diags))
+    if source_inputs is not None:
+        merged_products, merge_diagnostics = merge_api_product_economics(
+            products.records, source_inputs.product_facts,
+            tuple(row for row in source_inputs.operational_availability
+                  if getattr(row, "fbs_quantity", None) is not None),
+        )
+        products = replace(products, records=merged_products,
+                           diagnostics=products.diagnostics + merge_diagnostics)
     logger.info("[analysis %s] article_join done %.3fs rows=%d",request_id,perf_counter()-join_started,len(products.records))
     logger.info("[analysis %s] reports done %.3fs",request_id,perf_counter()-reports_started)
     imported=[availability,restrictions,orders,tariffs,products]

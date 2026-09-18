@@ -10,7 +10,10 @@ from backend.ozon.adapters.catalog import fetch_clusters, fetch_seller_warehouse
 from backend.ozon.adapters.inbound import fetch_inbound
 from backend.ozon.adapters.orders import fetch_postings
 from backend.ozon.adapters.placement_zones import fetch_placement_zones
-from backend.ozon.adapters.products import fetch_product_skus
+from backend.ozon.adapters.products import ProductCatalogItem, fetch_product_catalog, fetch_product_skus
+from backend.ozon.adapters.product_facts import (
+    fetch_product_attributes, fetch_product_prices, merge_product_facts,
+)
 from backend.ozon.adapters.stocks import fetch_fbo_stock, fetch_seller_stock
 from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_POSTINGS_PATH
 from backend.ozon.history import history_window, next_backfill, usable_completed_weeks
@@ -26,11 +29,14 @@ SYNC_STAGES = (
     ("clusters", "Кластеры", "Получение каталога кластеров"),
     ("seller_warehouses", "Склады отправления продавца", "Получение складов"),
     ("products", "Каталог SKU", "Получение каталога товаров"),
+    ("product_prices", "Цены и комиссии", "Получение цен и комиссий"),
+    ("product_attributes", "Габариты товаров", "Получение габаритов товаров"),
     ("fbo_stock", "FBO остатки", "Получение остатков FBO"),
     ("seller_stock", "Остаток продавца", "Получение остатков продавца"),
     ("inbound", "Поставки в пути", "Поиск заявок"),
     ("placement_zones", "Зоны размещения", "Получение зон размещения"),
 )
+_DEFAULT_FETCH_PRODUCT_SKUS = fetch_product_skus
 _STAGE_BY_NAME = {
     name: (index, label, detail)
     for index, (name, label, detail) in enumerate(SYNC_STAGES, 1)
@@ -52,6 +58,7 @@ def capability_matrix(snapshot: OzonSourceSnapshot, *, include_inbound: bool = T
         "need_fbo": cap("fbo_stock", "need"),
         "need_inbound": cap("inbound", "need", include_inbound),
         "operational_allocation": cap("seller_stock", "operational_allocation"),
+        "product_parameters": cap(("products", "product_prices", "product_attributes"), "product_economics"),
         "ozon_comparison": {"complete": False, "required": False, "affects": "safe_comparison"},
         "shipment_compatibility": cap("placement_zones", "shipment_compatibility", False),
     }
@@ -106,7 +113,7 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
             record_quality = None
             if name == "clusters":
                 records, item_diagnostics = value.clusters, value.diagnostics
-            elif name in {"orders_fbo", "orders_fbs", "inbound", "fbo_stock", "seller_stock", "placement_zones"}:
+            elif name in {"orders_fbo", "orders_fbs", "inbound", "fbo_stock", "seller_stock", "placement_zones", "product_prices", "product_attributes"}:
                 if len(value) == 3:
                     records, item_diagnostics, record_quality = value
                 else:  # Compatibility for injected legacy adapter doubles.
@@ -181,9 +188,28 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
         for warehouse_id, macrolocal_id in warehouse_to_macrolocal.items()
         if macrolocal_id in cluster_by_id
     }
-    product_skus = run("products", lambda: (
-        call_with_progress(fetch_product_skus, client, stage="products"), ()), ())
+    # The compatibility branch is only for injected legacy adapter doubles.
+    # Production always performs the single identity-preserving catalog request.
+    catalog_fetch = (lambda: tuple(ProductCatalogItem(sku, index, sku) for index, sku in enumerate(fetch_product_skus(client), 1))) if fetch_product_skus is not _DEFAULT_FETCH_PRODUCT_SKUS else (lambda: call_with_progress(fetch_product_catalog, client, stage="products"))
+    catalog = run("products", lambda: (catalog_fetch(), ()), ())
+    product_skus = tuple(item.sku for item in catalog)
     product_evidence = next(item for item in evidence if item.name == "products")
+    if product_evidence.complete:
+        prices = run("product_prices", lambda: call_with_progress(
+            fetch_product_prices, client, catalog, stage="product_prices"), ())
+        attributes = run("product_attributes", lambda: call_with_progress(
+            fetch_product_attributes, client, catalog, stage="product_attributes"), ())
+    else:
+        prices = attributes = ()
+        for name, message in (
+            ("product_prices", "Product prices unavailable without complete product catalog."),
+            ("product_attributes", "Product attributes unavailable without complete product catalog."),
+        ):
+            diagnostic = ImportDiagnostic("error", f"OZON_{name.upper()}_FAILED", message)
+            diagnostics.append(diagnostic)
+            evidence.append(EndpointEvidence(name, datetime.now(timezone.utc).isoformat(), 0, False, (diagnostic,)))
+            progress(name, completed=True)
+    product_facts = merge_product_facts(catalog, prices, attributes)
     if product_evidence.complete:
         fbo = run(
             "fbo_stock",
@@ -234,4 +260,4 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
         uuid4().hex, now.isoformat(), as_of, SOURCE_TIMEZONE, window.history_from,
         window.history_to, orders, availability, seller_stock, clusters,
         seller_warehouses, zones, tuple(evidence), tuple(diagnostics),
-        credential_context_id)
+        credential_context_id, product_facts)
