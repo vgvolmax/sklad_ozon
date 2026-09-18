@@ -144,7 +144,7 @@ def test_ordered_demand_presentation_preserves_partial_unknowns_and_zero():
 
 def test_product_cluster_columns_place_ordered_demand_after_inbound():
     app = (ROOT / 'frontend/assets/js/app.js').read_text()
-    columns = "['Кластер','FBO','В пути',orderedHeading,'Ozon','Потребность'"
+    columns = "['plan-table-identity',identity,'',identity],['col-fbo','FBO','', 'FBO'],['col-inbound','В пути','', 'В пути'],['col-ordered','Заказано',orderedSecondary,orderedHeading]"
     assert columns in app
 
 def test_search_selection_reconciles_against_visible_items():
@@ -214,4 +214,32 @@ def test_cluster_workspace_reuses_existing_ordered_demand_and_status_helpers():
     assert 'function clusterWorkspace(item,snap)' in app
     assert 'S.presentOrderedDemand(row,horizon)' in app
     assert '(sh.reason_codes||[]).map(S.shippableReasonLabel)' in app
-    assert "['Товар','FBO','В пути',orderedHeading,'Ozon','Потребность'" in app
+    assert 'planTableHeaders(\'Товар\',orderedHeading)' in app
+
+
+def test_compact_plan_tables_keep_identity_and_shared_column_grid():
+    app = (ROOT / 'frontend/assets/js/app.js').read_text()
+    css = (ROOT / 'frontend/assets/css/app.css').read_text()
+
+    assert '<strong class="plan-product-article">' in app
+    assert '<span class="plan-product-name" title="${productName}">${productName}</span>' in app
+    assert '<small class="plan-product-sku">SKU ${S.escapeHtml(row.sku)}</small>' in app
+    assert '<td class="plan-table-identity">${S.escapeHtml(row.destination_cluster_id)}</td>' in app
+    for column in ('col-fbo', 'col-inbound', 'col-ordered', 'col-ozon', 'col-need',
+                   'col-plan', 'col-pack', 'col-ship', 'col-volume', 'col-zone', 'col-status'):
+        assert app.count(f'class="{column}') == 2
+        assert column in css
+
+
+def test_compact_plan_table_headers_and_sticky_context_are_presentational():
+    app = (ROOT / 'frontend/assets/js/app.js').read_text()
+    css = (ROOT / 'frontend/assets/css/app.css').read_text()
+
+    assert 'function tableHeader(primary,secondary' in app
+    assert 'function planTableHeaders(identity,orderedHeading)' in app
+    assert 'orderedHeading.replace(/^Заказано,\\s*/' in app
+    assert 'S.presentOrderedDemand(row,horizon)' in app
+    assert '(sh.reason_codes||[]).map(S.shippableReasonLabel)' in app
+    assert '-webkit-line-clamp:3' in css
+    assert '.plan-table thead th{position:sticky' in css
+    assert '.plan-table-identity{position:sticky' in css
