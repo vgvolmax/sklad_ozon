@@ -108,6 +108,7 @@ class OperationalSupplyFact:
     capacity_qty: int | None
     restriction_report_date: date | None
     reason_codes: tuple[str, ...]
+    pack_source: str = "unknown"
 
     def __post_init__(self) -> None:
         _require_nonblank(self.sku, "sku")
@@ -119,6 +120,8 @@ class OperationalSupplyFact:
                 raise ValueError("pack_multiple must be positive")
         RestrictionCapacityEvidence(
             self.restriction_eligibility, self.capacity_kind, self.capacity_qty)
+        if self.pack_source not in {"manual", "import", "unitka", "unknown"}:
+            raise ValueError("pack_source is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +291,7 @@ class ShippableLine:
     placement_zone_kind: PlacementZoneKind
     placement_zones: tuple[str, ...]
     reason_codes: tuple[str, ...]
+    pack_source: str = "unknown"
 
     def __post_init__(self) -> None:
         _require_nonblank(self.sku, "sku")
@@ -296,8 +300,12 @@ class ShippableLine:
         _require_nonblank(self.destination_cluster_id, "destination_cluster_id")
         _require_nonnegative_int(self.analytical_qty, "analytical_qty")
         _require_nonnegative_int(self.resolved_seller_stock, "resolved_seller_stock")
-        for name in ("rounded_target_qty", "rounding_delta_qty", "shippable_qty"):
+        for name in ("rounded_target_qty", "shippable_qty"):
             _optional_nonnegative_int(getattr(self, name), name)
+        if self.rounding_delta_qty is not None and (
+                isinstance(self.rounding_delta_qty, bool)
+                or not isinstance(self.rounding_delta_qty, int)):
+            raise TypeError("rounding_delta_qty must be an int")
         if self.pack_multiple is not None:
             _require_nonnegative_int(self.pack_multiple, "pack_multiple")
             if self.pack_multiple == 0:
@@ -321,7 +329,7 @@ class ShippableLine:
             raise ValueError("positive analytical quantity with missing pack must remain unknown")
         if self.rounded_target_qty is not None:
             expected_delta = self.rounded_target_qty - self.analytical_qty
-            if expected_delta < 0 or self.rounding_delta_qty != expected_delta:
+            if self.rounding_delta_qty != expected_delta:
                 raise ValueError("rounding_delta_qty must equal rounded target minus analytical quantity")
         elif self.rounding_delta_qty is not None:
             raise ValueError("rounding_delta_qty requires rounded_target_qty")
@@ -353,6 +361,8 @@ class ShippableLine:
         if not isinstance(self.reason_codes, tuple) or any(
                 not isinstance(code, str) or not code.strip() for code in self.reason_codes):
             raise TypeError("reason_codes must contain nonblank strings")
+        if self.pack_source not in {"manual", "import", "unitka", "unknown"}:
+            raise ValueError("pack_source is invalid")
 
 
 @dataclass(frozen=True, slots=True)

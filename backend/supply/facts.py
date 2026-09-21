@@ -2,11 +2,11 @@
 
 from collections import Counter
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import date
 
 from backend.domain.contracts import SourceMode
 from backend.ingestion.restrictions import RestrictionRecord, RestrictionState
-from backend.ingestion.supplier_packaging import PackMultiplicityEvidence
 from backend.ozon.source_contracts import PlacementZoneEvidence
 
 from .contracts import (
@@ -17,6 +17,14 @@ from .contracts import (
     RestrictionEligibility,
     SupplyProductIdentity,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _PackEvidence:
+    article: str
+    pack_multiple: int | None
+    source: str
+    reason_codes: tuple[str, ...]
 
 
 def conservative_cluster_capacity(records: Iterable[RestrictionRecord]) -> RestrictionCapacityEvidence:
@@ -48,7 +56,7 @@ def _zone_kind(zones: tuple[str, ...], complete: bool) -> PlacementZoneKind:
 
 def build_operational_supply_facts(
     *, products: Iterable[SupplyProductIdentity], cluster_ids: Iterable[str],
-    pack_evidence: Iterable[PackMultiplicityEvidence], source_mode: SourceMode,
+    pack_evidence: Iterable[object], source_mode: SourceMode,
     placement_zone_evidence: Iterable[PlacementZoneEvidence] = (),
     restrictions: Iterable[RestrictionRecord] = (),
     restriction_report_date: date | None = None,
@@ -62,8 +70,8 @@ def build_operational_supply_facts(
         if previous is None:
             packs[row.article] = row
         elif previous.pack_multiple != row.pack_multiple or previous.reason_codes != row.reason_codes:
-            packs[row.article] = PackMultiplicityEvidence(
-                row.article, None, None, None, ("CONFLICTING_PACK_MULTIPLICITY",))
+            packs[row.article] = _PackEvidence(
+                row.article, None, "unknown", ("CONFLICTING_PACK_MULTIPLICITY",))
     zones_by_sku = {row.sku: row for row in placement_zone_evidence}
     restriction_rows = tuple(restrictions)
     article_counts = Counter(row.article for row in product_rows if row.article)
@@ -109,5 +117,8 @@ def build_operational_supply_facts(
                 capacity_qty=capacity.capacity_qty,
                 restriction_report_date=report_date,
                 reason_codes=tuple(dict.fromkeys(reasons)),
+                pack_source=(getattr(pack, "source", None) or
+                             ("unitka" if pack is not None and pack.pack_multiple is not None
+                              else "unknown")),
             ))
     return tuple(facts)

@@ -7,6 +7,7 @@ import pytest
 import backend.api as api_module
 from backend.ozon.contracts import OzonCredentials
 from backend.ozon.draft_contracts import ValidatedShipmentOption, ValidationState
+from backend.project import PackMultiplicityRecord, Project, save_project_atomic
 from tests.api.test_analysis import CLIENT, _post_analysis
 from tests.api.test_shipment_candidates import _analyze_api_plan
 
@@ -102,6 +103,37 @@ def test_plan_validation_identity_mismatch_does_not_store(monkeypatch):
     assert response.status_code==502
     assert response.json()["error"]["code"]=="VALIDATION_RESULT_IDENTITY_MISMATCH"
     assert len(api_module.SHIPMENT_PLAN_STORE)==0
+
+
+def test_pack_change_during_live_validation_cannot_resurrect_shipment_plan(tmp_path,monkeypatch):
+    path=tmp_path/'project.json'; monkeypatch.setattr(api_module,'PROJECT_PATH',path)
+    save_project_atomic(path,Project(pack_multiplicity={
+        'A-1':PackMultiplicityRecord(20)}))
+    snapshot=_analyze_api_plan(); candidate_id=_candidate(snapshot)
+
+    class PackChangingValidation(FakeValidation):
+        def validate(self,candidates,scenario,**kwargs):
+            result=super().validate(candidates,scenario,**kwargs)
+            with api_module.PROJECT_PERSISTENCE_LOCK:
+                save_project_atomic(path,Project(pack_multiplicity={
+                    'A-1':PackMultiplicityRecord(50)}))
+                api_module.ANALYSIS_STORE.clear()
+                api_module.SHIPMENT_PLAN_STORE.clear()
+            return result
+
+    api_module.SHIPMENT_PLAN_STORE.clear()
+    monkeypatch.setattr(api_module,'DRAFT_VALIDATION_SERVICE',PackChangingValidation())
+
+    response=CLIENT.post('/api/shipment/plan',json=_request(snapshot,candidate_id))
+
+    assert response.status_code==409
+    assert response.json()['error']['code']==(
+        'PACK_MULTIPLICITY_CHANGED_DURING_SHIPMENT_VALIDATION')
+    assert len(api_module.SHIPMENT_PLAN_STORE)==0
+    export=CLIENT.post('/api/shipment/export',json={
+        'shipment_plan_id':'sp_stale','option_id':candidate_id})
+    assert export.status_code==404
+    assert export.json()['error']['code']=='SHIPMENT_PLAN_NOT_FOUND'
 
 
 @pytest.mark.parametrize("mutation,code",[

@@ -23,7 +23,7 @@ from .contracts import (
 from .feasibility import assess_feasibility
 from .optimizer import optimize_allocations
 from .placement import compare_placements
-from .shippable_plan import build_shippable_plan, round_up_to_pack
+from .shippable_plan import build_shippable_plan, nearest_pack_target, round_up_to_pack
 from backend.domain.contracts import RestrictionCapacityKind
 
 __all__ = (
@@ -43,5 +43,5 @@ __all__ = (
     "assess_feasibility",
     "compare_placements",
     "optimize_allocations",
-    "build_shippable_plan", "round_up_to_pack",
+    "build_shippable_plan", "nearest_pack_target", "round_up_to_pack",
 )

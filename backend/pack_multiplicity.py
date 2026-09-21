@@ -1,5 +1,7 @@
 """Persistent article-level pack multiplicity master data."""
 
+import hashlib
+import json
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -27,6 +29,15 @@ class PackImportDiagnostic:
     article: str | None
     code: str
     message: str
+
+
+@dataclass(frozen=True, slots=True)
+class EffectivePackEvidence:
+    """One immutable effective pack value used by an analysis run."""
+    article: str
+    pack_multiple: int | None
+    source: str
+    reason_codes: tuple[str, ...]
 
 
 def validate_pack_multiple(value: object, *, excel: bool = False) -> int:
@@ -75,6 +86,57 @@ def sync_unitka_baseline(project: Project, evidence) -> Project:
         old = records.get(item.article, PackMultiplicityRecord())
         records[item.article] = replace(old, unitka_pack_multiple=item.pack_multiple)
     return replace(project, pack_multiplicity=records)
+
+
+def pack_multiplicity_fingerprint(project: Project) -> str:
+    """Return a deterministic revision for pack master data only."""
+    payload = [
+        {
+            "article": article,
+            "unitka_pack_multiple": record.unitka_pack_multiple,
+            "override_pack_multiple": record.override_pack_multiple,
+            "override_origin": record.override_origin,
+            "override_updated_at": record.override_updated_at,
+        }
+        for article, record in sorted(project.pack_multiplicity.items())
+    ]
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def build_effective_pack_evidence(project: Project, current_unitka_evidence) -> tuple[EffectivePackEvidence, ...]:
+    """Resolve override > current Unitka > persisted Unitka > unknown.
+
+    Current invalid/conflicting Unitka evidence remains causal evidence.  A valid
+    persisted override masks that error for operational planning.
+    """
+    current = {item.article: item for item in current_unitka_evidence}
+    articles = sorted(set(project.pack_multiplicity) | set(current))
+    result = []
+    for article in articles:
+        record = project.pack_multiplicity.get(article)
+        resolved = resolve_pack_multiplicity(record)
+        observed = current.get(article)
+        if resolved.source in {"manual", "import"}:
+            result.append(EffectivePackEvidence(
+                article, resolved.pack_multiple, resolved.source, ()))
+        elif observed is not None:
+            if observed.pack_multiple is not None:
+                result.append(EffectivePackEvidence(
+                    article, observed.pack_multiple, "unitka", ()))
+            else:
+                result.append(EffectivePackEvidence(
+                    article, None, "unknown",
+                    observed.reason_codes or ("MISSING_PACK_MULTIPLICITY",)))
+        elif resolved.pack_multiple is not None:
+            result.append(EffectivePackEvidence(
+                article, resolved.pack_multiple, "unitka", ()))
+        else:
+            result.append(EffectivePackEvidence(
+                article, None, "unknown", ("MISSING_PACK_MULTIPLICITY",)))
+    return tuple(result)
 
 
 def parse_import_xlsx(data: bytes) -> tuple[dict[str, int], tuple[PackImportDiagnostic, ...]]:
