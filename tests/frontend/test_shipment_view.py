@@ -39,6 +39,57 @@ def test_readiness_and_plan_freshness_follow_source_provenance():
     result=node(expression)
     assert result['ready']['ready'] is True and result['current'] is True
     assert result['afterSync']['ready'] is False
+
+
+def test_working_plan_saving_blocks_shipment_until_mutation_finishes():
+    expression = """(()=>{let s=SkladOzon.createInitialState(),snap={snapshot_id:'A1',source_mode:'api',source_snapshot_id:'S1',shippable_plan:{shippable_plan_id:'SP1'}};s={...s,snapshot:snap,source:{...s.source,snapshotId:'S1',source:{source_snapshot_id:'S1',credential_context_id:'C1'}},workingPlan:{...s.workingPlan,mutationBusy:true,plan:{working_plan_id:'WP1',analysis_snapshot_id:'A1',shippable_plan_id:'SP1'}},ozonConnection:{...s.ozonConnection,locked:false,credentialContextId:'C1'}};const saving=SkladOzon.shipmentReadiness(s);return {saving,afterSuccess:SkladOzon.shipmentReadiness({...s,workingPlan:{...s.workingPlan,mutationBusy:false}}),afterFailure:SkladOzon.shipmentReadiness({...s,workingPlan:{...s.workingPlan,mutationBusy:false,error:'Не удалось сохранить'}})};})()"""
+    result = node(expression)
+    assert result["saving"] == {
+        "ready": False,
+        "code": "WORKING_PLAN_SAVING",
+        "message": "Сохраняем изменения рабочего плана.",
+    }
+    assert result["afterSuccess"] == {"ready": True, "code": "READY", "message": ""}
+    assert result["afterFailure"] == {"ready": True, "code": "READY", "message": ""}
+
+
+def test_run_shipment_rechecks_readiness_before_identity_or_api_request():
+    app = (ROOT / 'frontend/assets/js/app.js').read_text()
+    run = app[app.index('async function runShipment'):app.index('async function exportShipmentOption')]
+    readiness = run.index('S.shipmentReadiness(state)')
+    early_return = run.index('return;', readiness)
+    identity = run.index('identity=')
+    request = run.index("apiFetch('/api/shipment/candidates'")
+    assert readiness < early_return < identity < request
+    assert 'error:readiness.message' in run
+
+    script = f"""
+const fs=require('fs'),vm=require('vm');
+require({json.dumps(str(ROOT/'frontend/assets/js/core.js'))});
+const requests=[];
+globalThis.fetch=(path,options)=>{{requests.push({{path,options}});return Promise.reject(new Error('unexpected request'));}};
+globalThis.document={{querySelector:()=>null,querySelectorAll:()=>[]}};
+let source=fs.readFileSync({json.dumps(str(ROOT/'frontend/assets/js/app.js'))},'utf8');
+source=source.replace("if(root.document)document.addEventListener('DOMContentLoaded',S.boot);", "S.__shipmentTest={{runShipment,setState(value){{state=value;S.AppState=value;}},getState(){{return state;}}}};");
+vm.runInThisContext(source);
+let state=SkladOzon.createInitialState();
+const snapshot={{snapshot_id:'A1',source_mode:'api',source_snapshot_id:'S1',shippable_plan:{{shippable_plan_id:'SP1'}}}};
+state={{...state,snapshot,source:{{...state.source,snapshotId:'S1',source:{{source_snapshot_id:'S1',credential_context_id:'C1'}}}},ozonConnection:{{...state.ozonConnection,locked:false,credentialContextId:'C1'}},workingPlan:{{...state.workingPlan,mutationBusy:true,plan:{{working_plan_id:'WP1',analysis_snapshot_id:'A1',shippable_plan_id:'SP1'}}}}}};
+SkladOzon.__shipmentTest.setState(state);
+SkladOzon.__shipmentTest.runShipment(true,{{kind:'not-required'}}).then(()=>console.log(JSON.stringify({{requests:requests.length,error:SkladOzon.__shipmentTest.getState().shipmentView.error}})));
+"""
+    result = json.loads(subprocess.check_output(['node', '-e', script], text=True))
+    assert result == {"requests": 0, "error": "Сохраняем изменения рабочего плана."}
+
+
+def test_new_analysis_resets_scope_before_working_plan_reconciliation():
+    app = (ROOT / 'frontend/assets/js/app.js').read_text()
+    analysis_start = app.index('async function runAnalysis')
+    analysis = app[analysis_start:app.index('async function ', analysis_start + 1)]
+    assert 'shipmentView:{...state.shipmentView,selectedClusters:[],scopeTouched:false' in analysis
+
+    reconciled = node("SkladOzon.reconcileShipmentClusters({...SkladOzon.createInitialState().shipmentView,scopeTouched:false,selectedClusters:[]},{lines:[{destination_cluster_id:'A',working_qty:1,status:'READY'},{destination_cluster_id:'C',working_qty:2,status:'ATTENTION'}]}).selectedClusters")
+    assert reconciled == ['A', 'C']
 def test_main_flow_is_candidates_then_plan_without_frontend_trimming_or_validate():
     app=(ROOT/'frontend/assets/js/app.js').read_text()
     assert app.index("apiFetch('/api/shipment/candidates'") < app.index("apiFetch('/api/shipment/plan'")

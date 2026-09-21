@@ -32,6 +32,16 @@ def test_plan_not_found_invalidates_current_shipment_plan():
     assert result["accepted"] is False
 
 
+def test_stale_working_plan_invalidates_current_shipment_plan():
+    result = apply_failure("'SHIPMENT_PLAN_STALE'")
+    assert result["view"]["plan"]["shipment_plan_id"] == "SHIP1"
+    assert result["view"]["dirty"] is True
+    assert result["view"]["planInvalidationCode"] == "SHIPMENT_PLAN_STALE"
+    assert result["view"]["exportErrors"] == {}
+    assert result["current"] is False
+    assert result["accepted"] is False
+
+
 def test_transient_export_failure_remains_retryable():
     result = apply_failure(message="Соединение прервано.")
     assert result["view"]["dirty"] is False
@@ -87,9 +97,10 @@ def test_invalidation_preserves_in_flight_validation_identity():
 
 def test_stale_message_is_causal():
     result = node(
-        "(()=>{const s=SkladOzon.createInitialState();return {terminal:SkladOzon.shipmentPlanStaleMessage({...s,shipmentView:{...s.shipmentView,planInvalidationCode:'SHIPMENT_PLAN_NOT_FOUND'}}),generic:SkladOzon.shipmentPlanStaleMessage({...s,shipmentView:{...s.shipmentView,dirty:true}})};})()"
+        "(()=>{const s=SkladOzon.createInitialState();return {terminal:SkladOzon.shipmentPlanStaleMessage({...s,shipmentView:{...s.shipmentView,planInvalidationCode:'SHIPMENT_PLAN_NOT_FOUND'}}),workingPlan:SkladOzon.shipmentPlanStaleMessage({...s,shipmentView:{...s.shipmentView,planInvalidationCode:'SHIPMENT_PLAN_STALE'}}),generic:SkladOzon.shipmentPlanStaleMessage({...s,shipmentView:{...s.shipmentView,dirty:true}})};})()"
     )
     assert result["terminal"] == "Результат проверки больше недоступен. Проверьте варианты в Ozon заново."
+    assert result["workingPlan"] == "Рабочий план изменился. Проверьте варианты в Ozon заново."
     assert result["generic"] == "Параметры или данные изменились. Проверьте варианты в Ozon заново."
 
 
