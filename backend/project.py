@@ -10,8 +10,8 @@ from datetime import date
 
 from backend.domain.contracts import ProductEconomicsInput, ReportMeta, TariffRow
 
-SCHEMA_VERSION = 2
-_TOP_FIELDS = {"schema_version", "tariffs", "tariff_meta", "product_economics", "product_economics_meta", "seller_available_stock", "manual_cluster_mappings", "economics_settings", "optimizer_thresholds", "operational_snapshots", "pack_multiplicity"}
+SCHEMA_VERSION = 3
+_TOP_FIELDS = {"schema_version", "tariffs", "tariff_meta", "product_economics", "product_economics_meta", "seller_available_stock", "manual_cluster_mappings", "economics_settings", "optimizer_thresholds", "operational_snapshots", "pack_multiplicity", "working_quantity_overrides"}
 _FORBIDDEN = {"buyer_name", "customer_name", "address", "phone", "email", "inn", "kpp", "raw_row", "raw_report", "raw_bytes", "raw_csv", "raw_xlsx", "base64_report", "payment_data"}
 _SNAPSHOT_FIELDS = {
     "availability": {"sku", "warehouse", "cluster", "available_quantity"},
@@ -57,6 +57,15 @@ class PackMultiplicityRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkingQuantityOverride:
+    quantity: int
+    base_shippable_plan_id: str
+    base_system_qty: int | None
+    base_pack_multiple: int | None
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class Project:
     schema_version: int = field(default=SCHEMA_VERSION, init=False)
     tariffs: tuple[TariffRow, ...] = ()
@@ -69,6 +78,7 @@ class Project:
     optimizer_thresholds: OptimizerThresholds | None = None
     operational_snapshots: tuple[OperationalSnapshot, ...] = ()
     pack_multiplicity: dict[str, PackMultiplicityRecord] = field(default_factory=dict)
+    working_quantity_overrides: dict[str, dict[str, WorkingQuantityOverride]] = field(default_factory=dict)
 
 
 def _decimal(value: object) -> Decimal:
@@ -147,6 +157,21 @@ def _validate(project: Project):
             if record.override_origin is not None or record.override_updated_at is not None: raise ProjectValidationError("Override metadata requires a value.")
         elif record.override_origin not in {"manual", "import"} or not isinstance(record.override_updated_at, str) or not record.override_updated_at:
             raise ProjectValidationError("Invalid pack multiplicity override metadata.")
+    for sku, clusters in project.working_quantity_overrides.items():
+        if not isinstance(sku, str) or not sku or not isinstance(clusters, dict) or not clusters:
+            raise ProjectValidationError("Invalid working quantity override identity.")
+        for cluster, record in clusters.items():
+            if not isinstance(cluster, str) or not cluster or type(record) is not WorkingQuantityOverride:
+                raise ProjectValidationError("Invalid working quantity override record.")
+            if isinstance(record.quantity, bool) or not isinstance(record.quantity, int) or record.quantity < 0:
+                raise ProjectValidationError("Working quantity must be a nonnegative integer.")
+            if not isinstance(record.base_shippable_plan_id, str) or not record.base_shippable_plan_id:
+                raise ProjectValidationError("Working override requires its base plan.")
+            for value in (record.base_system_qty, record.base_pack_multiple):
+                if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                    raise ProjectValidationError("Invalid working override base quantity.")
+            if record.base_pack_multiple == 0 or not isinstance(record.updated_at, str) or not record.updated_at:
+                raise ProjectValidationError("Invalid working override metadata.")
 
 
 def _to_payload(project: Project):
@@ -163,6 +188,7 @@ def _to_payload(project: Project):
         "optimizer_thresholds": None if project.optimizer_thresholds is None else {name: _decimal_json(getattr(project.optimizer_thresholds, name)) for name in OptimizerThresholds.__slots__},
         "operational_snapshots": [{"kind": s.kind, "report_date": s.report_date, "period_start": s.period_start, "period_end": s.period_end, "records": list(s.records)} for s in project.operational_snapshots],
         "pack_multiplicity": {article: {name: getattr(record, name) for name in PackMultiplicityRecord.__slots__} for article, record in sorted(project.pack_multiplicity.items())},
+        "working_quantity_overrides": {sku: {cluster: {name: getattr(record, name) for name in WorkingQuantityOverride.__slots__} for cluster, record in sorted(clusters.items())} for sku, clusters in sorted(project.working_quantity_overrides.items())},
     }
     _reject_forbidden_keys(payload)
     return payload
@@ -211,8 +237,12 @@ def load_project(path: Path) -> Project:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc: raise ProjectValidationError("Project is not valid UTF-8 JSON.") from exc
     _reject_forbidden_keys(payload)
     if isinstance(payload, dict) and payload.get("schema_version") == 1:
-        _strict(payload, _TOP_FIELDS - {"pack_multiplicity"}, "project")
-        payload = {**payload, "schema_version": SCHEMA_VERSION, "pack_multiplicity": {}}
+        payload = dict(payload); payload.pop("working_quantity_overrides", None)
+        _strict(payload, _TOP_FIELDS - {"pack_multiplicity", "working_quantity_overrides"}, "project")
+        payload = {**payload, "schema_version": SCHEMA_VERSION, "pack_multiplicity": {}, "working_quantity_overrides": {}}
+    elif isinstance(payload, dict) and payload.get("schema_version") == 2:
+        _strict(payload, _TOP_FIELDS - {"working_quantity_overrides"}, "project")
+        payload = {**payload, "schema_version": SCHEMA_VERSION, "working_quantity_overrides": {}}
     _strict(payload, _TOP_FIELDS, "project")
     if type(payload.get("schema_version")) is not int or payload["schema_version"] != SCHEMA_VERSION: raise ProjectValidationError("Missing or unsupported schema version.")
     if not isinstance(payload["tariffs"], list) or not isinstance(payload["product_economics"], list) or not isinstance(payload["operational_snapshots"], list): raise ProjectValidationError("Project collections must be lists.")
@@ -242,7 +272,15 @@ def load_project(path: Path) -> Project:
     for article, raw in payload["pack_multiplicity"].items():
         _strict(raw, PackMultiplicityRecord.__slots__, "pack multiplicity")
         packs[article] = PackMultiplicityRecord(**raw)
-    project = Project(tuple(tariffs), _meta(payload["tariff_meta"]), tuple(products), _meta(payload["product_economics_meta"]), payload["seller_available_stock"], payload["manual_cluster_mappings"], econ, thresholds, tuple(snapshots), packs)
+    if not isinstance(payload["working_quantity_overrides"], dict): raise ProjectValidationError("Working quantity overrides must be an object.")
+    overrides = {}
+    for sku, clusters in payload["working_quantity_overrides"].items():
+        if not isinstance(clusters, dict): raise ProjectValidationError("Working quantity SKU entry must be an object.")
+        overrides[sku] = {}
+        for cluster, raw in clusters.items():
+            _strict(raw, WorkingQuantityOverride.__slots__, "working quantity override")
+            overrides[sku][cluster] = WorkingQuantityOverride(**raw)
+    project = Project(tuple(tariffs), _meta(payload["tariff_meta"]), tuple(products), _meta(payload["product_economics_meta"]), payload["seller_available_stock"], payload["manual_cluster_mappings"], econ, thresholds, tuple(snapshots), packs, overrides)
     _validate(project); return project
 
 
