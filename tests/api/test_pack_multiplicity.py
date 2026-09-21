@@ -135,8 +135,12 @@ def _shipment_commit_context():
 
 
 def _configure_shipment_commit(monkeypatch, snapshot):
+    if snapshot is not None and snapshot.shippable_plan is not None:
+        snapshot.shippable_plan.lines=()
     monkeypatch.setattr(api.OZON_VAULT,'is_context_active',lambda context:True)
     monkeypatch.setattr(api.ANALYSIS_STORE,'get',lambda snapshot_id:snapshot)
+    monkeypatch.setattr(api.ANALYSIS_STORE,'latest',
+                        lambda:SimpleNamespace(snapshot_id='A1'))
 
 
 def test_stale_shipment_commit_rejects_changed_pack_before_store_write(tmp_path,monkeypatch):

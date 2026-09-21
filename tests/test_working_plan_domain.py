@@ -43,6 +43,13 @@ def test_override_is_separate_and_changed_recommendation_survives():
     assert 'RECOMMENDATION_CHANGED' in row.reason_codes
 
 
+def test_persisted_override_counts_separately_when_it_matches_recommendation():
+    current = materialize_working_plan(
+        plan(line(system=80, stock=120)), {'SKU': {'Moscow': override(80)}})
+    assert current.overridden_count == 1
+    assert current.active_override_count == 0
+
+
 def test_pack_change_blocks_old_override_without_rounding_it():
     result = materialize_working_plan(plan(line(system=100, pack=50, stock=200)),
                                       {'SKU': {'Moscow': override(80)}})
