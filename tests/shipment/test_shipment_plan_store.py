@@ -2,7 +2,7 @@ from datetime import date
 from backend.shipment.contracts import ShipmentPlan
 from backend.shipment.store import ShipmentPlanStore
 
-def plan(identity): return ShipmentPlan(identity,None,"a","p",date(2026,9,10),"ss_x",(),(),())
+def plan(identity): return ShipmentPlan(identity,None,"a","p","wp",date(2026,9,10),"ss_x",(),(),())
 
 def test_store_is_bounded_and_clearable():
     store=ShipmentPlanStore(2)

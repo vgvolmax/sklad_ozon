@@ -9,7 +9,7 @@ from backend.ozon.contracts import OzonCredentials
 from backend.ozon.draft_contracts import ValidatedShipmentOption, ValidationState
 from backend.project import PackMultiplicityRecord, Project, save_project_atomic
 from tests.api.test_analysis import CLIENT, _post_analysis
-from tests.api.test_shipment_candidates import _analyze_api_plan
+from tests.api.test_shipment_candidates import _analyze_api_plan, working_id
 
 
 def _scenario():
@@ -33,6 +33,7 @@ class FakeValidation:
 def _request(snapshot, candidate_id):
     return {"analysis_snapshot_id":snapshot["snapshot_id"],
             "shippable_plan_id":snapshot["shippable_plan"]["shippable_plan_id"],
+        "working_plan_id":snapshot.get("working_plan_id") or working_id(snapshot),
             "scenario":_scenario(),"candidate_ids":[candidate_id]}
 
 
@@ -40,6 +41,7 @@ def _candidate(snapshot):
     response=CLIENT.post("/api/shipment/candidates",json={
         "analysis_snapshot_id":snapshot["snapshot_id"],
         "shippable_plan_id":snapshot["shippable_plan"]["shippable_plan_id"],
+        "working_plan_id":snapshot.get("working_plan_id") or working_id(snapshot),
         "scenario":_scenario()})
     return response.json()["candidates"][0]["candidate_id"]
 

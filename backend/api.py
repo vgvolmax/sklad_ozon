@@ -41,8 +41,7 @@ from backend.ingestion.api_product_economics import merge_api_product_economics
 from backend.project import (EconomicsSettings, OptimizerThresholds, Project,
                              ProjectValidationError, WorkingQuantityOverride, load_project_if_exists,
                              save_project_atomic)
-from backend.working_plan import (has_active_overrides, materialize_working_plan,
-                                  validate_override_quantity)
+from backend.working_plan import materialize_working_plan, validate_override_quantity
 from backend.pack_multiplicity import (build_effective_pack_evidence, export_xlsx, parse_import_xlsx,
                                        pack_multiplicity_fingerprint,
                                        reset_override,
@@ -58,7 +57,8 @@ from backend.ozon.handoff import HandoffPointStore, handoff_supply_types, search
 from backend.ozon.source_store import OzonSourceSnapshotStore
 from backend.ozon.sync import capability_matrix, sync_ozon_source
 from backend.ozon.draft_validation import DraftValidationService
-from backend.shipment import DEFAULT_MAX_CANDIDATES, build_candidate_result
+from backend.shipment import (DEFAULT_MAX_CANDIDATES, build_candidate_result,
+                              build_shipment_input, WorkingPlanIdentityError)
 from backend.shipment.store import AnalysisSnapshotStore, ShipmentPlanStore
 from backend.shipment.contracts import ShipmentPlan
 from backend.shipment.orchestration import build_shipment_plan, ShipmentOrchestrationError
@@ -161,6 +161,9 @@ SHIPMENT_INPUT_CHANGED_MESSAGE = (
     'Данные плана изменились во время проверки поставки. '
     'Проверьте варианты в Ozon повторно.'
 )
+WORKING_PLAN_CHANGED_MESSAGE = (
+    'Рабочий план изменился. Проверьте варианты поставки повторно.'
+)
 
 def _require_current_shippable_plan(analysis_snapshot_id, shippable_plan_id):
     snapshot=ANALYSIS_STORE.get(analysis_snapshot_id)
@@ -174,29 +177,36 @@ def _require_current_shippable_plan(analysis_snapshot_id, shippable_plan_id):
     return snapshot
 
 def capture_shipment_pack_fingerprint_if_current(
-        *, expected_analysis_snapshot_id, expected_shippable_plan_id):
+        *, expected_analysis_snapshot_id, expected_shippable_plan_id,
+        expected_working_plan_id):
     """Capture pack master-data only while the prepared plan is authoritative."""
     with PROJECT_PERSISTENCE_LOCK:
         current=load_project_if_exists(PROJECT_PATH)
-        snapshot=_require_current_shippable_plan(
-            expected_analysis_snapshot_id,expected_shippable_plan_id)
-        require_legacy_shipment_without_active_overrides(
-            snapshot.shippable_plan,current)
+        snapshot,_,_=require_current_working_plan(
+            analysis_snapshot_id=expected_analysis_snapshot_id,
+            shippable_plan_id=expected_shippable_plan_id,
+            working_plan_id=expected_working_plan_id)
         return pack_multiplicity_fingerprint(current)
 
-def require_shipment_working_state_current(
-        *, expected_analysis_snapshot_id, expected_shippable_plan_id):
-    """Recheck Working Plan state after live validation under its persistence lock."""
+def require_current_working_plan(*, analysis_snapshot_id, shippable_plan_id,
+                                 working_plan_id):
+    """Materialize and require the exact current execution identity."""
     with PROJECT_PERSISTENCE_LOCK:
-        current=load_project_if_exists(PROJECT_PATH)
         snapshot=_require_current_shippable_plan(
-            expected_analysis_snapshot_id,expected_shippable_plan_id)
-        require_legacy_shipment_without_active_overrides(
-            snapshot.shippable_plan,current)
+            analysis_snapshot_id,shippable_plan_id)
+        project=load_project_if_exists(PROJECT_PATH)
+        working=materialize_working_plan(
+            snapshot.shippable_plan,project.working_quantity_overrides)
+        if working.working_plan_id!=working_plan_id:
+            raise ShipmentPreparationError(
+                'WORKING_PLAN_CHANGED',WORKING_PLAN_CHANGED_MESSAGE,
+                'working_plan_id',409)
+        return snapshot,snapshot.shippable_plan,working
 
 def commit_shipment_plan_if_current(
         shipment: ShipmentPlan, *, expected_analysis_snapshot_id: str,
         expected_shippable_plan_id: str, expected_pack_fingerprint: str,
+        expected_working_plan_id: str,
         credential_context: OzonCredentialContext):
     """Atomically reject stale live validation before persisting its plan."""
     with OZON_CONTEXT_COMMIT_LOCK:
@@ -211,10 +221,10 @@ def commit_shipment_plan_if_current(
                     'PACK_MULTIPLICITY_CHANGED_DURING_SHIPMENT_VALIDATION',
                     PACK_MULTIPLICITY_CHANGED_DURING_SHIPMENT_VALIDATION_MESSAGE,
                     'analysis_snapshot_id',409)
-            snapshot=_require_current_shippable_plan(
-                expected_analysis_snapshot_id,expected_shippable_plan_id)
-            require_legacy_shipment_without_active_overrides(
-                snapshot.shippable_plan,current)
+            require_current_working_plan(
+                analysis_snapshot_id=expected_analysis_snapshot_id,
+                shippable_plan_id=expected_shippable_plan_id,
+                working_plan_id=expected_working_plan_id)
             return SHIPMENT_PLAN_STORE.put(shipment)
 
 def commit_analysis_snapshot_if_current(
@@ -290,13 +300,6 @@ def require_working_base_current(analysis_id, plan_id):
             'План уже пересчитан. Повторите изменение на актуальных данных.',
             'analysis_snapshot_id',409)
     return snapshot.shippable_plan
-
-def require_legacy_shipment_without_active_overrides(plan, project):
-    if has_active_overrides(plan,project.working_quantity_overrides):
-        raise ShipmentPreparationError(
-            'WORKING_PLAN_REQUIRED',
-            'Есть ручные изменения количества. Для создания поставки требуется рабочий план поставки.',
-            'shippable_plan_id',409)
 
 def _working_response(plan, project):
     return {'api_version':1,'working_plan':wire(materialize_working_plan(
@@ -612,27 +615,27 @@ def ozon_source_status(source_snapshot_id:str):
 async def shipment_candidates(request:Request):
     body=await json_object(request)
     if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
-    supported_fields={'analysis_snapshot_id','shippable_plan_id','scenario'}
+    supported_fields={'analysis_snapshot_id','shippable_plan_id','working_plan_id','scenario'}
     unsupported_fields=set(body)-supported_fields
     if unsupported_fields:
         field=sorted(unsupported_fields)[0]
         return error(400,'UNSUPPORTED_FIELD','Request field is not supported.',field)
     analysis_id=body.get('analysis_snapshot_id')
     plan_id=body.get('shippable_plan_id')
+    working_id=body.get('working_plan_id')
     if not isinstance(analysis_id,str) or not analysis_id.strip():
         return error(400,'ANALYSIS_SNAPSHOT_ID_REQUIRED','Analysis identity is required.','analysis_snapshot_id')
     if not isinstance(plan_id,str) or not plan_id.strip():
         return error(400,'SHIPPABLE_PLAN_ID_REQUIRED','Shippable Plan identity is required.','shippable_plan_id')
-    snapshot=ANALYSIS_STORE.get(analysis_id)
-    if snapshot is None:
-        return error(404,'ANALYSIS_SNAPSHOT_NOT_FOUND','Analysis snapshot was not found.','analysis_snapshot_id')
-    plan=snapshot.shippable_plan
-    if plan is None or plan.shippable_plan_id != plan_id or plan.analysis_snapshot_id != analysis_id:
-        return error(409,'SHIPPABLE_PLAN_IDENTITY_MISMATCH','Shippable Plan does not belong to this analysis.','shippable_plan_id')
-    with PROJECT_PERSISTENCE_LOCK:
-        project=load_project_if_exists(PROJECT_PATH)
-    try:require_legacy_shipment_without_active_overrides(plan,project)
+    if not isinstance(working_id,str) or not working_id.strip():
+        return error(400,'WORKING_PLAN_ID_REQUIRED','Working Plan identity is required.','working_plan_id')
+    try:snapshot,plan,working=require_current_working_plan(
+        analysis_snapshot_id=analysis_id,shippable_plan_id=plan_id,
+        working_plan_id=working_id)
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
+    try:shipment_input=build_shipment_input(plan,working)
+    except WorkingPlanIdentityError:return error(409,'WORKING_PLAN_IDENTITY_MISMATCH',
+        'Working Plan identities do not match the Shippable Plan.','working_plan_id')
     try:
         scenario=parse_shipment_scenario(body.get('scenario'))
     except ValueError:
@@ -644,11 +647,16 @@ async def shipment_candidates(request:Request):
         if source.source_as_of != plan.analysis_as_of:
             return error(409,'SOURCE_PROVENANCE_MISMATCH','Analysis and source provenance do not match.','analysis_snapshot_id')
         seller_warehouses=source.seller_warehouses
-    result=build_candidate_result(plan=plan,scenario=scenario,
+    result=build_candidate_result(shipment_input=shipment_input,scenario=scenario,
         seller_warehouses=seller_warehouses,handoff_store=HANDOFF_STORE,
         max_candidates=DEFAULT_MAX_CANDIDATES)
+    if any(item.code=='WORKING_PLAN_SCOPE_BLOCKED' for item in result.diagnostics):
+        return error(409,'WORKING_PLAN_SCOPE_BLOCKED',
+            'В выбранных кластерах есть позиции, которые требуют исправления перед поставкой.',
+            'scenario.selected_cluster_ids')
     return {'api_version':1,'analysis_snapshot_id':analysis_id,
-            'shippable_plan_id':plan_id,'candidates':wire(result.candidates),
+            'shippable_plan_id':plan_id,'working_plan_id':working_id,
+            'candidates':wire(result.candidates),
             'diagnostics':wire(result.diagnostics)}
 
 @router.post('/api/shipment/validate')
@@ -656,26 +664,28 @@ async def shipment_validate(request:Request):
     """Validate reconstructed backend candidates; client rows are never authoritative."""
     body=await json_object(request)
     if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
-    supported={'analysis_snapshot_id','shippable_plan_id','scenario','candidate_ids'}
+    supported={'analysis_snapshot_id','shippable_plan_id','working_plan_id','scenario','candidate_ids'}
     extra=set(body)-supported
     if extra:return error(400,'UNSUPPORTED_FIELD','Request field is not supported.',sorted(extra)[0])
-    analysis_id=body.get('analysis_snapshot_id'); plan_id=body.get('shippable_plan_id')
+    analysis_id=body.get('analysis_snapshot_id'); plan_id=body.get('shippable_plan_id'); working_id=body.get('working_plan_id')
     candidate_ids=body.get('candidate_ids')
     if not isinstance(analysis_id,str) or not analysis_id.strip():
         return error(400,'ANALYSIS_SNAPSHOT_ID_REQUIRED','Analysis identity is required.','analysis_snapshot_id')
     if not isinstance(plan_id,str) or not plan_id.strip():
         return error(400,'SHIPPABLE_PLAN_ID_REQUIRED','Shippable Plan identity is required.','shippable_plan_id')
+    if not isinstance(working_id,str) or not working_id.strip():
+        return error(400,'WORKING_PLAN_ID_REQUIRED','Working Plan identity is required.','working_plan_id')
     if not isinstance(candidate_ids,list) or not candidate_ids or any(not isinstance(x,str) or not x.strip() for x in candidate_ids) or len(candidate_ids)!=len(set(candidate_ids)):
         return error(400,'INVALID_CANDIDATE_IDS','Candidate identities must be a nonempty unique list.','candidate_ids')
+    try:_,_,working=require_current_working_plan(
+        analysis_snapshot_id=analysis_id,shippable_plan_id=plan_id,
+        working_plan_id=working_id)
+    except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     expected_context=OZON_VAULT.credential_context_id()
     try: prepared=prepare_shipment_validation(analysis_store=ANALYSIS_STORE,
         source_store=OZON_SOURCE_STORE,handoff_store=HANDOFF_STORE,
-        analysis_id=analysis_id,plan_id=plan_id,scenario_payload=body.get('scenario'),
+        analysis_id=analysis_id,plan_id=plan_id,working_plan=working,scenario_payload=body.get('scenario'),
         candidate_ids=candidate_ids,expected_credential_context_id=expected_context)
-    except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
-    try:require_shipment_working_state_current(
-        expected_analysis_snapshot_id=analysis_id,
-        expected_shippable_plan_id=plan_id)
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     try:
         context=OZON_VAULT.capture_context()
@@ -683,18 +693,18 @@ async def shipment_validate(request:Request):
     except OzonVaultError:return error(423,'OZON_VAULT_LOCKED','Unlock the Ozon credential vault first.',None)
     source_id=prepared.snapshot.source_snapshot_id
     try:options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,prepared.candidates,prepared.scenario,
-                                    provenance=f'{context.context_id}:{analysis_id}:{plan_id}:{source_id}',
+                                    provenance=f'{context.context_id}:{analysis_id}:{plan_id}:{working_id}:{source_id}',
                                     source_clusters=prepared.source_snapshot.clusters,
                                     client=OZON_CLIENT.bind_context(context))
     except OzonClientError as exc:
         if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error('analysis_snapshot_id')
         raise
     def commit_validation_result():
-        require_shipment_working_state_current(
-            expected_analysis_snapshot_id=analysis_id,
-            expected_shippable_plan_id=plan_id)
+        require_current_working_plan(analysis_snapshot_id=analysis_id,
+            shippable_plan_id=plan_id,working_plan_id=working_id)
         return {'api_version':1,'analysis_snapshot_id':analysis_id,
-                'shippable_plan_id':plan_id,'options':wire(options)}
+                'shippable_plan_id':plan_id,'working_plan_id':working_id,
+                'options':wire(options)}
     try:return commit_active_credential_context(
         context,commit_validation_result,field='analysis_snapshot_id')
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
@@ -703,40 +713,47 @@ async def shipment_validate(request:Request):
 async def shipment_plan(request:Request):
     body=await json_object(request)
     if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
-    supported={'analysis_snapshot_id','shippable_plan_id','scenario','candidate_ids'}
+    supported={'analysis_snapshot_id','shippable_plan_id','working_plan_id','scenario','candidate_ids'}
     extra=set(body)-supported
     if extra:return error(400,'UNSUPPORTED_FIELD','Request field is not supported.',sorted(extra)[0])
-    analysis_id=body.get('analysis_snapshot_id');plan_id=body.get('shippable_plan_id');ids=body.get('candidate_ids')
+    analysis_id=body.get('analysis_snapshot_id');plan_id=body.get('shippable_plan_id');working_id=body.get('working_plan_id');ids=body.get('candidate_ids')
     if not isinstance(analysis_id,str) or not analysis_id.strip():return error(400,'ANALYSIS_SNAPSHOT_ID_REQUIRED','Analysis identity is required.','analysis_snapshot_id')
     if not isinstance(plan_id,str) or not plan_id.strip():return error(400,'SHIPPABLE_PLAN_ID_REQUIRED','Shippable Plan identity is required.','shippable_plan_id')
+    if not isinstance(working_id,str) or not working_id.strip():return error(400,'WORKING_PLAN_ID_REQUIRED','Working Plan identity is required.','working_plan_id')
     if not isinstance(ids,list) or not ids or any(not isinstance(x,str) or not x.strip() for x in ids) or len(ids)!=len(set(ids)):
         return error(400,'INVALID_CANDIDATE_IDS','Candidate identities must be a nonempty unique list.','candidate_ids')
+    try:_,_,working=require_current_working_plan(
+        analysis_snapshot_id=analysis_id,shippable_plan_id=plan_id,
+        working_plan_id=working_id)
+    except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     expected_context=OZON_VAULT.credential_context_id()
     try: prepared=prepare_shipment_validation(analysis_store=ANALYSIS_STORE,
         source_store=OZON_SOURCE_STORE,handoff_store=HANDOFF_STORE,
-        analysis_id=analysis_id,plan_id=plan_id,scenario_payload=body.get('scenario'),
+        analysis_id=analysis_id,plan_id=plan_id,working_plan=working,scenario_payload=body.get('scenario'),
         candidate_ids=ids,expected_credential_context_id=expected_context)
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     try:
         expected_pack_fingerprint=capture_shipment_pack_fingerprint_if_current(
             expected_analysis_snapshot_id=analysis_id,
-            expected_shippable_plan_id=plan_id)
+            expected_shippable_plan_id=plan_id,
+            expected_working_plan_id=working_id)
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     try:
         context=OZON_VAULT.capture_context()
         if context.context_id!=expected_context:return credential_context_error('analysis_snapshot_id')
     except OzonVaultError:return error(423,'OZON_VAULT_LOCKED','Unlock the Ozon credential vault first.',None)
     source_id=prepared.snapshot.source_snapshot_id
-    try:options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,prepared.candidates,prepared.scenario,provenance=f'{context.context_id}:{analysis_id}:{plan_id}:{source_id}',source_clusters=prepared.source_snapshot.clusters,client=OZON_CLIENT.bind_context(context))
+    try:options=await asyncio.to_thread(DRAFT_VALIDATION_SERVICE.validate,prepared.candidates,prepared.scenario,provenance=f'{context.context_id}:{analysis_id}:{plan_id}:{working_id}:{source_id}',source_clusters=prepared.source_snapshot.clusters,client=OZON_CLIENT.bind_context(context))
     except OzonClientError as exc:
         if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error('analysis_snapshot_id')
         raise
     if not OZON_VAULT.is_context_active(context):return credential_context_error('analysis_snapshot_id')
-    try:shipment=build_shipment_plan(source_snapshot_id=source_id,analysis_snapshot_id=analysis_id,shippable_plan_id=plan_id,analysis_as_of=prepared.snapshot.analysis_as_of,scenario=prepared.scenario,candidates=prepared.candidates,validations=options,diagnostics=tuple(x.code for x in prepared.diagnostics))
+    try:shipment=build_shipment_plan(source_snapshot_id=source_id,analysis_snapshot_id=analysis_id,shippable_plan_id=plan_id,working_plan_id=working_id,analysis_as_of=prepared.snapshot.analysis_as_of,scenario=prepared.scenario,candidates=prepared.candidates,validations=options,diagnostics=tuple(x.code for x in prepared.diagnostics))
     except ShipmentOrchestrationError as exc:return error(502,exc.code,'Ozon validation returned inconsistent candidate evidence.',None)
     try:commit_shipment_plan_if_current(
         shipment,expected_analysis_snapshot_id=analysis_id,
         expected_shippable_plan_id=plan_id,
+        expected_working_plan_id=working_id,
         expected_pack_fingerprint=expected_pack_fingerprint,
         credential_context=context)
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
@@ -753,12 +770,21 @@ async def shipment_export(request:Request):
     if not isinstance(option_id,str) or not option_id.strip():return error(400,'SHIPMENT_OPTION_ID_REQUIRED','Shipment option identity is required.','option_id')
     plan=SHIPMENT_PLAN_STORE.get(plan_id)
     if plan is None:return error(404,'SHIPMENT_PLAN_NOT_FOUND','Shipment plan was not found.','shipment_plan_id')
-    option=next((x for x in plan.ranked_options if x.option_id==option_id),None)
-    if option is None:
-        if any(x.candidate.candidate_id==option_id for x in plan.unavailable_options):return error(409,'EXPORT_OPTION_NOT_EXPORTABLE','Shipment option is not exportable.','option_id')
-        return error(404,'SHIPMENT_OPTION_NOT_FOUND','Shipment option was not found.','option_id')
-    try:artifact=render_export(option,plan_id)
-    except ShipmentExportError as exc:return error(409,exc.code,'Shipment option cannot be exported.',None)
+    with PROJECT_PERSISTENCE_LOCK:
+        try:require_current_working_plan(
+            analysis_snapshot_id=plan.analysis_snapshot_id,
+            shippable_plan_id=plan.shippable_plan_id,
+            working_plan_id=plan.working_plan_id)
+        except ShipmentPreparationError:
+            return error(409,'SHIPMENT_PLAN_STALE',
+                'Рабочий план изменился. Проверьте варианты поставки повторно.',
+                'shipment_plan_id')
+        option=next((x for x in plan.ranked_options if x.option_id==option_id),None)
+        if option is None:
+            if any(x.candidate.candidate_id==option_id for x in plan.unavailable_options):return error(409,'EXPORT_OPTION_NOT_EXPORTABLE','Shipment option is not exportable.','option_id')
+            return error(404,'SHIPMENT_OPTION_NOT_FOUND','Shipment option was not found.','option_id')
+        try:artifact=render_export(option,plan_id)
+        except ShipmentExportError as exc:return error(409,exc.code,'Shipment option cannot be exported.',None)
     return Response(artifact.content,media_type=artifact.media_type,headers={'Content-Disposition':f'attachment; filename="{artifact.filename}"'})
 
 def input_status(*results):

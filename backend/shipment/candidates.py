@@ -6,8 +6,6 @@ import hashlib
 import json
 
 from backend.ozon.handoff import HandoffPointStore
-from backend.supply.contracts import ShippableLine, ShippablePlan
-
 from .contracts import (
     CandidateAssignment,
     CandidateBuildResult,
@@ -16,6 +14,8 @@ from .contracts import (
     ShipmentDiagnostic,
     ShipmentMethod,
     ShipmentScenario,
+    ShipmentInput,
+    ShipmentInputLine,
 )
 from .handoff import resolve_handoff_points
 from .rules import method_cluster_limit, placement_reason
@@ -32,21 +32,25 @@ class ShipmentScopeError(ValueError):
 
 
 def select_shipment_scope(
-    plan: ShippablePlan, selected_cluster_ids: tuple[str, ...],
-) -> tuple[ShippableLine, ...]:
-    """Filter positive upstream rows; quantities and destinations are untouched."""
-    if not isinstance(plan, ShippablePlan):
-        raise TypeError("plan must be ShippablePlan")
+    shipment_input: ShipmentInput, selected_cluster_ids: tuple[str, ...],
+) -> tuple[ShipmentInputLine, ...]:
+    """Validate every selected Working row before selecting positive quantities."""
+    if not isinstance(shipment_input, ShipmentInput):
+        raise TypeError("shipment_input must be ShipmentInput")
     selected = set(selected_cluster_ids)
-    rows = tuple(line for line in plan.lines
-                 if line.destination_cluster_id in selected
-                 and line.shippable_qty is not None and line.shippable_qty > 0)
+    selected_rows = tuple(line for line in shipment_input.lines
+                          if line.destination_cluster_id in selected)
+    if any(line.working_status == "BLOCKED" or line.quantity is None
+           for line in selected_rows):
+        raise ShipmentScopeError("WORKING_PLAN_SCOPE_BLOCKED")
+    rows = tuple(line for line in selected_rows
+                 if line.quantity is not None and line.quantity > 0)
     if not rows:
         raise ShipmentScopeError("EMPTY_SHIPMENT_SCOPE")
     return rows
 
 
-def _cluster_order(lines: tuple[ShippableLine, ...]) -> tuple[str, ...]:
+def _cluster_order(lines: tuple[ShipmentInputLine, ...]) -> tuple[str, ...]:
     grouped = defaultdict(list)
     for line in lines:
         grouped[line.destination_cluster_id].append(line.allocation_priority_rank)
@@ -58,7 +62,7 @@ def _cluster_order(lines: tuple[ShippableLine, ...]) -> tuple[str, ...]:
 
 
 def _groups(
-    clusters: tuple[str, ...], lines_by_cluster: dict[str, tuple[ShippableLine, ...]],
+    clusters: tuple[str, ...], lines_by_cluster: dict[str, tuple[ShipmentInputLine, ...]],
     size: int, volume_limit: Decimal | None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Linear greedy grouping; an indivisible over-limit cluster is blocked."""
@@ -84,16 +88,16 @@ def _groups(
     return tuple(result), tuple(blocked)
 
 
-def _assignment(line: ShippableLine) -> CandidateAssignment:
+def _assignment(line: ShipmentInputLine) -> CandidateAssignment:
     # Candidate eligibility guarantees these upstream operational prerequisites.
-    assert line.shippable_qty is not None
+    assert line.quantity is not None
     assert line.pack_multiple is not None
     assert line.unit_volume_l is not None
     assert line.total_volume_l is not None
     return CandidateAssignment(
-        line.sku, line.article, line.destination_cluster_id, line.shippable_qty,
+        line.sku, line.article, line.destination_cluster_id, line.quantity,
         line.pack_multiple, line.unit_volume_l, line.total_volume_l,
-        line.placement_zone_kind.value, line.placement_zones,
+        line.placement_zone_kind, line.placement_zones,
     )
 
 
@@ -109,10 +113,11 @@ def _scenario_payload(scenario: ShipmentScenario) -> dict[str, object]:
     }
 
 
-def _candidate_id(plan, scenario, method, seller_id, handoff_id, clusters, assignments):
+def _candidate_id(shipment_input, scenario, method, seller_id, handoff_id, clusters, assignments):
     payload = {
-        "shippable_plan_id": plan.shippable_plan_id,
-        "analysis_snapshot_id": plan.analysis_snapshot_id,
+        "shippable_plan_id": shipment_input.shippable_plan_id,
+        "analysis_snapshot_id": shipment_input.analysis_snapshot_id,
+        "working_plan_id": shipment_input.working_plan_id,
         "scenario": _scenario_payload(scenario), "method": method.value,
         "seller_warehouse_id": seller_id, "handoff_point_id": handoff_id,
         "cluster_ids": clusters,
@@ -125,17 +130,17 @@ def _candidate_id(plan, scenario, method, seller_id, handoff_id, clusters, assig
 
 
 def build_candidate_result(
-    *, plan: ShippablePlan, scenario: ShipmentScenario, seller_warehouses,
+    *, shipment_input: ShipmentInput, scenario: ShipmentScenario, seller_warehouses,
     handoff_store: HandoffPointStore, max_candidates: int = DEFAULT_MAX_CANDIDATES,
 ) -> CandidateBuildResult:
-    if not isinstance(plan, ShippablePlan) or not isinstance(scenario, ShipmentScenario):
-        raise TypeError("plan and scenario must use shipment contracts")
+    if not isinstance(shipment_input, ShipmentInput) or not isinstance(scenario, ShipmentScenario):
+        raise TypeError("shipment_input and scenario must use shipment contracts")
     if isinstance(max_candidates, bool) or not isinstance(max_candidates, int):
         raise TypeError("max_candidates must be an int")
     if max_candidates <= 0:
         raise ValueError("max_candidates must be positive")
     try:
-        scope = select_shipment_scope(plan, scenario.selected_cluster_ids)
+        scope = select_shipment_scope(shipment_input, scenario.selected_cluster_ids)
     except ShipmentScopeError as exc:
         return CandidateBuildResult((), (ShipmentDiagnostic(exc.code),))
 
@@ -196,7 +201,7 @@ def build_candidate_result(
                 point_id = None if point is None else point.warehouse_id
                 point_type = None if point is None else point.warehouse_type
                 method_candidates.append(CandidateShipment(
-                    _candidate_id(plan, scenario, method, seller_id, point_id,
+                    _candidate_id(shipment_input, scenario, method, seller_id, point_id,
                                   group, assignments), method, seller_id, point_id,
                     point_type, group, assignments, total_qty, total_volume, ()))
             if len(method_candidates) >= max_candidates:

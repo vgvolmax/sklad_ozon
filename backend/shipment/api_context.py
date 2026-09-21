@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from backend.domain.contracts import SourceMode
 from .candidates import DEFAULT_MAX_CANDIDATES, build_candidate_result
+from .working_input import build_shipment_input, WorkingPlanIdentityError
 from .wire import parse_shipment_scenario
 
 
@@ -31,6 +32,8 @@ def require_source_credential_context(source, expected_context_id, *, field='sou
 class PreparedShipmentValidation:
     snapshot: object
     shippable_plan: object
+    working_plan: object
+    shipment_input: object
     source_snapshot: object
     scenario: object
     candidates: tuple
@@ -38,7 +41,7 @@ class PreparedShipmentValidation:
 
 
 def prepare_shipment_validation(*, analysis_store, source_store, handoff_store,
-                                analysis_id, plan_id, scenario_payload, candidate_ids,
+                                analysis_id, plan_id, working_plan, scenario_payload, candidate_ids,
                                 expected_credential_context_id=None):
     snapshot=analysis_store.get(analysis_id)
     if snapshot is None:
@@ -69,11 +72,20 @@ def prepare_shipment_validation(*, analysis_store, source_store, handoff_store,
             point=handoff_store.get(point_id)
             if point is None or not point.warehouse_type:
                 raise ShipmentPreparationError('HANDOFF_POINT_UNRESOLVED','Select the handoff point again.','scenario.selected_handoff_point_ids')
-    result=build_candidate_result(plan=plan,scenario=scenario,
+    try: shipment_input=build_shipment_input(plan,working_plan)
+    except WorkingPlanIdentityError as exc:
+        raise ShipmentPreparationError('WORKING_PLAN_IDENTITY_MISMATCH',
+            'Working Plan identities do not match the Shippable Plan.',
+            'working_plan_id',409) from exc
+    result=build_candidate_result(shipment_input=shipment_input,scenario=scenario,
         seller_warehouses=source.seller_warehouses,handoff_store=handoff_store,
         max_candidates=DEFAULT_MAX_CANDIDATES)
+    if any(item.code == 'WORKING_PLAN_SCOPE_BLOCKED' for item in result.diagnostics):
+        raise ShipmentPreparationError('WORKING_PLAN_SCOPE_BLOCKED',
+            'В выбранных кластерах есть позиции, которые требуют исправления перед поставкой.',
+            'scenario.selected_cluster_ids',409)
     wanted=set(candidate_ids)
     if not wanted.issubset({candidate.candidate_id for candidate in result.candidates}):
         raise ShipmentPreparationError('CANDIDATE_PROVENANCE_MISMATCH','Candidate does not belong to the stored plan and scenario.','candidate_ids')
     selected=tuple(candidate for candidate in result.candidates if candidate.candidate_id in wanted)
-    return PreparedShipmentValidation(snapshot,plan,source,scenario,selected,result.diagnostics)
+    return PreparedShipmentValidation(snapshot,plan,working_plan,shipment_input,source,scenario,selected,result.diagnostics)

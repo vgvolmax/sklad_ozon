@@ -12,10 +12,10 @@ def node(expression):
 
 def test_shippable_classifier_and_cluster_evidence():
     assert node("[null,undefined,0,6,-1].map(SkladOzon.classifyShippableQty)") == ["unknown", "unknown", "zero", "positive", "unknown"]
-    plan = "{lines:[{destination_cluster_id:'A',shippable_qty:6},{destination_cluster_id:'B',shippable_qty:null,reason_codes:['MISSING_PACK_MULTIPLICITY']},{destination_cluster_id:'C',shippable_qty:0},{destination_cluster_id:'D',shippable_qty:6},{destination_cluster_id:'D',shippable_qty:null,reason_codes:['MISSING_UNIT_VOLUME']}]}"
+    plan = "{lines:[{destination_cluster_id:'A',working_qty:6,status:'READY'},{destination_cluster_id:'B',working_qty:null,status:'BLOCKED',reason_codes:['MISSING_PACK_MULTIPLICITY']},{destination_cluster_id:'C',working_qty:0,status:'READY'},{destination_cluster_id:'D',working_qty:6,status:'READY'},{destination_cluster_id:'D',working_qty:null,status:'BLOCKED',reason_codes:['MISSING_UNIT_VOLUME']}]}"
     options = node(f"SkladOzon.buildShipmentClusterOptions({plan})")
-    assert {x["clusterId"]: x["state"] for x in options} == {"A": "available", "B": "unknown", "C": "zero", "D": "partial"}
-    assert node(f"SkladOzon.reconcileShipmentClusters(SkladOzon.createInitialState().shipmentView,{plan}).selectedClusters") == ["A", "D"]
+    assert {x["clusterId"]: x["state"] for x in options} == {"A": "available", "B": "blocked", "C": "zero", "D": "blocked"}
+    assert node(f"SkladOzon.reconcileShipmentClusters(SkladOzon.createInitialState().shipmentView,{plan}).selectedClusters") == ["A"]
 
 
 def test_degraded_refresh_retains_healthy_source_then_healthy_replaces_it():

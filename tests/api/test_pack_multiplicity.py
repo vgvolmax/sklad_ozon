@@ -141,6 +141,11 @@ def _configure_shipment_commit(monkeypatch, snapshot):
     monkeypatch.setattr(api.ANALYSIS_STORE,'get',lambda snapshot_id:snapshot)
     monkeypatch.setattr(api.ANALYSIS_STORE,'latest',
                         lambda:SimpleNamespace(snapshot_id='A1'))
+    original = api.require_current_working_plan
+    def require(**kwargs):
+        snap = api._require_current_shippable_plan(kwargs['analysis_snapshot_id'], kwargs['shippable_plan_id'])
+        return snap, snap.shippable_plan, SimpleNamespace(working_plan_id='WP1')
+    monkeypatch.setattr(api, 'require_current_working_plan', require)
 
 
 def test_stale_shipment_commit_rejects_changed_pack_before_store_write(tmp_path,monkeypatch):
@@ -157,6 +162,7 @@ def test_stale_shipment_commit_rejects_changed_pack_before_store_write(tmp_path,
         api.commit_shipment_plan_if_current(
             object(),expected_analysis_snapshot_id='A1',
             expected_shippable_plan_id='P1',expected_pack_fingerprint=expected,
+            expected_working_plan_id='WP1',
             credential_context=_shipment_commit_context())
 
     assert caught.value.code=='PACK_MULTIPLICITY_CHANGED_DURING_SHIPMENT_VALIDATION'
@@ -177,6 +183,7 @@ def test_stale_shipment_commit_rejects_changed_analysis_snapshot(tmp_path,monkey
             object(),expected_analysis_snapshot_id='A1',
             expected_shippable_plan_id='P1',
             expected_pack_fingerprint=pack_multiplicity_fingerprint(project),
+            expected_working_plan_id='WP1',
             credential_context=_shipment_commit_context())
 
     assert caught.value.code=='SHIPMENT_INPUT_CHANGED'
@@ -194,7 +201,8 @@ def test_current_shipment_commit_writes_once(tmp_path,monkeypatch):
     api.commit_shipment_plan_if_current(
         shipment,expected_analysis_snapshot_id='A1',expected_shippable_plan_id='P1',
         expected_pack_fingerprint=pack_multiplicity_fingerprint(project),
-        credential_context=_shipment_commit_context())
+        expected_working_plan_id='WP1',
+            credential_context=_shipment_commit_context())
 
     assert writes==[shipment]
 
@@ -211,6 +219,7 @@ def test_stale_shipment_commit_preserves_credential_context_guard(tmp_path,monke
             object(),expected_analysis_snapshot_id='A1',
             expected_shippable_plan_id='P1',
             expected_pack_fingerprint=pack_multiplicity_fingerprint(project),
+            expected_working_plan_id='WP1',
             credential_context=_shipment_commit_context())
 
     assert caught.value.code=='OZON_CREDENTIAL_CONTEXT_CHANGED'

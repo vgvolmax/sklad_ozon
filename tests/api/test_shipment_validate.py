@@ -5,7 +5,7 @@ import backend.api as api_module
 from backend.ozon.contracts import OzonCredentials,OzonErrorCode
 from backend.ozon.vault import OzonVaultError
 from tests.api.test_analysis import CLIENT
-from tests.api.test_shipment_candidates import _analyze_api_plan
+from tests.api.test_shipment_candidates import _analyze_api_plan, working_id
 
 
 def _scenario():
@@ -31,11 +31,11 @@ def _crossdock_scenario(*,warehouse_id,point_id):
 def test_validate_reconstructs_candidate_and_rejects_authoritative_rows(monkeypatch):
     snapshot=_analyze_api_plan(); plan=snapshot["shippable_plan"]
     candidates=CLIENT.post("/api/shipment/candidates",json={
-        "analysis_snapshot_id":snapshot["snapshot_id"],"shippable_plan_id":plan["shippable_plan_id"],
+        "analysis_snapshot_id":snapshot["snapshot_id"],"shippable_plan_id":plan["shippable_plan_id"],"working_plan_id":snapshot.get("working_plan_id") or working_id(snapshot),
         "scenario":_scenario()}).json()["candidates"]
     monkeypatch.setattr(api_module.OZON_VAULT,"require_credentials",lambda:OzonCredentials("client","key"))
     response=CLIENT.post("/api/shipment/validate",json={
-        "analysis_snapshot_id":snapshot["snapshot_id"],"shippable_plan_id":plan["shippable_plan_id"],
+        "analysis_snapshot_id":snapshot["snapshot_id"],"shippable_plan_id":plan["shippable_plan_id"],"working_plan_id":snapshot.get("working_plan_id") or working_id(snapshot),
         "scenario":_scenario(),"candidate_ids":[candidates[0]["candidate_id"]],
         "quantities":[999999]})
     assert response.status_code==400
@@ -53,6 +53,7 @@ def test_files_source_is_rejected_before_network(monkeypatch):
     response=CLIENT.post("/api/shipment/validate",json={
         "analysis_snapshot_id":snapshot["snapshot_id"],
         "shippable_plan_id":snapshot["shippable_plan"]["shippable_plan_id"],
+        "working_plan_id":snapshot.get("working_plan_id") or working_id(snapshot),
         "scenario":_scenario(),"candidate_ids":["cs_unknown"]})
     assert response.status_code==409
     assert response.json()["error"]["code"]=="LIVE_VALIDATION_REQUIRES_API_SOURCE"
@@ -66,6 +67,7 @@ def test_crossdock_invalid_seller_warehouse_has_shared_guard_semantics(monkeypat
     response=CLIENT.post(f"/api/shipment/{endpoint}",json={
         "analysis_snapshot_id":snapshot["snapshot_id"],
         "shippable_plan_id":snapshot["shippable_plan"]["shippable_plan_id"],
+        "working_plan_id":snapshot.get("working_plan_id") or working_id(snapshot),
         "scenario":_crossdock_scenario(warehouse_id=999,point_id=987654),
         "candidate_ids":["cs_not_reached"]})
     assert response.status_code==409
@@ -80,6 +82,7 @@ def test_crossdock_unresolved_handoff_has_shared_guard_semantics(monkeypatch,end
     response=CLIENT.post(f"/api/shipment/{endpoint}",json={
         "analysis_snapshot_id":snapshot["snapshot_id"],
         "shippable_plan_id":snapshot["shippable_plan"]["shippable_plan_id"],
+        "working_plan_id":snapshot.get("working_plan_id") or working_id(snapshot),
         "scenario":_crossdock_scenario(warehouse_id=91,point_id=987654),
         "candidate_ids":["cs_not_reached"]})
     assert response.status_code==409
@@ -93,6 +96,7 @@ def test_locked_vault_has_shared_guard_semantics(monkeypatch,endpoint):
     candidates=CLIENT.post("/api/shipment/candidates",json={
         "analysis_snapshot_id":snapshot["snapshot_id"],
         "shippable_plan_id":snapshot["shippable_plan"]["shippable_plan_id"],
+        "working_plan_id":snapshot.get("working_plan_id") or working_id(snapshot),
         "scenario":_scenario()}).json()["candidates"]
     fake=RecordingValidation()
     monkeypatch.setattr(api_module,"DRAFT_VALIDATION_SERVICE",fake)
@@ -101,6 +105,7 @@ def test_locked_vault_has_shared_guard_semantics(monkeypatch,endpoint):
     response=CLIENT.post(f"/api/shipment/{endpoint}",json={
         "analysis_snapshot_id":snapshot["snapshot_id"],
         "shippable_plan_id":snapshot["shippable_plan"]["shippable_plan_id"],
+        "working_plan_id":snapshot.get("working_plan_id") or working_id(snapshot),
         "scenario":_scenario(),"candidate_ids":[candidates[0]["candidate_id"]]})
     assert response.status_code==423
     assert response.json()["error"]["code"]=="OZON_VAULT_LOCKED"

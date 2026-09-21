@@ -83,6 +83,30 @@ class ShipmentScenario:
 
 
 @dataclass(frozen=True, slots=True)
+class ShipmentInputLine:
+    sku: str
+    article: str
+    destination_cluster_id: str
+    quantity: int | None
+    pack_multiple: int | None
+    unit_volume_l: Decimal | None
+    total_volume_l: Decimal | None
+    allocation_priority_rank: int | None
+    placement_zone_kind: str
+    placement_zones: tuple[str, ...]
+    working_status: str
+    working_reason_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ShipmentInput:
+    analysis_snapshot_id: str
+    shippable_plan_id: str
+    working_plan_id: str
+    lines: tuple[ShipmentInputLine, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class MethodRule:
     method: ShipmentMethod
     hard_max_clusters: int
@@ -199,6 +223,7 @@ class ShipmentPlan:
     source_snapshot_id: str | None
     analysis_snapshot_id: str
     shippable_plan_id: str
+    working_plan_id: str
     analysis_as_of: date
     scenario_fingerprint: str
     ranked_options: tuple[RankedShipmentOption, ...]

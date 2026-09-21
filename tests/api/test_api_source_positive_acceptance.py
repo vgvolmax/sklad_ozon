@@ -150,6 +150,7 @@ def test_api_source_reaches_positive_calculated_shippable_and_candidate_before_l
         json={
             "analysis_snapshot_id": snapshot["snapshot_id"],
             "shippable_plan_id": snapshot["shippable_plan"]["shippable_plan_id"],
+            "working_plan_id": CLIENT.post("/api/working-plan", json={"analysis_snapshot_id": snapshot["snapshot_id"], "shippable_plan_id": snapshot["shippable_plan"]["shippable_plan_id"]}).json()["working_plan"]["working_plan_id"],
             "scenario": {
                 "selected_cluster_ids": ["Москва"],
                 "date_from": "2026-09-11",
