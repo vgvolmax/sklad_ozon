@@ -10,7 +10,7 @@ from datetime import date
 
 from backend.domain.contracts import ProductEconomicsInput, ReportMeta, TariffRow
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _TOP_FIELDS = {"schema_version", "tariffs", "tariff_meta", "product_economics", "product_economics_meta", "seller_available_stock", "manual_cluster_mappings", "economics_settings", "optimizer_thresholds", "operational_snapshots", "pack_multiplicity", "working_quantity_overrides"}
 _FORBIDDEN = {"buyer_name", "customer_name", "address", "phone", "email", "inn", "kpp", "raw_row", "raw_report", "raw_bytes", "raw_csv", "raw_xlsx", "base64_report", "payment_data"}
 _SNAPSHOT_FIELDS = {
@@ -51,6 +51,8 @@ class OperationalSnapshot:
 @dataclass(frozen=True, slots=True)
 class PackMultiplicityRecord:
     unitka_pack_multiple: int | None = None
+    rtp_price_pack_multiple: int | None = None
+    rtp_price_updated_at: str | None = None
     override_pack_multiple: int | None = None
     override_origin: str | None = None
     override_updated_at: str | None = None
@@ -151,8 +153,12 @@ def _validate(project: Project):
     for article, record in project.pack_multiplicity.items():
         if not isinstance(article, str) or not article or type(record) is not PackMultiplicityRecord:
             raise ProjectValidationError("Invalid pack multiplicity record.")
-        for value in (record.unitka_pack_multiple, record.override_pack_multiple):
+        for value in (record.unitka_pack_multiple, record.rtp_price_pack_multiple, record.override_pack_multiple):
             if value is not None: _positive_integer(value)
+        if record.rtp_price_pack_multiple is None:
+            if record.rtp_price_updated_at is not None: raise ProjectValidationError("RTP price metadata requires a value.")
+        elif not isinstance(record.rtp_price_updated_at, str) or not record.rtp_price_updated_at:
+            raise ProjectValidationError("Invalid RTP price metadata.")
         if record.override_pack_multiple is None:
             if record.override_origin is not None or record.override_updated_at is not None: raise ProjectValidationError("Override metadata requires a value.")
         elif record.override_origin not in {"manual", "import"} or not isinstance(record.override_updated_at, str) or not record.override_updated_at:
@@ -236,13 +242,25 @@ def load_project(path: Path) -> Project:
     try: payload = json.loads(Path(path).read_text("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc: raise ProjectValidationError("Project is not valid UTF-8 JSON.") from exc
     _reject_forbidden_keys(payload)
+    def migrate_pack_records(records):
+        return {article: {**raw, "rtp_price_pack_multiple": None,
+                          "rtp_price_updated_at": None}
+                for article, raw in records.items()}
+
     if isinstance(payload, dict) and payload.get("schema_version") == 1:
         payload = dict(payload); payload.pop("working_quantity_overrides", None)
         _strict(payload, _TOP_FIELDS - {"pack_multiplicity", "working_quantity_overrides"}, "project")
         payload = {**payload, "schema_version": SCHEMA_VERSION, "pack_multiplicity": {}, "working_quantity_overrides": {}}
     elif isinstance(payload, dict) and payload.get("schema_version") == 2:
         _strict(payload, _TOP_FIELDS - {"working_quantity_overrides"}, "project")
-        payload = {**payload, "schema_version": SCHEMA_VERSION, "working_quantity_overrides": {}}
+        payload = {**payload, "schema_version": SCHEMA_VERSION,
+                   "pack_multiplicity": migrate_pack_records(payload["pack_multiplicity"]),
+                   "working_quantity_overrides": {}}
+    elif isinstance(payload, dict) and payload.get("schema_version") == 3:
+        _strict(payload, _TOP_FIELDS, "project")
+        migrated_packs = migrate_pack_records(payload.get("pack_multiplicity", {}))
+        payload = {**payload, "schema_version": SCHEMA_VERSION,
+                   "pack_multiplicity": migrated_packs}
     _strict(payload, _TOP_FIELDS, "project")
     if type(payload.get("schema_version")) is not int or payload["schema_version"] != SCHEMA_VERSION: raise ProjectValidationError("Missing or unsupported schema version.")
     if not isinstance(payload["tariffs"], list) or not isinstance(payload["product_economics"], list) or not isinstance(payload["operational_snapshots"], list): raise ProjectValidationError("Project collections must be lists.")

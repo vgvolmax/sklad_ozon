@@ -38,13 +38,14 @@ def test_invalid_supplier_articles_are_rejected(value):
 
 
 @pytest.mark.parametrize(("value", "expected"), [
-    ("72/6", 6), ("36/6", 6), ("54/9", 9), ("100+/1", 1), ("72 / 6", 6),
+    ("72/6", 72), ("36/6", 36), ("54/9", 54), ("150/10", 150),
+    ("72 / 6", 72), (" 72/6", 72), ("72/6 ", 72),
 ])
 def test_parse_pack_multiple(value, expected):
     assert parse_pack_multiple(value) == expected
 
 
-@pytest.mark.parametrize("value", ["72/", "/6", "72/0", "72/-1", "72/1.5", "abc", "", None])
+@pytest.mark.parametrize("value", ["100+/1", "72/", "/6", "72/0", "0/1", "72/-1", "72/1.5", "abc", "", None])
 def test_invalid_pack_expressions_are_rejected(value):
     with pytest.raises(ValueError):
         parse_pack_multiple(value)
@@ -54,14 +55,14 @@ def test_import_collapses_identical_duplicates_and_blocks_conflicts_without_abor
     data = make_multisheet_xlsx([
         ("Оглавление", ["КРАТНОСТЬ"], [[99]]),
         ("Прайс списком", ["КОД", "Упак"], [
-            [40750.0, "72/6"], ["40750", "36/6"],
+            [40750.0, "72/6"], ["40750", "72/12"],
             ["OTHER", "72/6"], ["OTHER", "24/12"],
             [40750.5, "72/6"], ["BROKEN", "72/"],
         ]),
     ])
     result = import_supplier_packaging(data, META)
     by_article = {row.article: row for row in result.records}
-    assert by_article["40750"].pack_multiple == 6
+    assert by_article["40750"].pack_multiple == 72
     assert by_article["OTHER"].pack_multiple is None
     assert by_article["OTHER"].reason_codes == ("CONFLICTING_PACK_MULTIPLICITY",)
     assert {d.code for d in result.diagnostics} >= {

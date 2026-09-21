@@ -20,7 +20,7 @@ def test_combined_unitka_matches_standalone_importers():
     bundle = unitka_module.import_unitka_bundle(data, META)
     assert bundle.product_economics == expected_products
     assert bundle.tariffs == expected_tariffs
-    assert bundle.pack_multiplicity.records[0].pack_multiple == 6
+    assert bundle.pack_multiplicity.records[0].pack_multiple == 72
 
 
 def test_combined_unitka_opens_workbook_once(monkeypatch):
@@ -53,7 +53,7 @@ def test_numeric_excel_article_joins_real_product_and_supplier_importers():
 
     assert product.article == "40750"
     assert facts[0].article == "40750"
-    assert facts[0].pack_multiple == 6
+    assert facts[0].pack_multiple == 72
     assert "MISSING_PACK_MULTIPLICITY" not in facts[0].reason_codes
 
 
