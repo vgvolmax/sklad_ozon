@@ -43,6 +43,40 @@ def test_unitka_refresh_preserves_override_and_updates_baseline():
     updated=sync_unitka_baseline(project,evidence).pack_multiplicity['17261']
     assert (updated.unitka_pack_multiple,updated.override_pack_multiple)==(25,40)
 
+@pytest.mark.parametrize('reason_code', [
+    'INVALID_PACK_MULTIPLICITY',
+    'CONFLICTING_PACK_MULTIPLICITY',
+])
+def test_unitka_refresh_clears_stale_baseline_for_present_invalid_evidence(reason_code):
+    project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(unitka_pack_multiple=50)})
+    evidence=(PackMultiplicityEvidence('17261',None,2,None,(reason_code,)),)
+
+    updated=sync_unitka_baseline(project,evidence).pack_multiplicity['17261']
+
+    assert updated.unitka_pack_multiple is None
+
+def test_unitka_refresh_clears_baseline_but_preserves_override():
+    project=Project(pack_multiplicity={
+        '17261':PackMultiplicityRecord(50,40,'manual','now'),
+    })
+    evidence=(PackMultiplicityEvidence('17261',None,2,None,('INVALID_PACK_MULTIPLICITY',)),)
+
+    updated=sync_unitka_baseline(project,evidence).pack_multiplicity['17261']
+    resolved=resolve_pack_multiplicity(updated)
+
+    assert updated.unitka_pack_multiple is None
+    assert updated.override_pack_multiple == 40
+    assert (resolved.pack_multiple,resolved.source)==(40,'manual')
+
+def test_unitka_refresh_keeps_baseline_for_article_absent_from_evidence():
+    project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(unitka_pack_multiple=50)})
+    evidence=(PackMultiplicityEvidence('39439',8,2,'x / 8',()),)
+
+    updated=sync_unitka_baseline(project,evidence).pack_multiplicity
+
+    assert updated['17261'].unitka_pack_multiple == 50
+    assert updated['39439'].unitka_pack_multiple == 8
+
 def test_v1_migrates_and_v2_round_trip_persists(tmp_path):
     path=tmp_path/'project.json'; save_project_atomic(path,Project())
     payload=json.loads(path.read_text()); payload['schema_version']=1; payload.pop('pack_multiplicity'); path.write_text(json.dumps(payload))

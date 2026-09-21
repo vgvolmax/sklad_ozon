@@ -46,6 +46,20 @@ def test_submit_captures_body_then_enters_busy_state_renders_and_fetches():
     assert "finally{clearInterval(timer);if(id===runSequence){analysisActive=false;render();}}" in lifecycle
 
 
+def test_successful_analysis_refreshes_pack_directory_after_snapshot_commit_only():
+    source = APP_JS.read_text()
+    lifecycle = source[source.index("async function runAnalysis"):source.index("function scenarioEquals")]
+    success = lifecycle[:lifecycle.index("}catch(e)")]
+    failure = lifecycle[lifecycle.index("}catch(e)"):]
+
+    stale_guard = success.index("if(id!==runSequence)return;")
+    snapshot_commit = success.index("S.AppState=state;", stale_guard)
+    refresh = success.index("await loadPackMultiplicity();", snapshot_commit)
+
+    assert stale_guard < snapshot_commit < refresh
+    assert "loadPackMultiplicity" not in failure
+
+
 def test_runtime_scenario_guard_prevents_request_capture_and_busy_state():
     source = APP_JS.read_text()
     lifecycle = source[source.index("async function runAnalysis"):source.index("function scenarioEquals")]
