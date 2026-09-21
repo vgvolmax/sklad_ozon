@@ -152,3 +152,11 @@ def test_data_screen_has_one_stable_owner_and_mapping_editor():
     assert "renderMappings()" in render_data
     assert "if(!mappingRegion.firstElementChild)" in render_data
     assert "S.commitMappings" in source[source.index("async function saveMappings"):]
+
+
+def test_pack_directory_search_copy_only_promises_article_search():
+    source = APP_JS.read_text()
+    markup = source[source.index("function packMultiplicityMarkup"):source.index("function renderPackMultiplicity")]
+
+    assert "Поиск по артикулу <input" in markup
+    assert "Поиск по артикулу, SKU или названию" not in markup

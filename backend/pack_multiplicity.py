@@ -72,7 +72,6 @@ def reset_override(project: Project, article_value: object) -> tuple[Project, st
 def sync_unitka_baseline(project: Project, evidence) -> Project:
     records = dict(project.pack_multiplicity)
     for item in evidence:
-        if item.pack_multiple is None: continue
         old = records.get(item.article, PackMultiplicityRecord())
         records[item.article] = replace(old, unitka_pack_multiple=item.pack_multiple)
     return replace(project, pack_multiplicity=records)
