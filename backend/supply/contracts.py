@@ -292,6 +292,8 @@ class ShippableLine:
     placement_zones: tuple[str, ...]
     reason_codes: tuple[str, ...]
     pack_source: str = "unknown"
+    capacity_kind: RestrictionCapacityKind = RestrictionCapacityKind.UNKNOWN
+    whole_pack_capacity_qty: int | None = None
 
     def __post_init__(self) -> None:
         _require_nonblank(self.sku, "sku")
@@ -363,6 +365,13 @@ class ShippableLine:
             raise TypeError("reason_codes must contain nonblank strings")
         if self.pack_source not in {"manual", "import", "unitka", "unknown"}:
             raise ValueError("pack_source is invalid")
+        if not isinstance(self.capacity_kind, RestrictionCapacityKind):
+            raise TypeError("capacity_kind must be RestrictionCapacityKind")
+        _optional_nonnegative_int(self.whole_pack_capacity_qty, "whole_pack_capacity_qty")
+        if self.capacity_kind is RestrictionCapacityKind.ZERO and self.whole_pack_capacity_qty not in {None, 0}:
+            raise ValueError("zero capacity cannot have positive whole-pack capacity")
+        if self.capacity_kind in {RestrictionCapacityKind.UNKNOWN, RestrictionCapacityKind.UNLIMITED} and self.whole_pack_capacity_qty is not None:
+            raise ValueError("unknown/unlimited capacity cannot have a quantity")
 
 
 @dataclass(frozen=True, slots=True)

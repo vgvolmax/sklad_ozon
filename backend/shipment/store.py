@@ -23,6 +23,9 @@ class AnalysisSnapshotStore:
     def get(self, snapshot_id: str) -> AnalysisSnapshot | None:
         return self._snapshots.get(snapshot_id)
 
+    def latest(self) -> AnalysisSnapshot | None:
+        return next(reversed(self._snapshots.values()), None) if self._snapshots else None
+
     def clear(self) -> None:
         self._snapshots.clear()
 

@@ -227,3 +227,9 @@ Pack multiplicity is applied independently to each SKU × destination cluster.
 The system pack target uses the nearest valid whole-pack quantity; half-pack ties
 round upward. No cross-cluster donor rebalance is performed. Examples:
 `5 / 50 → 0`, `25 / 50 → 50`, `65 / 40 → 80`.
+
+## Working Plan quantities
+
+The immutable `ShippablePlan` is the system recommendation. The separately materialized Working Plan is the operator's current decision and is keyed by `SKU × destination_cluster_id`. Project schema v3 persists only manual exceptions, including their base recommendation and pack evidence; absent exceptions automatically follow a newly calculated recommendation. Working quantities are validated server-side for whole packs, known physical capacity, and aggregate seller stock. Unknown capacity permits an increase only with an explicit Ozon-validation warning.
+
+The product and cluster perspectives render the same server-returned Working Plan. `Рекомендация` always means the immutable system quantity; `К поставке` is editable using whole-pack steps or an exact integer entry. Volume is derived from the working quantity. Until shipment candidates consume `working_plan_id`, any active current override blocks the legacy shipment flow.

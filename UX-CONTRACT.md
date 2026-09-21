@@ -377,3 +377,11 @@ The user remains the final actor and completes the real supply manually in Ozon.
 Раздел «Данные» содержит постоянный справочник кратности по артикулу: поиск по артикулу, inline-редактирование, импорт и экспорт XLSX, а также сброс override к Unitka. Источник показывается как «Вручную», «Импорт», «Unitka» или «Не задано». Новое inline-значение считается сохранённым только после ответа backend; ошибки остаются рядом с действием.
 
 Изменение справочника в PR1 не меняет уже рассчитанный план. Будущее применение выполняется отдельно для каждой строки `SKU × кластер`, без объединения потребностей разных кластеров.
+
+## Working Plan editing
+
+- The Plan table distinguishes `Рекомендация` from editable `К поставке`, and shows signed `Δ` plus volume calculated from the working quantity.
+- `−` and `+` move by exactly one known pack. Direct input commits on Enter and cancels on Escape; invalid input is never rounded or saved. Zero is an explicit valid decision.
+- Manual lines say `вручную`, automatic lines say `авто`, and a manual line offers `К рекомендации`, which deletes the override rather than copying the recommendation.
+- The compact summary exposes ready, attention, manual, and orphan counts. Product and cluster perspectives share one authoritative server response.
+- A changed recommendation preserves the manual decision and calls out the change. Stock/capacity conflicts preserve individually valid entries but block execution. Working Plan load failure never falls back to browser-calculated quantities.

@@ -1,6 +1,6 @@
 """Stateless multipart HTTP boundary."""
 from dataclasses import asdict, dataclass, is_dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 import asyncio
@@ -39,8 +39,10 @@ from backend.ingestion.unitka import import_unitka_bundle
 from backend.ingestion.supplier_packaging import normalize_supplier_article
 from backend.ingestion.api_product_economics import merge_api_product_economics
 from backend.project import (EconomicsSettings, OptimizerThresholds, Project,
-                             ProjectValidationError, load_project_if_exists,
+                             ProjectValidationError, WorkingQuantityOverride, load_project_if_exists,
                              save_project_atomic)
+from backend.working_plan import (has_active_overrides, materialize_working_plan,
+                                  validate_override_quantity)
 from backend.pack_multiplicity import (build_effective_pack_evidence, export_xlsx, parse_import_xlsx,
                                        pack_multiplicity_fingerprint,
                                        reset_override,
@@ -245,6 +247,124 @@ async def json_object(request:Request):
     except (json.JSONDecodeError,UnicodeDecodeError):
         return None
     return value if isinstance(value,dict) else None
+
+def _working_base(analysis_id, plan_id):
+    latest=ANALYSIS_STORE.latest()
+    if latest is None or latest.snapshot_id!=analysis_id:
+        return None,None
+    try:
+        snapshot=_require_current_shippable_plan(analysis_id,plan_id)
+    except ShipmentPreparationError:
+        return None,None
+    return snapshot,snapshot.shippable_plan
+
+def _working_response(plan, project):
+    return {'api_version':1,'working_plan':wire(materialize_working_plan(
+        plan,project.working_quantity_overrides))}
+
+def _working_base_error():
+    return error(409,'WORKING_PLAN_BASE_CHANGED',
+        'План уже пересчитан. Повторите изменение на актуальных данных.',
+        'analysis_snapshot_id')
+
+def _working_identity(body):
+    return body.get('sku'),body.get('destination_cluster_id')
+
+def _find_working_line(plan, identity):
+    return next((line for line in plan.lines
+                 if (line.sku,line.destination_cluster_id)==identity),None)
+
+@router.post('/api/working-plan')
+async def working_plan_get(request:Request):
+    body=await json_object(request)
+    if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
+    if set(body)-{'analysis_snapshot_id','shippable_plan_id'}:
+        return error(400,'UNSUPPORTED_FIELD','Request field is not supported.',None)
+    _,plan=_working_base(body.get('analysis_snapshot_id'),body.get('shippable_plan_id'))
+    if plan is None:return _working_base_error()
+    with PROJECT_PERSISTENCE_LOCK: project=load_project_if_exists(PROJECT_PATH)
+    return _working_response(plan,project)
+
+@router.put('/api/working-plan/override')
+async def working_plan_override(request:Request):
+    body=await json_object(request)
+    if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
+    if set(body)-{'analysis_snapshot_id','shippable_plan_id','sku','destination_cluster_id','quantity'}:
+        return error(400,'UNSUPPORTED_FIELD','Request field is not supported.',None)
+    _,plan=_working_base(body.get('analysis_snapshot_id'),body.get('shippable_plan_id'))
+    if plan is None:return _working_base_error()
+    identity=_working_identity(body); line=_find_working_line(plan,identity)
+    if line is None:return error(400,'WORKING_PLAN_LINE_NOT_FOUND','Строка рабочего плана не найдена.','sku')
+    try: quantity=validate_override_quantity(line,body.get('quantity'))
+    except ValueError as exc:return error(400,'INVALID_WORKING_QUANTITY',str(exc),'quantity')
+    with PROJECT_PERSISTENCE_LOCK:
+        project=load_project_if_exists(PROJECT_PATH)
+        overrides={sku:dict(rows) for sku,rows in project.working_quantity_overrides.items()}
+        if quantity==line.shippable_qty:
+            overrides.get(identity[0],{}).pop(identity[1],None)
+        else:
+            overrides.setdefault(identity[0],{})[identity[1]]=WorkingQuantityOverride(
+                quantity,plan.shippable_plan_id,line.shippable_qty,line.pack_multiple,
+                datetime.now(timezone(timedelta(hours=3))).isoformat())
+        overrides={sku:rows for sku,rows in overrides.items() if rows}
+        project=replace(project,working_quantity_overrides=overrides)
+        save_project_atomic(PROJECT_PATH,project)
+        SHIPMENT_PLAN_STORE.clear()
+    return _working_response(plan,project)
+
+@router.post('/api/working-plan/reset')
+async def working_plan_reset(request:Request):
+    body=await json_object(request)
+    if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
+    _,plan=_working_base(body.get('analysis_snapshot_id'),body.get('shippable_plan_id'))
+    if plan is None:return _working_base_error()
+    identity=_working_identity(body)
+    if _find_working_line(plan,identity) is None:return error(400,'WORKING_PLAN_LINE_NOT_FOUND','Строка рабочего плана не найдена.','sku')
+    with PROJECT_PERSISTENCE_LOCK:
+        project=load_project_if_exists(PROJECT_PATH)
+        overrides={sku:dict(rows) for sku,rows in project.working_quantity_overrides.items()}
+        overrides.get(identity[0],{}).pop(identity[1],None)
+        overrides={sku:rows for sku,rows in overrides.items() if rows}
+        project=replace(project,working_quantity_overrides=overrides);save_project_atomic(PROJECT_PATH,project)
+        SHIPMENT_PLAN_STORE.clear()
+    return _working_response(plan,project)
+
+@router.post('/api/working-plan/bulk')
+async def working_plan_bulk(request:Request):
+    body=await json_object(request)
+    if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
+    _,plan=_working_base(body.get('analysis_snapshot_id'),body.get('shippable_plan_id'))
+    if plan is None:return _working_base_error()
+    action=body.get('action'); raw_lines=body.get('lines')
+    if action not in {'reset_to_system','set_zero'} or not isinstance(raw_lines,list):
+        return error(400,'INVALID_BULK_ACTION','Некорректное массовое действие.','action')
+    identities=[]
+    for item in raw_lines:
+        if not isinstance(item,dict) or set(item)!={'sku','destination_cluster_id'}:
+            return error(400,'INVALID_WORKING_PLAN_LINES','Некорректный набор строк.','lines')
+        identities.append((item['sku'],item['destination_cluster_id']))
+    found=[_find_working_line(plan,x) for x in identities]
+    if any(x is None for x in found):return error(400,'WORKING_PLAN_LINE_NOT_FOUND','Строка рабочего плана не найдена.','lines')
+    with PROJECT_PERSISTENCE_LOCK:
+        project=load_project_if_exists(PROJECT_PATH);overrides={sku:dict(rows) for sku,rows in project.working_quantity_overrides.items()}
+        for identity,line in zip(identities,found):
+            if action=='reset_to_system' or line.shippable_qty==0:overrides.get(identity[0],{}).pop(identity[1],None)
+            else:overrides.setdefault(identity[0],{})[identity[1]]=WorkingQuantityOverride(0,plan.shippable_plan_id,line.shippable_qty,line.pack_multiple,datetime.now(timezone(timedelta(hours=3))).isoformat())
+        overrides={sku:rows for sku,rows in overrides.items() if rows}
+        project=replace(project,working_quantity_overrides=overrides);save_project_atomic(PROJECT_PATH,project)
+        SHIPMENT_PLAN_STORE.clear()
+    return _working_response(plan,project)
+
+@router.post('/api/working-plan/reset-all')
+async def working_plan_reset_all(request:Request):
+    body=await json_object(request)
+    if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
+    _,plan=_working_base(body.get('analysis_snapshot_id'),body.get('shippable_plan_id'))
+    if plan is None:return _working_base_error()
+    with PROJECT_PERSISTENCE_LOCK:
+        project=replace(load_project_if_exists(PROJECT_PATH),working_quantity_overrides={})
+        save_project_atomic(PROJECT_PATH,project);SHIPMENT_PLAN_STORE.clear()
+    return _working_response(plan,project)
 
 @router.get('/api/ozon/credentials/status')
 def ozon_credentials_status():
@@ -454,6 +574,12 @@ async def shipment_candidates(request:Request):
     plan=snapshot.shippable_plan
     if plan is None or plan.shippable_plan_id != plan_id or plan.analysis_snapshot_id != analysis_id:
         return error(409,'SHIPPABLE_PLAN_IDENTITY_MISMATCH','Shippable Plan does not belong to this analysis.','shippable_plan_id')
+    with PROJECT_PERSISTENCE_LOCK:
+        project=load_project_if_exists(PROJECT_PATH)
+    if has_active_overrides(plan,project.working_quantity_overrides):
+        return error(409,'WORKING_PLAN_REQUIRED',
+            'Есть ручные изменения количества. Для создания поставки требуется рабочий план поставки.',
+            'shippable_plan_id')
     try:
         scenario=parse_shipment_scenario(body.get('scenario'))
     except ValueError:

@@ -126,6 +126,8 @@ def _plan_id(*, analysis_snapshot_id, source_mode, source_snapshot_id,
             "allocation_priority_rank": line.allocation_priority_rank,
             "pack_multiple": line.pack_multiple,
             "pack_source": line.pack_source,
+            "capacity_kind": line.capacity_kind.value,
+            "whole_pack_capacity_qty": line.whole_pack_capacity_qty,
             "resolved_seller_stock": line.resolved_seller_stock,
             "shippable_qty": line.shippable_qty,
             "unit_volume_l": _decimal_text(line.unit_volume_l),
@@ -300,6 +302,12 @@ def build_shippable_plan(
                 placement_zones=() if fact is None else fact.placement_zones,
                 reason_codes=tuple(dict.fromkeys(draft["reasons"])),
                 pack_source="unknown" if fact is None else fact.pack_source,
+                capacity_kind=(RestrictionCapacityKind.UNKNOWN if fact is None else fact.capacity_kind),
+                whole_pack_capacity_qty=(None if fact is None or draft["pack"] is None else whole_pack_capacity(
+                    capacity_kind=fact.capacity_kind,
+                    capacity_qty=fact.capacity_qty,
+                    pack_multiple=draft["pack"],
+                )),
             ))
     lines.sort(key=lambda line: (line.sku, line.destination_cluster_id))
     diagnostics = list(dict.fromkeys(diagnostics))
