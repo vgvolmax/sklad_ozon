@@ -125,11 +125,30 @@ def test_article_plan_identity_search_and_reconciliation():
     assert node(f"SkladOzon.reconcileSelectedSku(SkladOzon.buildArticlePlanItems({fixture}),'missing')")=='100'
 
 def test_product_summary_aggregates_every_cluster_and_preserves_unknowns():
-    complete="{clusterRows:[{need:{ozon_recommended_qty:10,calculated_need_qty:12},calculated_plan_qty:12,shippable:{shippable_qty:12,resolved_seller_stock:17,pack_multiple:6,unit_volume_l:0.3}},{need:{ozon_recommended_qty:5,calculated_need_qty:6},calculated_plan_qty:6,shippable:{shippable_qty:6,resolved_seller_stock:17,pack_multiple:6,unit_volume_l:0.3}}]}"
+    complete="{clusterRows:[{need:{ozon_recommended_qty:10,calculated_need_qty:12},calculated_plan_qty:12,shippable:{shippable_qty:12,resolved_seller_stock:17,pack_multiple:6,unit_volume_l:0.3},working:{working_qty:18,total_volume_l:5.4}},{need:{ozon_recommended_qty:5,calculated_need_qty:6},calculated_plan_qty:6,shippable:{shippable_qty:6,resolved_seller_stock:17,pack_multiple:6,unit_volume_l:0.3},working:{working_qty:6,total_volume_l:1.8}}]}"
     summary=node(f"SkladOzon.buildProductPlanSummary({complete})")
     assert summary['ozonRecommendedQty']==15 and summary['calculatedNeedQty']==18 and summary['calculatedPlanQty']==18
     assert summary['sellerStock']==17 and summary['wholePackAvailable']==12 and summary['packMultiple']==6
+    assert summary['shippableQty']==24 and summary['totalVolumeL']==7.2
     assert node("SkladOzon.buildProductPlanSummary({clusterRows:[{need:{ozon_recommended_qty:10}},{need:{ozon_recommended_qty:null}}]}).ozonRecommendedQty") is None
+
+
+def test_working_plan_drives_selector_and_cluster_aggregates_fail_closed():
+    snapshot={'decision_rows':[{'sku':'A','article':'A','destination_cluster_id':'M'},
+                               {'sku':'B','article':'B','destination_cluster_id':'M'}],
+              'shippable_plan':{'lines':[{'sku':'A','destination_cluster_id':'M','shippable_qty':40},
+                                          {'sku':'B','destination_cluster_id':'M','shippable_qty':40}]}}
+    working={'lines':[{'sku':'A','destination_cluster_id':'M','working_qty':80,'total_volume_l':8},
+                      {'sku':'B','destination_cluster_id':'M','working_qty':40,'total_volume_l':4}]}
+    fixture=json.dumps(snapshot); wp=json.dumps(working)
+    assert node(f"SkladOzon.buildClusterPlanItems({fixture},{wp})[0].knownWorkingQty") == 120
+    summary=node(f"SkladOzon.buildClusterPlanSummary(SkladOzon.buildClusterPlanItems({fixture},{wp})[0])")
+    assert summary['shippableQty']==120 and summary['totalVolumeL']==12
+    working['lines'][1]['working_qty']=None
+    incomplete=json.dumps(working)
+    item=node(f"SkladOzon.buildClusterPlanItems({fixture},{incomplete})[0]")
+    assert item['knownWorkingQty'] is None and item['hasUnknownWorking'] is True
+    assert node(f"SkladOzon.buildClusterPlanSummary(SkladOzon.buildClusterPlanItems({fixture},{incomplete})[0]).shippableQty") is None
 
 
 def test_ordered_demand_presentation_preserves_partial_unknowns_and_zero():
@@ -189,7 +208,7 @@ def test_cluster_sort_search_and_selection_reconciliation():
 
 
 def test_cluster_summary_is_fail_closed_but_preserves_zero():
-    complete = "{productRows:[{need:{ozon_recommended_qty:10,calculated_need_qty:8},calculated_plan_qty:6,shippable:{shippable_qty:6,total_volume_l:1.2,placement_zones:['SORT']}},{need:{ozon_recommended_qty:0,calculated_need_qty:0},calculated_plan_qty:0,shippable:{shippable_qty:0,total_volume_l:0,placement_zones:['NON_SORT']}}]}"
+    complete = "{productRows:[{need:{ozon_recommended_qty:10,calculated_need_qty:8},calculated_plan_qty:6,shippable:{shippable_qty:6,total_volume_l:1.2,placement_zones:['SORT']},working:{working_qty:6,total_volume_l:1.2}},{need:{ozon_recommended_qty:0,calculated_need_qty:0},calculated_plan_qty:0,shippable:{shippable_qty:0,total_volume_l:0,placement_zones:['NON_SORT']},working:{working_qty:0,total_volume_l:0}}]}"
     summary = node(f"SkladOzon.buildClusterPlanSummary({complete})")
     assert summary['skuCount'] == 2
     assert summary['ozonRecommendedQty'] == 10
@@ -199,7 +218,7 @@ def test_cluster_summary_is_fail_closed_but_preserves_zero():
     assert summary['totalVolumeL'] == 1.2
     assert summary['placementZones'] == ['NON_SORT', 'SORT']
     assert summary['unknownRowCount'] == 0
-    partial = node("SkladOzon.buildClusterPlanSummary({productRows:[{need:{ozon_recommended_qty:0,calculated_need_qty:0},calculated_plan_qty:0,shippable:{shippable_qty:0,total_volume_l:0,placement_zones:['SORT']}},{need:{ozon_recommended_qty:null,calculated_need_qty:undefined},calculated_plan_qty:'',shippable:{shippable_qty:null,total_volume_l:NaN,placement_zones:[]}}]})")
+    partial = node("SkladOzon.buildClusterPlanSummary({productRows:[{need:{ozon_recommended_qty:0,calculated_need_qty:0},calculated_plan_qty:0,shippable:{shippable_qty:0,total_volume_l:0,placement_zones:['SORT']},working:{working_qty:0,total_volume_l:0}},{need:{ozon_recommended_qty:null,calculated_need_qty:undefined},calculated_plan_qty:'',shippable:{shippable_qty:null,total_volume_l:NaN,placement_zones:[]},working:{working_qty:null,total_volume_l:NaN}}]})")
     assert partial['ozonRecommendedQty'] is None
     assert partial['calculatedNeedQty'] is None
     assert partial['calculatedPlanQty'] is None

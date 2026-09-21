@@ -1,5 +1,6 @@
 from pathlib import Path
 from dataclasses import replace
+import pytest
 
 import backend.api as api_module
 from backend.project import load_project
@@ -63,3 +64,39 @@ def test_active_override_blocks_legacy_shipment_candidates(tmp_path, monkeypatch
         'preferred_clusters_per_shipment': 1, 'max_clusters_per_shipment': 1}})
     assert response.status_code == 409
     assert response.json()['error']['code'] == 'WORKING_PLAN_REQUIRED'
+
+
+@pytest.mark.parametrize(('path', 'method', 'payload'), [
+    ('/api/working-plan/override', 'put', {'quantity': 0}),
+    ('/api/working-plan/reset', 'post', {}),
+    ('/api/working-plan/bulk', 'post', {'action': 'set_zero'}),
+    ('/api/working-plan/reset-all', 'post', {}),
+])
+def test_every_mutation_rechecks_base_inside_persistence_lock(
+        tmp_path, monkeypatch, path, method, payload):
+    monkeypatch.setattr(api_module, 'PROJECT_PATH', tmp_path / 'project.json')
+    old = _analyze_api_plan(); base = identity(old)
+    row = CLIENT.post('/api/working-plan', json=base).json()['working_plan']['lines'][0]
+    stored = api_module.ANALYSIS_STORE.get(base['analysis_snapshot_id'])
+    newer_plan = replace(stored.shippable_plan, analysis_snapshot_id='as_race',
+                         shippable_plan_id='sp_race')
+    newer = replace(stored, snapshot_id='as_race', shippable_plan=newer_plan)
+    original = api_module._working_base
+
+    def advance_after_fast_precheck(*args):
+        result = original(*args)
+        api_module.ANALYSIS_STORE.put(newer)
+        return result
+
+    monkeypatch.setattr(api_module, '_working_base', advance_after_fast_precheck)
+    request = {**base, **payload}
+    if path.endswith(('override', 'reset')):
+        request.update(sku=row['sku'],
+                       destination_cluster_id=row['destination_cluster_id'])
+    if path.endswith('bulk'):
+        request['lines'] = [{'sku': row['sku'],
+                             'destination_cluster_id': row['destination_cluster_id']}]
+    response = getattr(CLIENT, method)(path, json=request)
+    assert response.status_code == 409
+    assert response.json()['error']['code'] == 'WORKING_PLAN_BASE_CHANGED'
+    assert not api_module.PROJECT_PATH.exists()

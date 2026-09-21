@@ -55,6 +55,7 @@ class WorkingPlan:
     attention_count: int
     blocked_count: int
     overridden_count: int
+    active_override_count: int
     orphan_override_count: int
 
 
@@ -161,7 +162,9 @@ def materialize_working_plan(
         sum(x.status == READY for x in lines_tuple),
         sum(x.status == ATTENTION for x in lines_tuple),
         sum(x.status == BLOCKED for x in lines_tuple),
-        sum(x.is_overridden for x in lines_tuple), orphan_count)
+        sum(x.is_overridden for x in lines_tuple),
+        sum(x.is_overridden and x.working_qty != x.system_qty for x in lines_tuple),
+        orphan_count)
 
 
 def has_active_overrides(plan: ShippablePlan, overrides) -> bool:
