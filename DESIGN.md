@@ -223,3 +223,7 @@ Motion минимален и сообщает состояние: открыти
 Pack multiplicity is article-level master data stored in Project schema v2. Each record keeps the Unitka baseline separately from a manual or XLSX-imported override; resolution is `override → Unitka → unknown`. The directory is persisted atomically in `data/project.json`, and importing a newer Unitka workbook refreshes only the baseline.
 
 This directory is deliberately not connected to `ShippablePlan`, the optimizer, or shipment candidates in PR1. In PR2, one resolved article multiplicity will constrain **each `SKU × destination_cluster_id` line independently**. For example, Moscow need 25 and Rostov need 5 with pack 50 are two separate choices from `0 / 50 / 100 / …`; they must never be summed into one shared pack across clusters.
+Pack multiplicity is applied independently to each SKU × destination cluster.
+The system pack target uses the nearest valid whole-pack quantity; half-pack ties
+round upward. No cross-cluster donor rebalance is performed. Examples:
+`5 / 50 → 0`, `25 / 50 → 50`, `65 / 40 → 80`.

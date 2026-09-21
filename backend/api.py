@@ -41,7 +41,7 @@ from backend.ingestion.api_product_economics import merge_api_product_economics
 from backend.project import (EconomicsSettings, OptimizerThresholds, Project,
                              ProjectValidationError, load_project_if_exists,
                              save_project_atomic)
-from backend.pack_multiplicity import (export_xlsx, parse_import_xlsx,
+from backend.pack_multiplicity import (build_effective_pack_evidence, export_xlsx, parse_import_xlsx,
                                        reset_override,
                                        resolve_pack_multiplicity, set_override,
                                        sync_unitka_baseline)
@@ -806,6 +806,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         pack_evidence=()
     with PROJECT_PERSISTENCE_LOCK:
         project=load_project_if_exists(PROJECT_PATH)
+        pack_evidence=build_effective_pack_evidence(project,pack_evidence)
     resolution = resolve_analysis_clusters(
         availability.records, restrictions.records, orders.records, tariffs.records,
         project.manual_cluster_mappings
@@ -1077,6 +1078,7 @@ async def put_pack_multiplicity(article: str, request: Request):
             project, normalized=set_override(load_project_if_exists(PROJECT_PATH),article,payload["pack_multiple"],"manual")
             save_project_atomic(PROJECT_PATH,project)
     except (ValueError,ProjectValidationError): return error(400,"INVALID_PACK_MULTIPLICITY","Кратность должна быть положительным целым числом.","pack_multiple")
+    ANALYSIS_STORE.clear(); SHIPMENT_PLAN_STORE.clear()
     return {"api_version":1,"item":next(item for item in _pack_items(project) if item["article"]==normalized)}
 
 
@@ -1087,6 +1089,7 @@ def delete_pack_multiplicity(article: str):
             project, normalized=reset_override(load_project_if_exists(PROJECT_PATH),article)
             save_project_atomic(PROJECT_PATH,project)
     except (ValueError,ProjectValidationError): return error(400,"INVALID_ARTICLE","Некорректный артикул.","article")
+    ANALYSIS_STORE.clear(); SHIPMENT_PLAN_STORE.clear()
     return {"api_version":1,"item":next(item for item in _pack_items(project) if item["article"]==normalized)}
 
 
@@ -1100,6 +1103,7 @@ async def import_pack_multiplicity(request: Request):
         project=load_project_if_exists(PROJECT_PATH)
         for article,value in values.items(): project,_=set_override(project,article,value,"import")
         save_project_atomic(PROJECT_PATH,project)
+    ANALYSIS_STORE.clear(); SHIPMENT_PLAN_STORE.clear()
     return {"api_version":1,"accepted":len(values),"rejected":len(diagnostics),"diagnostics":wire(diagnostics)}
 
 

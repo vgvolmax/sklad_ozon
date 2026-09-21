@@ -17,6 +17,7 @@ from backend.supply import (
     ShippableLine,
     ShippablePlan,
     build_shippable_plan,
+    nearest_pack_target,
     round_up_to_pack,
 )
 from backend.supply.shippable_plan import whole_pack_capacity
@@ -75,6 +76,44 @@ def build(*, decisions, stock=100, facts=None, products=None,
 ])
 def test_round_up_to_pack_matrix(quantity, pack, expected):
     assert round_up_to_pack(quantity, pack) == expected
+
+
+@pytest.mark.parametrize(("quantity", "pack", "expected"), [
+    (0, 50, 0), (1, 50, 0), (5, 50, 0), (24, 50, 0),
+    (25, 50, 50), (26, 50, 50), (49, 50, 50), (50, 50, 50),
+    (51, 50, 50), (74, 50, 50), (75, 50, 100), (99, 50, 100),
+    (55, 40, 40), (60, 40, 80), (65, 40, 80), (80, 40, 80),
+])
+def test_nearest_pack_target_matrix(quantity, pack, expected):
+    assert nearest_pack_target(quantity, pack) == expected
+
+
+def test_pack_targets_are_independent_per_cluster_and_can_round_to_zero():
+    plan = build(
+        decisions=(decision("Moscow", 25, 1), decision("Rostov", 5, 2)),
+        stock=100,
+        facts=(fact("Moscow", pack=50), fact("Rostov", pack=50)),
+    )
+    lines = {line.destination_cluster_id: line for line in plan.lines}
+    assert (lines["Moscow"].rounded_target_qty, lines["Moscow"].shippable_qty) == (50, 50)
+    assert (lines["Rostov"].rounded_target_qty, lines["Rostov"].shippable_qty) == (0, 0)
+    assert lines["Rostov"].rounding_delta_qty == -5
+    assert "ROUNDED_DOWN_TO_WHOLE_PACK" in lines["Rostov"].reason_codes
+
+
+def test_signed_rounding_contract_and_pack_alignment():
+    line = ShippableLine(
+        sku="SKU", article="A", destination_cluster_id="C", analytical_qty=5,
+        rounded_target_qty=0, rounding_delta_qty=-5, allocation_priority_rank=1,
+        pack_multiple=50, resolved_seller_stock=50, shippable_qty=0,
+        unit_volume_l=Decimal("1"), total_volume_l=Decimal("0"),
+        placement_zone_kind=PlacementZoneKind.UNKNOWN, placement_zones=(),
+        reason_codes=("ROUNDED_DOWN_TO_WHOLE_PACK",), pack_source="manual",
+    )
+    assert line.rounding_delta_qty == -5
+    with pytest.raises(ValueError, match="whole pack"):
+        ShippableLine(**{name: getattr(line, name) for name in line.__slots__} |
+                       {"rounded_target_qty": 30, "rounding_delta_qty": 25})
 
 
 @pytest.mark.parametrize(("quantity", "pack", "error"), [

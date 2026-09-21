@@ -26,3 +26,13 @@ def test_crud_import_export_and_persistence(tmp_path,monkeypatch):
     assert client.delete('/api/project/pack-multiplicity/17261').json()['item']['pack_multiple']==20
     exported=client.get('/api/project/pack-multiplicity/export')
     assert exported.status_code==200 and exported.content.startswith(b'PK')
+
+
+def test_mutations_clear_derived_analysis_and_shipment_stores(tmp_path,monkeypatch):
+    path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
+    save_project_atomic(path,Project(pack_multiplicity={'17261':PackMultiplicityRecord(20)}))
+    cleared=[]
+    monkeypatch.setattr(api.ANALYSIS_STORE,'clear',lambda:cleared.append('analysis'))
+    monkeypatch.setattr(api.SHIPMENT_PLAN_STORE,'clear',lambda:cleared.append('shipment'))
+    assert client.put('/api/project/pack-multiplicity/17261',json={'pack_multiple':50}).status_code==200
+    assert cleared == ['analysis','shipment']

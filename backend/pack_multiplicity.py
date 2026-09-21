@@ -29,6 +29,15 @@ class PackImportDiagnostic:
     message: str
 
 
+@dataclass(frozen=True, slots=True)
+class EffectivePackEvidence:
+    """One immutable effective pack value used by an analysis run."""
+    article: str
+    pack_multiple: int | None
+    source: str
+    reason_codes: tuple[str, ...]
+
+
 def validate_pack_multiple(value: object, *, excel: bool = False) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("Кратность должна быть положительным целым числом.")
@@ -75,6 +84,35 @@ def sync_unitka_baseline(project: Project, evidence) -> Project:
         old = records.get(item.article, PackMultiplicityRecord())
         records[item.article] = replace(old, unitka_pack_multiple=item.pack_multiple)
     return replace(project, pack_multiplicity=records)
+
+
+def build_effective_pack_evidence(project: Project, current_unitka_evidence) -> tuple[EffectivePackEvidence, ...]:
+    """Resolve override > current Unitka > unknown without rereading Project.
+
+    Current invalid/conflicting Unitka evidence remains causal evidence.  A valid
+    persisted override masks that error for operational planning.
+    """
+    current = {item.article: item for item in current_unitka_evidence}
+    articles = sorted(set(project.pack_multiplicity) | set(current))
+    result = []
+    for article in articles:
+        record = project.pack_multiplicity.get(article)
+        resolved = resolve_pack_multiplicity(record)
+        observed = current.get(article)
+        if resolved.source in {"manual", "import"}:
+            result.append(EffectivePackEvidence(
+                article, resolved.pack_multiple, resolved.source, ()))
+        elif observed is not None and observed.pack_multiple is None:
+            result.append(EffectivePackEvidence(
+                article, None, "unknown",
+                observed.reason_codes or ("MISSING_PACK_MULTIPLICITY",)))
+        elif resolved.pack_multiple is not None:
+            result.append(EffectivePackEvidence(
+                article, resolved.pack_multiple, "unitka", ()))
+        else:
+            result.append(EffectivePackEvidence(
+                article, None, "unknown", ("MISSING_PACK_MULTIPLICITY",)))
+    return tuple(result)
 
 
 def parse_import_xlsx(data: bytes) -> tuple[dict[str, int], tuple[PackImportDiagnostic, ...]]:

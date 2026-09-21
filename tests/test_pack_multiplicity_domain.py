@@ -6,7 +6,7 @@ import pytest
 from openpyxl import Workbook, load_workbook
 
 from backend.pack_multiplicity import (
-    export_xlsx, parse_import_xlsx, reset_override, resolve_pack_multiplicity,
+    build_effective_pack_evidence, export_xlsx, parse_import_xlsx, reset_override, resolve_pack_multiplicity,
     set_override, sync_unitka_baseline, validate_pack_multiple,
 )
 from backend.ingestion.supplier_packaging import PackMultiplicityEvidence
@@ -30,6 +30,18 @@ def test_effective_precedence_reset_and_origins():
     project,_=reset_override(project,'17261')
     assert resolve_pack_multiplicity(project.pack_multiplicity['17261']).pack_multiple == 20
     assert resolve_pack_multiplicity(None).source == 'unknown'
+
+
+def test_effective_analysis_evidence_override_masks_invalid_unitka():
+    invalid=(PackMultiplicityEvidence('17261',None,2,None,('INVALID_PACK_MULTIPLICITY',)),)
+    project=Project(pack_multiplicity={
+        '17261':PackMultiplicityRecord(None,50,'manual','now'),
+    })
+    assert build_effective_pack_evidence(project,invalid)[0] == \
+        build_effective_pack_evidence(project,invalid)[0].__class__('17261',50,'manual',())
+    unknown=build_effective_pack_evidence(Project(),invalid)[0]
+    assert (unknown.pack_multiple,unknown.source,unknown.reason_codes) == \
+        (None,'unknown',('INVALID_PACK_MULTIPLICITY',))
 
 @pytest.mark.parametrize('value', [1,50])
 def test_valid_pack_multiple(value): assert validate_pack_multiple(value)==value

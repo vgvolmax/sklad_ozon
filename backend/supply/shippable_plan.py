@@ -40,6 +40,17 @@ def round_up_to_pack(quantity: int, pack_multiple: int) -> int:
     return ((quantity + pack_multiple - 1) // pack_multiple) * pack_multiple
 
 
+def nearest_pack_target(quantity: int, pack_multiple: int) -> int:
+    """Return the nearest whole-pack quantity; exact half-pack ties go up."""
+    quantity = _require_int(quantity, "quantity")
+    pack_multiple = _require_int(pack_multiple, "pack_multiple", positive=True)
+    lower = (quantity // pack_multiple) * pack_multiple
+    if quantity == lower:
+        return quantity
+    upper = lower + pack_multiple
+    return lower if quantity - lower < upper - quantity else upper
+
+
 def whole_pack_capacity(
     *, capacity_kind: RestrictionCapacityKind,
     capacity_qty: int | None, pack_multiple: int,
@@ -114,6 +125,7 @@ def _plan_id(*, analysis_snapshot_id, source_mode, source_snapshot_id,
             "rounding_delta_qty": line.rounding_delta_qty,
             "allocation_priority_rank": line.allocation_priority_rank,
             "pack_multiple": line.pack_multiple,
+            "pack_source": line.pack_source,
             "resolved_seller_stock": line.resolved_seller_stock,
             "shippable_qty": line.shippable_qty,
             "unit_volume_l": _decimal_text(line.unit_volume_l),
@@ -212,10 +224,12 @@ def build_shippable_plan(
             elif pack is None:
                 rounded = delta = None
             else:
-                rounded = round_up_to_pack(item.allocation_qty, pack)
+                rounded = nearest_pack_target(item.allocation_qty, pack)
                 delta = rounded - item.allocation_qty
-                if delta:
+                if delta > 0:
                     reasons.append("ROUNDED_UP_TO_WHOLE_PACK")
+                elif delta < 0:
+                    reasons.append("ROUNDED_DOWN_TO_WHOLE_PACK")
             drafts_by_sku[sku].append({
                 "decision": item, "fact": fact, "pack": pack, "rounded": rounded,
                 "delta": delta, "volume": volume,
@@ -285,6 +299,7 @@ def build_shippable_plan(
                                      else fact.placement_zone_kind),
                 placement_zones=() if fact is None else fact.placement_zones,
                 reason_codes=tuple(dict.fromkeys(draft["reasons"])),
+                pack_source="unknown" if fact is None else fact.pack_source,
             ))
     lines.sort(key=lambda line: (line.sku, line.destination_cluster_id))
     diagnostics = list(dict.fromkeys(diagnostics))
