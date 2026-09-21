@@ -7,7 +7,8 @@ from openpyxl import Workbook, load_workbook
 
 from backend.pack_multiplicity import (
     build_effective_pack_evidence, export_xlsx, parse_import_xlsx, reset_override, resolve_pack_multiplicity,
-    set_override, sync_unitka_baseline, validate_pack_multiple,
+    pack_multiplicity_fingerprint, set_override, sync_unitka_baseline,
+    validate_pack_multiple,
 )
 from backend.ingestion.supplier_packaging import PackMultiplicityEvidence
 from backend.project import PackMultiplicityRecord, Project, load_project, save_project_atomic
@@ -42,6 +43,63 @@ def test_effective_analysis_evidence_override_masks_invalid_unitka():
     unknown=build_effective_pack_evidence(Project(),invalid)[0]
     assert (unknown.pack_multiple,unknown.source,unknown.reason_codes) == \
         (None,'unknown',('INVALID_PACK_MULTIPLICITY',))
+
+
+def test_effective_analysis_evidence_prefers_current_unitka_over_persisted():
+    current=(PackMultiplicityEvidence('17261',50,2,'x / 50',()),)
+    project=Project(pack_multiplicity={
+        '17261':PackMultiplicityRecord(unitka_pack_multiple=20),
+    })
+
+    effective=build_effective_pack_evidence(project,current)[0]
+
+    assert (effective.pack_multiple,effective.source,effective.reason_codes) == \
+        (50,'unitka',())
+
+
+def test_effective_analysis_evidence_prefers_override_over_current_unitka():
+    current=(PackMultiplicityEvidence('17261',50,2,'x / 50',()),)
+    project=Project(pack_multiplicity={
+        '17261':PackMultiplicityRecord(20,40,'manual','now'),
+    })
+    assert build_effective_pack_evidence(project,current)[0].pack_multiple == 40
+
+
+def test_effective_analysis_evidence_current_invalid_blocks_persisted_fallback():
+    current=(PackMultiplicityEvidence(
+        '17261',None,2,None,('CONFLICTING_PACK_MULTIPLICITY',)),)
+    project=Project(pack_multiplicity={
+        '17261':PackMultiplicityRecord(unitka_pack_multiple=20),
+    })
+
+    effective=build_effective_pack_evidence(project,current)[0]
+
+    assert (effective.pack_multiple,effective.source,effective.reason_codes) == \
+        (None,'unknown',('CONFLICTING_PACK_MULTIPLICITY',))
+
+
+def test_effective_analysis_evidence_falls_back_only_when_current_is_missing():
+    project=Project(pack_multiplicity={
+        '17261':PackMultiplicityRecord(unitka_pack_multiple=20),
+    })
+    effective=build_effective_pack_evidence(project,())[0]
+    assert (effective.pack_multiple,effective.source,effective.reason_codes) == \
+        (20,'unitka',())
+    assert build_effective_pack_evidence(Project(),()) == ()
+
+
+def test_pack_fingerprint_is_deterministic_and_pack_specific():
+    left=Project(pack_multiplicity={
+        'B':PackMultiplicityRecord(20), 'A':PackMultiplicityRecord(10),
+    },manual_cluster_mappings={'old':'new'})
+    reordered=Project(pack_multiplicity={
+        'A':PackMultiplicityRecord(10), 'B':PackMultiplicityRecord(20),
+    })
+    changed=Project(pack_multiplicity={
+        'A':PackMultiplicityRecord(10), 'B':PackMultiplicityRecord(50),
+    })
+    assert pack_multiplicity_fingerprint(left) == pack_multiplicity_fingerprint(reordered)
+    assert pack_multiplicity_fingerprint(left) != pack_multiplicity_fingerprint(changed)
 
 @pytest.mark.parametrize('value', [1,50])
 def test_valid_pack_multiple(value): assert validate_pack_multiple(value)==value

@@ -42,6 +42,7 @@ from backend.project import (EconomicsSettings, OptimizerThresholds, Project,
                              ProjectValidationError, load_project_if_exists,
                              save_project_atomic)
 from backend.pack_multiplicity import (build_effective_pack_evidence, export_xlsx, parse_import_xlsx,
+                                       pack_multiplicity_fingerprint,
                                        reset_override,
                                        resolve_pack_multiplicity, set_override,
                                        sync_unitka_baseline)
@@ -145,6 +146,44 @@ def commit_active_credential_context(context: OzonCredentialContext, action, *, 
             raise ShipmentPreparationError(
                 'OZON_CREDENTIAL_CONTEXT_CHANGED',CREDENTIAL_CONTEXT_MESSAGE,field,409)
         return action()
+
+PACK_MULTIPLICITY_CHANGED_MESSAGE = (
+    'Кратность упаковки изменилась во время расчёта. Запустите расчёт повторно.'
+)
+
+def commit_analysis_snapshot_if_current(
+        snapshot, *, expected_pack_fingerprint, expected_credential_context_id=None,
+        require_credential_context=False):
+    """Atomically guard an analysis commit by credential and pack revisions.
+
+    Lock order for the only operation requiring both locks is always Ozon
+    context first, then Project persistence.
+    """
+    def commit_under_project_lock():
+        with PROJECT_PERSISTENCE_LOCK:
+            current=load_project_if_exists(PROJECT_PATH)
+            if pack_multiplicity_fingerprint(current)!=expected_pack_fingerprint:
+                raise ShipmentPreparationError(
+                    'PACK_MULTIPLICITY_CHANGED_DURING_ANALYSIS',
+                    PACK_MULTIPLICITY_CHANGED_MESSAGE,None,409)
+            return ANALYSIS_STORE.put(snapshot)
+
+    if require_credential_context:
+        return commit_current_credential_context(
+            expected_credential_context_id,commit_under_project_lock,
+            field='source_snapshot_id')
+    return commit_under_project_lock()
+
+def _persist_unitka_baseline(project, evidence):
+    """Persist a changed Unitka baseline and invalidate dependent stores."""
+    updated=sync_unitka_baseline(project,evidence)
+    changed=updated.pack_multiplicity!=project.pack_multiplicity
+    if changed:
+        save_project_atomic(PROJECT_PATH,updated)
+        ANALYSIS_STORE.clear()
+        SHIPMENT_PLAN_STORE.clear()
+        return updated,True
+    return project,False
 
 def current_source(source_snapshot_id, *, field='source_snapshot_id'):
     snapshot=OZON_SOURCE_STORE.get(source_snapshot_id)
@@ -580,8 +619,7 @@ async def import_unitka(request:Request):
     bundle=import_unitka_bundle(data,context)
     products, tariffs, packs = bundle.product_economics, bundle.tariffs, bundle.pack_multiplicity
     with PROJECT_PERSISTENCE_LOCK:
-        project=sync_unitka_baseline(load_project_if_exists(PROJECT_PATH),packs.records)
-        save_project_atomic(PROJECT_PATH,project)
+        project,_=_persist_unitka_baseline(load_project_if_exists(PROJECT_PATH),packs.records)
     return {"api_version":1,"kind":"unitka","product_economics":wire(products.records),"tariffs":wire(tariffs.records),
             "pack_multiplicity":wire(packs.records),
             "diagnostics":wire(products.diagnostics+tariffs.diagnostics+packs.diagnostics),"meta":wire(context),
@@ -799,14 +837,16 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         tariffs,products=bundle.tariffs,bundle.product_economics
         pack_evidence=bundle.pack_multiplicity.records
         with PROJECT_PERSISTENCE_LOCK:
-            project=sync_unitka_baseline(load_project_if_exists(PROJECT_PATH),pack_evidence)
-            save_project_atomic(PROJECT_PATH,project)
+            project,_=_persist_unitka_baseline(load_project_if_exists(PROJECT_PATH),pack_evidence)
+            pack_evidence=build_effective_pack_evidence(project,pack_evidence)
+            pack_fingerprint_at_start=pack_multiplicity_fingerprint(project)
     else:
         tariffs=timed("tariffs_import",import_tariffs,raw[economics_offset][1],meta(raw[economics_offset][0])); products=timed("product_economics_import",import_product_economics,raw[economics_offset+1][1],meta(raw[economics_offset+1][0]))
         pack_evidence=()
-    with PROJECT_PERSISTENCE_LOCK:
-        project=load_project_if_exists(PROJECT_PATH)
-        pack_evidence=build_effective_pack_evidence(project,pack_evidence)
+        with PROJECT_PERSISTENCE_LOCK:
+            project=load_project_if_exists(PROJECT_PATH)
+            pack_evidence=build_effective_pack_evidence(project,pack_evidence)
+            pack_fingerprint_at_start=pack_multiplicity_fingerprint(project)
     resolution = resolve_analysis_clusters(
         availability.records, restrictions.records, orders.records, tariffs.records,
         project.manual_cluster_mappings
@@ -1013,12 +1053,11 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         blocked_decision_rows=snapshot.decision_rows,
     )
     snapshot=replace(snapshot,shippable_plan=shippable_plan)
-    if snapshot.source_mode is SourceMode.API:
-        expected_context=provenance[2] if len(provenance)>2 else None
-        commit_current_credential_context(
-            expected_context,lambda:ANALYSIS_STORE.put(snapshot),field='source_snapshot_id')
-    else:
-        ANALYSIS_STORE.put(snapshot)
+    expected_context=provenance[2] if len(provenance)>2 else None
+    commit_analysis_snapshot_if_current(
+        snapshot,expected_pack_fingerprint=pack_fingerprint_at_start,
+        expected_credential_context_id=expected_context,
+        require_credential_context=snapshot.source_mode is SourceMode.API)
     return {"api_version":1,"complete":complete,"snapshot":wire(snapshot),"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"safe_allocations":wire(result.safe_allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}
 
 

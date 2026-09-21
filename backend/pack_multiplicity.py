@@ -1,5 +1,7 @@
 """Persistent article-level pack multiplicity master data."""
 
+import hashlib
+import json
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -86,8 +88,26 @@ def sync_unitka_baseline(project: Project, evidence) -> Project:
     return replace(project, pack_multiplicity=records)
 
 
+def pack_multiplicity_fingerprint(project: Project) -> str:
+    """Return a deterministic revision for pack master data only."""
+    payload = [
+        {
+            "article": article,
+            "unitka_pack_multiple": record.unitka_pack_multiple,
+            "override_pack_multiple": record.override_pack_multiple,
+            "override_origin": record.override_origin,
+            "override_updated_at": record.override_updated_at,
+        }
+        for article, record in sorted(project.pack_multiplicity.items())
+    ]
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def build_effective_pack_evidence(project: Project, current_unitka_evidence) -> tuple[EffectivePackEvidence, ...]:
-    """Resolve override > current Unitka > unknown without rereading Project.
+    """Resolve override > current Unitka > persisted Unitka > unknown.
 
     Current invalid/conflicting Unitka evidence remains causal evidence.  A valid
     persisted override masks that error for operational planning.
@@ -102,10 +122,14 @@ def build_effective_pack_evidence(project: Project, current_unitka_evidence) -> 
         if resolved.source in {"manual", "import"}:
             result.append(EffectivePackEvidence(
                 article, resolved.pack_multiple, resolved.source, ()))
-        elif observed is not None and observed.pack_multiple is None:
-            result.append(EffectivePackEvidence(
-                article, None, "unknown",
-                observed.reason_codes or ("MISSING_PACK_MULTIPLICITY",)))
+        elif observed is not None:
+            if observed.pack_multiple is not None:
+                result.append(EffectivePackEvidence(
+                    article, observed.pack_multiple, "unitka", ()))
+            else:
+                result.append(EffectivePackEvidence(
+                    article, None, "unknown",
+                    observed.reason_codes or ("MISSING_PACK_MULTIPLICITY",)))
         elif resolved.pack_multiple is not None:
             result.append(EffectivePackEvidence(
                 article, resolved.pack_multiple, "unitka", ()))
