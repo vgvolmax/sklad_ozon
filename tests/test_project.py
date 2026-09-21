@@ -31,7 +31,7 @@ def test_valid_project_round_trip_preserves_all_inputs_and_decimal_strings(tmp_p
     project = sample_project()
     save_project_atomic(path, project)
     payload = json.loads(path.read_text("utf-8"))
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["tariffs"][0]["max_price"] == "635.77"
     assert payload["product_economics"][0]["cost"] == "635.77"
     assert load_project(path) == replace(project, tariffs=(replace(project.tariffs[0], max_price=Decimal("635.77"), logistics_fee=Decimal("49.9")),), product_economics=(replace(project.product_economics[0], cost=Decimal("635.77")),))
@@ -39,7 +39,7 @@ def test_valid_project_round_trip_preserves_all_inputs_and_decimal_strings(tmp_p
 
 @pytest.mark.parametrize("mutation", [
     lambda p: p.pop("schema_version"),
-    lambda p: p.update(schema_version=2),
+    lambda p: p.update(schema_version=3),
     lambda p: p.update(unknown=True),
 ])
 def test_rejects_missing_future_version_and_unknown_top_level_fields(tmp_path, mutation):
