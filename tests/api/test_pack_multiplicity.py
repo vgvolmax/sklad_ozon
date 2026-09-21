@@ -1,10 +1,12 @@
 from io import BytesIO
+from types import SimpleNamespace
 from openpyxl import Workbook
 from fastapi.testclient import TestClient
 import pytest
 
 import backend.api as api
 from backend.main import app
+from backend.ozon.contracts import OzonCredentialContext, OzonCredentials
 from backend.project import PackMultiplicityRecord, Project, load_project, save_project_atomic
 from backend.ingestion.supplier_packaging import PackMultiplicityEvidence
 from backend.pack_multiplicity import pack_multiplicity_fingerprint
@@ -125,4 +127,87 @@ def test_stale_analysis_commit_is_rejected_without_store_write(tmp_path,monkeypa
             object(),expected_pack_fingerprint=expected)
 
     assert caught.value.code=='PACK_MULTIPLICITY_CHANGED_DURING_ANALYSIS'
+    assert writes==[]
+
+
+def _shipment_commit_context():
+    return OzonCredentialContext('credential-context',OzonCredentials('client','key'),1)
+
+
+def _configure_shipment_commit(monkeypatch, snapshot):
+    monkeypatch.setattr(api.OZON_VAULT,'is_context_active',lambda context:True)
+    monkeypatch.setattr(api.ANALYSIS_STORE,'get',lambda snapshot_id:snapshot)
+
+
+def test_stale_shipment_commit_rejects_changed_pack_before_store_write(tmp_path,monkeypatch):
+    path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
+    old=Project(pack_multiplicity={'17261':PackMultiplicityRecord(20)})
+    save_project_atomic(path,old)
+    expected=pack_multiplicity_fingerprint(old)
+    snapshot=SimpleNamespace(shippable_plan=SimpleNamespace(shippable_plan_id='P1'))
+    _configure_shipment_commit(monkeypatch,snapshot)
+    save_project_atomic(path,Project(pack_multiplicity={'17261':PackMultiplicityRecord(50)}))
+    writes=[]; monkeypatch.setattr(api.SHIPMENT_PLAN_STORE,'put',writes.append)
+
+    with pytest.raises(ShipmentPreparationError) as caught:
+        api.commit_shipment_plan_if_current(
+            object(),expected_analysis_snapshot_id='A1',
+            expected_shippable_plan_id='P1',expected_pack_fingerprint=expected,
+            credential_context=_shipment_commit_context())
+
+    assert caught.value.code=='PACK_MULTIPLICITY_CHANGED_DURING_SHIPMENT_VALIDATION'
+    assert writes==[]
+
+
+@pytest.mark.parametrize('snapshot',[None,SimpleNamespace(shippable_plan=None),
+    SimpleNamespace(shippable_plan=SimpleNamespace(shippable_plan_id='P2'))])
+def test_stale_shipment_commit_rejects_changed_analysis_snapshot(tmp_path,monkeypatch,snapshot):
+    path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
+    project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(20)})
+    save_project_atomic(path,project)
+    _configure_shipment_commit(monkeypatch,snapshot)
+    writes=[]; monkeypatch.setattr(api.SHIPMENT_PLAN_STORE,'put',writes.append)
+
+    with pytest.raises(ShipmentPreparationError) as caught:
+        api.commit_shipment_plan_if_current(
+            object(),expected_analysis_snapshot_id='A1',
+            expected_shippable_plan_id='P1',
+            expected_pack_fingerprint=pack_multiplicity_fingerprint(project),
+            credential_context=_shipment_commit_context())
+
+    assert caught.value.code=='SHIPMENT_INPUT_CHANGED'
+    assert writes==[]
+
+
+def test_current_shipment_commit_writes_once(tmp_path,monkeypatch):
+    path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
+    project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(20)})
+    save_project_atomic(path,project)
+    _configure_shipment_commit(monkeypatch,
+        SimpleNamespace(shippable_plan=SimpleNamespace(shippable_plan_id='P1')))
+    shipment=object(); writes=[]; monkeypatch.setattr(api.SHIPMENT_PLAN_STORE,'put',writes.append)
+
+    api.commit_shipment_plan_if_current(
+        shipment,expected_analysis_snapshot_id='A1',expected_shippable_plan_id='P1',
+        expected_pack_fingerprint=pack_multiplicity_fingerprint(project),
+        credential_context=_shipment_commit_context())
+
+    assert writes==[shipment]
+
+
+def test_stale_shipment_commit_preserves_credential_context_guard(tmp_path,monkeypatch):
+    path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
+    project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(20)})
+    save_project_atomic(path,project)
+    monkeypatch.setattr(api.OZON_VAULT,'is_context_active',lambda context:False)
+    writes=[]; monkeypatch.setattr(api.SHIPMENT_PLAN_STORE,'put',writes.append)
+
+    with pytest.raises(ShipmentPreparationError) as caught:
+        api.commit_shipment_plan_if_current(
+            object(),expected_analysis_snapshot_id='A1',
+            expected_shippable_plan_id='P1',
+            expected_pack_fingerprint=pack_multiplicity_fingerprint(project),
+            credential_context=_shipment_commit_context())
+
+    assert caught.value.code=='OZON_CREDENTIAL_CONTEXT_CHANGED'
     assert writes==[]

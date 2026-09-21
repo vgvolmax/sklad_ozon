@@ -58,6 +58,7 @@ from backend.ozon.sync import capability_matrix, sync_ozon_source
 from backend.ozon.draft_validation import DraftValidationService
 from backend.shipment import DEFAULT_MAX_CANDIDATES, build_candidate_result
 from backend.shipment.store import AnalysisSnapshotStore, ShipmentPlanStore
+from backend.shipment.contracts import ShipmentPlan
 from backend.shipment.orchestration import build_shipment_plan, ShipmentOrchestrationError
 from backend.shipment.export import render_export, ShipmentExportError
 from backend.shipment.wire import parse_shipment_scenario
@@ -150,6 +151,53 @@ def commit_active_credential_context(context: OzonCredentialContext, action, *, 
 PACK_MULTIPLICITY_CHANGED_MESSAGE = (
     'Кратность упаковки изменилась во время расчёта. Запустите расчёт повторно.'
 )
+PACK_MULTIPLICITY_CHANGED_DURING_SHIPMENT_VALIDATION_MESSAGE = (
+    'Кратность упаковки изменилась во время проверки поставки. '
+    'Пересчитайте план и проверьте варианты повторно.'
+)
+SHIPMENT_INPUT_CHANGED_MESSAGE = (
+    'Данные плана изменились во время проверки поставки. '
+    'Проверьте варианты в Ozon повторно.'
+)
+
+def _require_current_shippable_plan(analysis_snapshot_id, shippable_plan_id):
+    snapshot=ANALYSIS_STORE.get(analysis_snapshot_id)
+    if (snapshot is None or snapshot.shippable_plan is None or
+            snapshot.shippable_plan.shippable_plan_id!=shippable_plan_id):
+        raise ShipmentPreparationError(
+            'SHIPMENT_INPUT_CHANGED',SHIPMENT_INPUT_CHANGED_MESSAGE,
+            'analysis_snapshot_id',409)
+    return snapshot
+
+def capture_shipment_pack_fingerprint_if_current(
+        *, expected_analysis_snapshot_id, expected_shippable_plan_id):
+    """Capture pack master-data only while the prepared plan is authoritative."""
+    with PROJECT_PERSISTENCE_LOCK:
+        current=load_project_if_exists(PROJECT_PATH)
+        _require_current_shippable_plan(
+            expected_analysis_snapshot_id,expected_shippable_plan_id)
+        return pack_multiplicity_fingerprint(current)
+
+def commit_shipment_plan_if_current(
+        shipment: ShipmentPlan, *, expected_analysis_snapshot_id: str,
+        expected_shippable_plan_id: str, expected_pack_fingerprint: str,
+        credential_context: OzonCredentialContext):
+    """Atomically reject stale live validation before persisting its plan."""
+    with OZON_CONTEXT_COMMIT_LOCK:
+        if not OZON_VAULT.is_context_active(credential_context):
+            raise ShipmentPreparationError(
+                'OZON_CREDENTIAL_CONTEXT_CHANGED',CREDENTIAL_CONTEXT_MESSAGE,
+                'analysis_snapshot_id',409)
+        with PROJECT_PERSISTENCE_LOCK:
+            current=load_project_if_exists(PROJECT_PATH)
+            if pack_multiplicity_fingerprint(current)!=expected_pack_fingerprint:
+                raise ShipmentPreparationError(
+                    'PACK_MULTIPLICITY_CHANGED_DURING_SHIPMENT_VALIDATION',
+                    PACK_MULTIPLICITY_CHANGED_DURING_SHIPMENT_VALIDATION_MESSAGE,
+                    'analysis_snapshot_id',409)
+            _require_current_shippable_plan(
+                expected_analysis_snapshot_id,expected_shippable_plan_id)
+            return SHIPMENT_PLAN_STORE.put(shipment)
 
 def commit_analysis_snapshot_if_current(
         snapshot, *, expected_pack_fingerprint, expected_credential_context_id=None,
@@ -481,6 +529,11 @@ async def shipment_plan(request:Request):
         candidate_ids=ids,expected_credential_context_id=expected_context)
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     try:
+        expected_pack_fingerprint=capture_shipment_pack_fingerprint_if_current(
+            expected_analysis_snapshot_id=analysis_id,
+            expected_shippable_plan_id=plan_id)
+    except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
+    try:
         context=OZON_VAULT.capture_context()
         if context.context_id!=expected_context:return credential_context_error('analysis_snapshot_id')
     except OzonVaultError:return error(423,'OZON_VAULT_LOCKED','Unlock the Ozon credential vault first.',None)
@@ -492,7 +545,11 @@ async def shipment_plan(request:Request):
     if not OZON_VAULT.is_context_active(context):return credential_context_error('analysis_snapshot_id')
     try:shipment=build_shipment_plan(source_snapshot_id=source_id,analysis_snapshot_id=analysis_id,shippable_plan_id=plan_id,analysis_as_of=prepared.snapshot.analysis_as_of,scenario=prepared.scenario,candidates=prepared.candidates,validations=options,diagnostics=tuple(x.code for x in prepared.diagnostics))
     except ShipmentOrchestrationError as exc:return error(502,exc.code,'Ozon validation returned inconsistent candidate evidence.',None)
-    try:commit_active_credential_context(context,lambda:SHIPMENT_PLAN_STORE.put(shipment),field='analysis_snapshot_id')
+    try:commit_shipment_plan_if_current(
+        shipment,expected_analysis_snapshot_id=analysis_id,
+        expected_shippable_plan_id=plan_id,
+        expected_pack_fingerprint=expected_pack_fingerprint,
+        credential_context=context)
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     return {'api_version':1,'shipment_plan':wire(shipment)}
 
