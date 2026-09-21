@@ -8,6 +8,15 @@ from backend.ozon.source_contracts import PlacementZoneEvidence, SellerWarehouse
 from tests.api.test_analysis import CLIENT, _analysis_data, _api_parity_fixture, _parity_files
 
 
+def working_id(snapshot):
+    response = CLIENT.post("/api/working-plan", json={
+        "analysis_snapshot_id": snapshot["snapshot_id"],
+        "shippable_plan_id": snapshot["shippable_plan"]["shippable_plan_id"],
+    })
+    assert response.status_code == 200, response.text
+    return response.json()["working_plan"]["working_plan_id"]
+
+
 def _analyze_api_plan():
     base = _api_parity_fixture()
     source = replace(
@@ -35,6 +44,7 @@ def _analyze_api_plan():
     plan = replace(stored.shippable_plan, shippable_plan_id="sp-api-test", lines=(line,))
     api_module.ANALYSIS_STORE.put(replace(stored, shippable_plan=plan))
     payload["shippable_plan"] = api_module.wire(plan)
+    payload["working_plan_id"] = working_id(payload)
     return payload
 
 
@@ -46,6 +56,7 @@ def test_candidate_endpoint_uses_stored_plan_and_performs_no_network(monkeypatch
     response = CLIENT.post("/api/shipment/candidates", json={
         "analysis_snapshot_id": snapshot["snapshot_id"],
         "shippable_plan_id": plan["shippable_plan_id"],
+        "working_plan_id": snapshot["working_plan_id"],
         "scenario": {
             "selected_cluster_ids": ["Москва"],
             "date_from": "2026-09-11", "date_to": "2026-09-12",
@@ -68,10 +79,11 @@ def test_candidate_endpoint_rejects_foreign_plan_identity():
     response = CLIENT.post("/api/shipment/candidates", json={
         "analysis_snapshot_id": snapshot["snapshot_id"],
         "shippable_plan_id": "sp_frontend_forgery",
+        "working_plan_id": snapshot["working_plan_id"],
         "scenario": {},
     })
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == "SHIPPABLE_PLAN_IDENTITY_MISMATCH"
+    assert response.json()["error"]["code"] == "SHIPMENT_INPUT_CHANGED"
 
 
 def test_candidate_endpoint_rejects_client_candidate_limit():
@@ -81,6 +93,7 @@ def test_candidate_endpoint_rejects_client_candidate_limit():
     response = CLIENT.post("/api/shipment/candidates", json={
         "analysis_snapshot_id": snapshot["snapshot_id"],
         "shippable_plan_id": plan["shippable_plan_id"],
+        "working_plan_id": snapshot["working_plan_id"],
         "max_candidates": 100_000,
         "scenario": {
             "selected_cluster_ids": ["Москва"],

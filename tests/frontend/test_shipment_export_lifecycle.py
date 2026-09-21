@@ -13,7 +13,7 @@ def node(expression):
     return json.loads(subprocess.check_output(["node", "-e", script], text=True))
 
 
-CURRENT_PLAN = """(()=>{let s=SkladOzon.createInitialState();const snap={snapshot_id:'A1',source_mode:'api',source_snapshot_id:'S1',shippable_plan:{shippable_plan_id:'SP1'}};return {...s,snapshot:snap,source:{...s.source,mode:'api',snapshotId:'S1',source:{source_snapshot_id:'S1',credential_context_id:'C1'}},ozonConnection:{...s.ozonConnection,locked:false,credentialContextId:'C1'},shipmentView:{...s.shipmentView,dirty:false,planGeneration:4,plan:{shipment_plan_id:'SHIP1',analysis_snapshot_id:'A1',source_snapshot_id:'S1',shippable_plan_id:'SP1'}}};})()"""
+CURRENT_PLAN = """(()=>{let s=SkladOzon.createInitialState();const snap={snapshot_id:'A1',source_mode:'api',source_snapshot_id:'S1',shippable_plan:{shippable_plan_id:'SP1'},working_plan_id:'WP1'};return {...s,snapshot:snap,source:{...s.source,mode:'api',snapshotId:'S1',source:{source_snapshot_id:'S1',credential_context_id:'C1'}},workingPlan:{...s.workingPlan,plan:{working_plan_id:'WP1',analysis_snapshot_id:'A1',shippable_plan_id:'SP1',working_plan_id:'WP1'}},ozonConnection:{...s.ozonConnection,locked:false,credentialContextId:'C1'},shipmentView:{...s.shipmentView,dirty:false,planGeneration:4,plan:{shipment_plan_id:'SHIP1',analysis_snapshot_id:'A1',source_snapshot_id:'S1',shippable_plan_id:'SP1',working_plan_id:'WP1'}}};})()"""
 
 
 def apply_failure(code="null", message="Ошибка"):
@@ -125,6 +125,6 @@ def test_old_success_response_rejected_for_same_plan_id_new_generation():
 
 def test_plan_generation_starts_at_zero_and_survives_connection_reset():
     result = node(
-        "(()=>{let s=SkladOzon.createInitialState();const initial=s.shipmentView.planGeneration;s={...s,snapshot:{source_mode:'api'},ozonConnection:{...s.ozonConnection,credentialContextId:'old'},shipmentView:{...s.shipmentView,planGeneration:8,plan:{shipment_plan_id:'SHIP1'}}};s=SkladOzon.applyConnectionStatus(s,{credential_context_id:'new'});return {initial,plan:s.shipmentView.plan,generation:s.shipmentView.planGeneration};})()"
+        "(()=>{let s=SkladOzon.createInitialState();const initial=s.shipmentView.planGeneration;s={...s,snapshot:{source_mode:'api'},workingPlan:{...s.workingPlan,plan:{working_plan_id:'WP1',analysis_snapshot_id:'A1',shippable_plan_id:'SP1',working_plan_id:'WP1'}},ozonConnection:{...s.ozonConnection,credentialContextId:'old'},shipmentView:{...s.shipmentView,planGeneration:8,plan:{shipment_plan_id:'SHIP1'}}};s=SkladOzon.applyConnectionStatus(s,{credential_context_id:'new'});return {initial,plan:s.shipmentView.plan,generation:s.shipmentView.planGeneration};})()"
     )
     assert result == {"initial": 0, "plan": None, "generation": 8}

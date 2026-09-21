@@ -1,13 +1,14 @@
 """Canonical local method and placement compatibility rules."""
 
-from backend.supply.contracts import PlacementZoneKind, ShippableLine
+from backend.supply.contracts import PlacementZoneKind
 
 from .contracts import METHOD_RULES, ShipmentMethod
 
 
-def placement_reason(line: ShippableLine, method: ShipmentMethod) -> str | None:
+def placement_reason(line, method: ShipmentMethod) -> str | None:
     """Return a conservative blocking reason without reconstructing evidence."""
-    if line.placement_zone_kind is PlacementZoneKind.UNKNOWN or not line.placement_zones:
+    kind = getattr(line.placement_zone_kind, "value", line.placement_zone_kind)
+    if kind == PlacementZoneKind.UNKNOWN.value or not line.placement_zones:
         return "PLACEMENT_ZONE_INCOMPLETE"
     normalized = {zone.strip().upper() for zone in line.placement_zones}
     if method is ShipmentMethod.PVZ_CROSSDOCK and any(

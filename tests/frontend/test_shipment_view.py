@@ -5,9 +5,9 @@ def node(expr):
     script=f"require({json.dumps(str(ROOT/'frontend/assets/js/core.js'))});console.log(JSON.stringify({expr}))"
     return json.loads(subprocess.check_output(['node','-e',script],text=True))
 def test_cluster_initialization_and_scope_reconciliation():
-    plan="{lines:[{destination_cluster_id:'A',shippable_qty:6},{destination_cluster_id:'B',shippable_qty:0}]}"
+    plan="{lines:[{destination_cluster_id:'A',working_qty:6,status:'READY'},{destination_cluster_id:'B',working_qty:0,status:'READY'}]}"
     assert node(f"SkladOzon.reconcileShipmentClusters(SkladOzon.createInitialState().shipmentView,{plan}).selectedClusters")==['A']
-    result=node("SkladOzon.reconcileShipmentClusters({...SkladOzon.createInitialState().shipmentView,scopeTouched:true,selectedClusters:['A']},{lines:[{destination_cluster_id:'A',shippable_qty:1},{destination_cluster_id:'C',shippable_qty:1}]}).selectedClusters")
+    result=node("SkladOzon.reconcileShipmentClusters({...SkladOzon.createInitialState().shipmentView,scopeTouched:true,selectedClusters:['A']},{lines:[{destination_cluster_id:'A',working_qty:1,status:'READY'},{destination_cluster_id:'C',working_qty:1,status:'READY'}]}).selectedClusters")
     assert result==['A']
 def test_seller_warehouse_zero_one_many_and_direct():
     assert node("SkladOzon.sellerWarehouseMode(['direct'],[]).kind")=='not-required'
@@ -35,7 +35,7 @@ def test_source_mode_change_invalidates_pending_shipment_run():
     assert result['plan']['shipment_plan_id']=='old'
 
 def test_readiness_and_plan_freshness_follow_source_provenance():
-    expression="""(()=>{let s=SkladOzon.createInitialState(),snap={snapshot_id:'A1',source_mode:'api',source_snapshot_id:'S1',shippable_plan:{shippable_plan_id:'SP1'}};s={...s,snapshot:snap,source:{...s.source,snapshotId:'S1',source:{source_snapshot_id:'S1',credential_context_id:'C1'}},ozonConnection:{...s.ozonConnection,locked:false,credentialContextId:'C1'},shipmentView:{...s.shipmentView,plan:{analysis_snapshot_id:'A1',source_snapshot_id:'S1',shippable_plan_id:'SP1'},dirty:false}};return {ready:SkladOzon.shipmentReadiness(s),current:SkladOzon.isShipmentPlanCurrent(s),afterSync:SkladOzon.shipmentReadiness(SkladOzon.applySourceSuccess(SkladOzon.beginSourceRun(s),1,{source:{source_snapshot_id:'S2',credential_context_id:'C1'}}))};})()"""
+    expression="""(()=>{let s=SkladOzon.createInitialState(),snap={snapshot_id:'A1',source_mode:'api',source_snapshot_id:'S1',shippable_plan:{shippable_plan_id:'SP1'}};s={...s,snapshot:snap,source:{...s.source,snapshotId:'S1',source:{source_snapshot_id:'S1',credential_context_id:'C1'}},workingPlan:{...s.workingPlan,plan:{working_plan_id:'WP1',analysis_snapshot_id:'A1',shippable_plan_id:'SP1'}},ozonConnection:{...s.ozonConnection,locked:false,credentialContextId:'C1'},shipmentView:{...s.shipmentView,plan:{analysis_snapshot_id:'A1',source_snapshot_id:'S1',shippable_plan_id:'SP1',working_plan_id:'WP1'},dirty:false}};return {ready:SkladOzon.shipmentReadiness(s),current:SkladOzon.isShipmentPlanCurrent(s),afterSync:SkladOzon.shipmentReadiness(SkladOzon.applySourceSuccess(SkladOzon.beginSourceRun(s),1,{source:{source_snapshot_id:'S2',credential_context_id:'C1'}}))};})()"""
     result=node(expression)
     assert result['ready']['ready'] is True and result['current'] is True
     assert result['afterSync']['ready'] is False

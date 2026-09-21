@@ -52,18 +52,18 @@ def test_invalid_pack_quantity_is_not_persisted_and_stale_base_is_rejected(tmp_p
     assert stale.json()['error']['code'] == 'WORKING_PLAN_BASE_CHANGED'
 
 
-def test_active_override_blocks_legacy_shipment_candidates(tmp_path, monkeypatch):
+def test_active_override_executes_current_working_plan(tmp_path, monkeypatch):
     monkeypatch.setattr(api_module, 'PROJECT_PATH', tmp_path / 'project.json')
     snapshot = _analyze_api_plan(); base = identity(snapshot)
     row = CLIENT.post('/api/working-plan', json=base).json()['working_plan']['lines'][0]
-    CLIENT.put('/api/working-plan/override', json={**base, 'sku': row['sku'],
-        'destination_cluster_id': row['destination_cluster_id'], 'quantity': 0})
-    response = CLIENT.post('/api/shipment/candidates', json={**base, 'scenario': {
+    changed = CLIENT.put('/api/working-plan/override', json={**base, 'sku': row['sku'],
+        'destination_cluster_id': row['destination_cluster_id'], 'quantity': 0}).json()['working_plan']
+    response = CLIENT.post('/api/shipment/candidates', json={**base, 'working_plan_id': changed['working_plan_id'], 'scenario': {
         'selected_cluster_ids': ['Москва'], 'date_from': '2026-09-11',
         'date_to': '2026-09-12', 'allowed_methods': ['direct'],
         'preferred_clusters_per_shipment': 1, 'max_clusters_per_shipment': 1}})
-    assert response.status_code == 409
-    assert response.json()['error']['code'] == 'WORKING_PLAN_REQUIRED'
+    assert response.status_code == 200
+    assert response.json()['candidates'] == []
 
 
 @pytest.mark.parametrize(('path', 'method', 'payload'), [

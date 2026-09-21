@@ -44,8 +44,8 @@ def test_working_plan_failure_and_legacy_shipment_guard_are_explicit():
     app = (ROOT / 'frontend/assets/js/app.js').read_text()
     core = (ROOT / 'frontend/assets/js/core.js').read_text()
     assert 'Рабочий план недоступен' in app
-    assert 'Для создания поставки требуется рабочий план поставки' in core
-    assert "workingPlan?.plan?.active_override_count>0" in core
+    assert 'WORKING_PLAN_UNAVAILABLE' in core
+    assert "workingPlan?.plan?.active_override_count>0" not in core
     assert 'expectedRunId===state.workingPlan.runId' in app
     assert 'runId:state.shipmentView.runId+1,candidates:null,plan:null' in app
 

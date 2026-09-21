@@ -37,7 +37,7 @@ def assemble_outcomes(candidates, validations):
     if seen != set(by_id): raise ShipmentOrchestrationError("VALIDATION_RESULT_IDENTITY_MISMATCH")
     return tuple(output)
 
-def build_shipment_plan(*,source_snapshot_id,analysis_snapshot_id,shippable_plan_id,analysis_as_of,scenario,candidates,validations,diagnostics=()):
+def build_shipment_plan(*,source_snapshot_id,analysis_snapshot_id,shippable_plan_id,working_plan_id,analysis_as_of,scenario,candidates,validations,diagnostics=()):
     outcomes=assemble_outcomes(candidates,validations); ranked,unavailable=rank_outcomes(outcomes,scenario)
     fingerprint=scenario_fingerprint(scenario)
     evidence=[]
@@ -47,7 +47,7 @@ def build_shipment_plan(*,source_snapshot_id,analysis_snapshot_id,shippable_plan
             "checked_at_utc":v.checked_at_utc,"accepted":[_identity(x) for x in v.accepted_assignments],
             "rejected":[_identity(x) for x in v.rejected_assignments],
             "timeslots":[(x.from_dt.isoformat(),x.to_dt.isoformat()) for x in v.timeslots],"reason_codes":v.reason_codes})
-    payload=[analysis_snapshot_id,shippable_plan_id,source_snapshot_id,analysis_as_of.isoformat(),fingerprint,evidence]
+    payload=[analysis_snapshot_id,shippable_plan_id,working_plan_id,source_snapshot_id,analysis_as_of.isoformat(),fingerprint,evidence]
     plan_id="sp_"+hashlib.sha256(json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(",",":")).encode()).hexdigest()
-    return ShipmentPlan(plan_id,source_snapshot_id,analysis_snapshot_id,shippable_plan_id,analysis_as_of,
+    return ShipmentPlan(plan_id,source_snapshot_id,analysis_snapshot_id,shippable_plan_id,working_plan_id,analysis_as_of,
                         fingerprint,ranked,unavailable,tuple(diagnostics))

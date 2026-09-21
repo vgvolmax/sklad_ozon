@@ -14,6 +14,11 @@ from tests.api.test_analysis import CLIENT
 from tests.shipment.test_ranking import assignment, outcome, scenario
 
 
+
+@pytest.fixture(autouse=True)
+def current_working_plan(monkeypatch):
+    monkeypatch.setattr(api_module, "require_current_working_plan", lambda **kwargs: (None, None, None))
+
 def _stored_plan(*, clusters=("M",), blank_article=False, available=True):
     original=outcome("cs_export",ValidationState.ACCEPTED if available else ValidationState.REJECTED,
                      accepted=available)
@@ -25,7 +30,7 @@ def _stored_plan(*, clusters=("M",), blank_article=False, available=True):
         original=replace(original,candidate=candidate,validation=validation,
                          unresolved_assignments=() if available else rows)
     ranked,unavailable=rank_outcomes((original,),scenario())
-    plan=ShipmentPlan("sp_export",None,"as_1","spp_1",scenario().date_from,"ss_export",ranked,unavailable,())
+    plan=ShipmentPlan("sp_export",None,"as_1","spp_1","wp_1",scenario().date_from,"ss_export",ranked,unavailable,())
     api_module.SHIPMENT_PLAN_STORE.clear(); api_module.SHIPMENT_PLAN_STORE.put(plan)
     return plan
 
