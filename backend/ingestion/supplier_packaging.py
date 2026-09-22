@@ -100,15 +100,17 @@ def import_supplier_packaging(data: bytes, report_context: ReportMeta, *, workbo
         for article in sorted(set(observations) | set(invalid_by_article)):
             rows = observations.get(article, [])
             multiples = {item[0] for item in rows}
-            if len(multiples) > 1:
+            if article in invalid_by_article:
+                source_row, source_value = invalid_by_article[article]
+                records.append(PackMultiplicityEvidence(
+                    article, None, source_row, source_value,
+                    ("INVALID_PACK_MULTIPLICITY",)))
+            elif len(multiples) > 1:
                 records.append(PackMultiplicityEvidence(article, None, min(item[1] for item in rows), None, ("CONFLICTING_PACK_MULTIPLICITY",)))
                 diagnostics.append(_diag("CONFLICTING_PACK_MULTIPLICITY", f"Article {article!r} has conflicting pack multiples.", field="Упак"))
             elif rows:
                 multiple, source_row, source_value = rows[0]
                 records.append(PackMultiplicityEvidence(article, multiple, source_row, source_value, ()))
-            else:
-                source_row, source_value = invalid_by_article[article]
-                records.append(PackMultiplicityEvidence(article, None, source_row, source_value, ("INVALID_PACK_MULTIPLICITY",)))
         return ImportResult(tuple(records), tuple(diagnostics), report_context, tuple(record.source_row for record in records))
     finally:
         if owns_workbook:
