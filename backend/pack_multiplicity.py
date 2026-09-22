@@ -10,7 +10,10 @@ from math import isfinite
 from openpyxl import Workbook, load_workbook
 
 from backend.ingestion.normalization import normalize_header
-from backend.ingestion.supplier_packaging import normalize_supplier_article
+from backend.domain.contracts import ReportMeta
+from backend.ingestion.supplier_packaging import (PackMultiplicityEvidence,
+                                                   import_supplier_packaging,
+                                                   normalize_supplier_article)
 from backend.project import PackMultiplicityRecord, Project
 
 
@@ -19,6 +22,7 @@ class ResolvedPackMultiplicity:
     pack_multiple: int | None
     source: str
     unitka_pack_multiple: int | None
+    rtp_price_pack_multiple: int | None
     override_pack_multiple: int | None
     updated_at: str | None
 
@@ -29,6 +33,13 @@ class PackImportDiagnostic:
     article: str | None
     code: str
     message: str
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedPackImport:
+    source_format: str
+    values: dict[str, int]
+    diagnostics: tuple[PackImportDiagnostic, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,10 +65,12 @@ def validate_pack_multiple(value: object, *, excel: bool = False) -> int:
 def resolve_pack_multiplicity(record: PackMultiplicityRecord | None) -> ResolvedPackMultiplicity:
     record = record or PackMultiplicityRecord()
     if record.override_pack_multiple is not None:
-        return ResolvedPackMultiplicity(record.override_pack_multiple, record.override_origin or "unknown", record.unitka_pack_multiple, record.override_pack_multiple, record.override_updated_at)
+        return ResolvedPackMultiplicity(record.override_pack_multiple, record.override_origin or "unknown", record.unitka_pack_multiple, record.rtp_price_pack_multiple, record.override_pack_multiple, record.override_updated_at)
+    if record.rtp_price_pack_multiple is not None:
+        return ResolvedPackMultiplicity(record.rtp_price_pack_multiple, "rtp_price", record.unitka_pack_multiple, record.rtp_price_pack_multiple, None, record.rtp_price_updated_at)
     if record.unitka_pack_multiple is not None:
-        return ResolvedPackMultiplicity(record.unitka_pack_multiple, "unitka", record.unitka_pack_multiple, None, None)
-    return ResolvedPackMultiplicity(None, "unknown", None, None, None)
+        return ResolvedPackMultiplicity(record.unitka_pack_multiple, "unitka", record.unitka_pack_multiple, None, None, None)
+    return ResolvedPackMultiplicity(None, "unknown", None, None, None, None)
 
 
 def moscow_now() -> str:
@@ -94,9 +107,9 @@ def pack_multiplicity_fingerprint(project: Project) -> str:
         {
             "article": article,
             "unitka_pack_multiple": record.unitka_pack_multiple,
+            "rtp_price_pack_multiple": record.rtp_price_pack_multiple,
             "override_pack_multiple": record.override_pack_multiple,
             "override_origin": record.override_origin,
-            "override_updated_at": record.override_updated_at,
         }
         for article, record in sorted(project.pack_multiplicity.items())
     ]
@@ -107,10 +120,10 @@ def pack_multiplicity_fingerprint(project: Project) -> str:
 
 
 def build_effective_pack_evidence(project: Project, current_unitka_evidence) -> tuple[EffectivePackEvidence, ...]:
-    """Resolve override > current Unitka > persisted Unitka > unknown.
+    """Resolve override > RTP price > current valid Unitka > persisted Unitka.
 
-    Current invalid/conflicting Unitka evidence remains causal evidence.  A valid
-    persisted override masks that error for operational planning.
+    Current invalid/conflicting Unitka evidence remains causal only when it is
+    not masked by a valid override or RTP-price value.
     """
     current = {item.article: item for item in current_unitka_evidence}
     articles = sorted(set(project.pack_multiplicity) | set(current))
@@ -119,7 +132,7 @@ def build_effective_pack_evidence(project: Project, current_unitka_evidence) -> 
         record = project.pack_multiplicity.get(article)
         resolved = resolve_pack_multiplicity(record)
         observed = current.get(article)
-        if resolved.source in {"manual", "import"}:
+        if resolved.source in {"manual", "import", "rtp_price"}:
             result.append(EffectivePackEvidence(
                 article, resolved.pack_multiple, resolved.source, ()))
         elif observed is not None:
@@ -139,10 +152,48 @@ def build_effective_pack_evidence(project: Project, current_unitka_evidence) -> 
     return tuple(result)
 
 
-def parse_import_xlsx(data: bytes) -> tuple[dict[str, int], tuple[PackImportDiagnostic, ...]]:
+def _rtp_import_diagnostic(
+        item: PackMultiplicityEvidence) -> PackImportDiagnostic:
+    code = item.reason_codes[0]
+    if code == "INVALID_PACK_MULTIPLICITY":
+        message = (
+            f"Кратность коробки {item.source_value!r} не является точным количеством."
+            if item.source_value is not None
+            else "Кратность коробки не является точным количеством."
+        )
+    else:
+        message = "Для артикула указаны разные кратности внешней коробки."
+    return PackImportDiagnostic(
+        item.source_row or 0, item.article, code, message)
+
+
+def parse_import_xlsx(data: bytes) -> ParsedPackImport:
     try: workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
     except Exception as exc: raise ValueError("Файл должен быть корректным XLSX.") from exc
     try:
+        if "Прайс списком" in workbook.sheetnames:
+            sheet = workbook["Прайс списком"]
+            headers_found = any(
+                "код" in (headers := [normalize_header(v) for v in row]) and
+                "упак" in headers
+                for row in sheet.iter_rows(max_row=30, values_only=True)
+            )
+            if headers_found:
+                result = import_supplier_packaging(
+                    data, ReportMeta("rtp-price.xlsx", moscow_now()),
+                    workbook=workbook)
+                values = {item.article: item.pack_multiple for item in result.records
+                          if item.pack_multiple is not None}
+                diagnostics = [
+                    _rtp_import_diagnostic(item)
+                    for item in result.records if item.reason_codes
+                ]
+                diagnostics.extend(PackImportDiagnostic(
+                    diagnostic.row or 0, None, diagnostic.code,
+                    diagnostic.message)
+                    for diagnostic in result.diagnostics
+                    if diagnostic.code == "INVALID_SUPPLIER_ARTICLE")
+                return ParsedPackImport("rtp_price", values, tuple(diagnostics))
         sheet = workbook.active
         rows = sheet.iter_rows(values_only=True)
         header = next(rows, None)
@@ -167,14 +218,35 @@ def parse_import_xlsx(data: bytes) -> tuple[dict[str, int], tuple[PackImportDiag
             errors.append(PackImportDiagnostic(occurrences[article][0], article, "DUPLICATE_ARTICLE", "Артикул встречается в файле несколько раз и не импортирован."))
         invalid_articles = {e.article for e in errors if e.article}
         for article in invalid_articles: candidates.pop(article, None)
-        return candidates, tuple(errors)
+        return ParsedPackImport("canonical", candidates, tuple(errors))
     finally: workbook.close()
+
+
+def apply_rtp_price_snapshot(project: Project, values: dict[str, int], *,
+                             updated_at: str | None = None) -> Project:
+    """Replace only the authoritative RTP-price layer, preserving all others."""
+    records = dict(project.pack_multiplicity)
+    semantic_current = {article: record.rtp_price_pack_multiple
+                        for article, record in records.items()
+                        if record.rtp_price_pack_multiple is not None}
+    if semantic_current == values:
+        return project
+    stamp = updated_at or moscow_now()
+    for article, record in tuple(records.items()):
+        if record.rtp_price_pack_multiple is not None:
+            records[article] = replace(record, rtp_price_pack_multiple=None,
+                                       rtp_price_updated_at=None)
+    for article, multiple in values.items():
+        old = records.get(article, PackMultiplicityRecord())
+        records[article] = replace(old, rtp_price_pack_multiple=multiple,
+                                   rtp_price_updated_at=stamp)
+    return replace(project, pack_multiplicity=records)
 
 
 def export_xlsx(items: list[dict[str, object]]) -> bytes:
     workbook = Workbook(); sheet = workbook.active; sheet.title = "Кратность упаковки"
-    sheet.append(["Артикул", "Кратность", "SKU", "Наименование", "Источник", "Кратность Unitka", "Изменено"])
-    labels = {"manual": "Вручную", "import": "Импорт", "unitka": "Unitka", "unknown": "Не задано"}
+    sheet.append(["Артикул", "Кратность", "SKU", "Наименование", "Источник", "Прайс РТП", "Кратность Unitka", "Изменено"])
+    labels = {"manual": "Вручную", "import": "Импорт", "rtp_price": "Прайс РТП", "unitka": "Unitka", "unknown": "Не задано"}
     for item in items:
-        sheet.append([item["article"], item["pack_multiple"], ", ".join(item.get("skus") or []), item.get("product_name"), labels[item["source"]], item["unitka_pack_multiple"], item["updated_at"]])
+        sheet.append([item["article"], item["pack_multiple"], ", ".join(item.get("skus") or []), item.get("product_name"), labels[item["source"]], item.get("rtp_price_pack_multiple"), item["unitka_pack_multiple"], item["updated_at"]])
     stream = BytesIO(); workbook.save(stream); workbook.close(); return stream.getvalue()

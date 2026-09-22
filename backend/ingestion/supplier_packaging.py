@@ -14,7 +14,7 @@ from .normalization import normalize_header, normalize_seller_article_identity
 _SHEET = "Прайс списком"
 _ARTICLE_HEADER = "код"
 _PACK_HEADER = "упак"
-_PACK_PATTERN = re.compile(r"^\s*[^/\s][^/]*/\s*([1-9]\d*)\s*$")
+_PACK_PATTERN = re.compile(r"^\s*([1-9]\d*)\s*/\s*([1-9]\d*)\s*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,14 +39,18 @@ def normalize_supplier_article(value: object) -> str:
     raise ValueError("supplier article is invalid")
 
 
-def parse_pack_multiple(value: object) -> int:
-    """Return the positive integer on the right of a valid packaging slash."""
+def parse_outer_pack_multiple(value: object) -> int:
+    """Return the exact outer-box quantity from ``outer / inner`` packaging."""
     if value is None or isinstance(value, bool):
         raise ValueError("pack multiplicity is invalid")
     match = _PACK_PATTERN.fullmatch(str(value))
     if match is None:
         raise ValueError("pack multiplicity is invalid")
     return int(match.group(1))
+
+
+# Public compatibility name used by Unitka ingestion and existing callers.
+parse_pack_multiple = parse_outer_pack_multiple
 
 
 def import_supplier_packaging(data: bytes, report_context: ReportMeta, *, workbook=None) -> ImportResult[PackMultiplicityEvidence]:
@@ -87,7 +91,7 @@ def import_supplier_packaging(data: bytes, report_context: ReportMeta, *, workbo
             try:
                 multiple = parse_pack_multiple(pack_value)
             except ValueError:
-                diagnostics.append(_diag("INVALID_PACK_MULTIPLICITY", "Упак must end in '/' followed by a positive integer.", row=row_number, field="Упак"))
+                diagnostics.append(_diag("INVALID_PACK_MULTIPLICITY", "Упак must be exact positive integers in 'outer / inner' form.", row=row_number, field="Упак"))
                 invalid_by_article.setdefault(article, (row_number, source_value))
                 continue
             observations.setdefault(article, []).append((multiple, row_number, source_value or ""))
@@ -96,15 +100,17 @@ def import_supplier_packaging(data: bytes, report_context: ReportMeta, *, workbo
         for article in sorted(set(observations) | set(invalid_by_article)):
             rows = observations.get(article, [])
             multiples = {item[0] for item in rows}
-            if len(multiples) > 1:
+            if article in invalid_by_article:
+                source_row, source_value = invalid_by_article[article]
+                records.append(PackMultiplicityEvidence(
+                    article, None, source_row, source_value,
+                    ("INVALID_PACK_MULTIPLICITY",)))
+            elif len(multiples) > 1:
                 records.append(PackMultiplicityEvidence(article, None, min(item[1] for item in rows), None, ("CONFLICTING_PACK_MULTIPLICITY",)))
                 diagnostics.append(_diag("CONFLICTING_PACK_MULTIPLICITY", f"Article {article!r} has conflicting pack multiples.", field="Упак"))
             elif rows:
                 multiple, source_row, source_value = rows[0]
                 records.append(PackMultiplicityEvidence(article, multiple, source_row, source_value, ()))
-            else:
-                source_row, source_value = invalid_by_article[article]
-                records.append(PackMultiplicityEvidence(article, None, source_row, source_value, ("INVALID_PACK_MULTIPLICITY",)))
         return ImportResult(tuple(records), tuple(diagnostics), report_context, tuple(record.source_row for record in records))
     finally:
         if owns_workbook:

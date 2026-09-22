@@ -9,7 +9,7 @@ from backend.main import app
 from backend.ozon.contracts import OzonCredentialContext, OzonCredentials
 from backend.project import PackMultiplicityRecord, Project, load_project, save_project_atomic
 from backend.ingestion.supplier_packaging import PackMultiplicityEvidence
-from backend.pack_multiplicity import pack_multiplicity_fingerprint
+from backend.pack_multiplicity import pack_multiplicity_fingerprint, resolve_pack_multiplicity
 from backend.shipment.api_context import ShipmentPreparationError
 from tests.helpers.xlsx_fixtures import make_real_unitka
 
@@ -17,6 +17,13 @@ client=TestClient(app)
 
 def xlsx(rows):
     book=Workbook(); sheet=book.active
+    for row in rows: sheet.append(row)
+    stream=BytesIO(); book.save(stream); return stream.getvalue()
+
+def rtp_xlsx(rows):
+    book=Workbook(); book.active.title='Обложка'
+    sheet=book.create_sheet('Прайс списком')
+    sheet.append(['Прайс']); sheet.append([]); sheet.append(['КОД','Упак'])
     for row in rows: sheet.append(row)
     stream=BytesIO(); book.save(stream); return stream.getvalue()
 
@@ -48,7 +55,7 @@ def test_mutations_clear_derived_analysis_and_shipment_stores(tmp_path,monkeypat
 def test_delete_and_xlsx_import_mutations_clear_derived_stores(tmp_path,monkeypatch):
     path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
     save_project_atomic(path,Project(pack_multiplicity={
-        '17261':PackMultiplicityRecord(20,50,'manual','now')}))
+        '17261':PackMultiplicityRecord(unitka_pack_multiple=20,override_pack_multiple=50,override_origin='manual',override_updated_at='now')}))
     cleared=[]
     monkeypatch.setattr(api.ANALYSIS_STORE,'clear',lambda:cleared.append('analysis'))
     monkeypatch.setattr(api.SHIPMENT_PLAN_STORE,'clear',lambda:cleared.append('shipment'))
@@ -60,6 +67,82 @@ def test_delete_and_xlsx_import_mutations_clear_derived_stores(tmp_path,monkeypa
         'file':('packs.xlsx',xlsx([['Артикул','Кратность'],['39439',8]]))})
     assert response.status_code==200
     assert cleared==['analysis','shipment']
+
+
+def test_real_rtp_price_import_precedence_snapshot_and_noop(tmp_path,monkeypatch):
+    path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
+    save_project_atomic(path,Project(pack_multiplicity={
+        '28200':PackMultiplicityRecord(unitka_pack_multiple=10,
+            override_pack_multiple=20,override_origin='manual',override_updated_at='now'),
+        'OLD':PackMultiplicityRecord(rtp_price_pack_multiple=30,
+            rtp_price_updated_at='old'),
+        '51710':PackMultiplicityRecord(rtp_price_pack_multiple=100,
+            rtp_price_updated_at='old'),
+        'CONFLICT':PackMultiplicityRecord(rtp_price_pack_multiple=50,
+            rtp_price_updated_at='old'),
+    }))
+    cleared=[]
+    monkeypatch.setattr(api.ANALYSIS_STORE,'clear',lambda:cleared.append('analysis'))
+    monkeypatch.setattr(api.SHIPMENT_PLAN_STORE,'clear',lambda:cleared.append('shipment'))
+    price=rtp_xlsx([
+        ['28200','15/1'],['28201','18/1'],['28202','14/1'],
+        ['28206','14/1'],['29352','150/10'],['34886','70/1'],
+        ['51710','100+/1'],['SAME','72/6'],['SAME','72/12'],
+        ['CONFLICT','72/6'],['CONFLICT','24/12'],
+    ])
+    first=client.post('/api/project/pack-multiplicity/import',files={'file':('rtp.xlsx',price)}).json()
+    assert (first['source_format'],first['accepted'],first['changed']) == ('rtp_price',7,True)
+    assert first['rejected']==2
+    project=load_project(path)
+    assert project.pack_multiplicity['OLD'].rtp_price_pack_multiple is None
+    assert project.pack_multiplicity['51710'].rtp_price_pack_multiple is None
+    assert project.pack_multiplicity['CONFLICT'].rtp_price_pack_multiple is None
+    assert {a:project.pack_multiplicity[a].rtp_price_pack_multiple for a in
+            ('28200','28201','28202','28206','29352','34886','SAME')} == {
+            '28200':15,'28201':18,'28202':14,'28206':14,
+            '29352':150,'34886':70,'SAME':72}
+    assert resolve_pack_multiplicity(project.pack_multiplicity['28200']).pack_multiple==20
+    assert cleared==['analysis','shipment']
+    stamp=project.pack_multiplicity['28200'].rtp_price_updated_at
+    cleared.clear()
+    second=client.post('/api/project/pack-multiplicity/import',files={'file':('rtp.xlsx',price)}).json()
+    assert second['changed'] is False and cleared==[]
+    assert load_project(path).pack_multiplicity['28200'].rtp_price_updated_at==stamp
+
+
+def test_rtp_mixed_duplicate_clears_stale_value_and_reimport_is_noop(
+        tmp_path, monkeypatch):
+    path = tmp_path / 'project.json'
+    monkeypatch.setattr(api, 'PROJECT_PATH', path)
+    save_project_atomic(path, Project(pack_multiplicity={
+        '28200': PackMultiplicityRecord(
+            rtp_price_pack_multiple=30, rtp_price_updated_at='old'),
+    }))
+    price = rtp_xlsx([
+        ['28200', '15/1'],
+        ['28200', '100+/1'],
+        ['28201', '18/1'],
+    ])
+
+    first = client.post('/api/project/pack-multiplicity/import', files={
+        'file': ('rtp.xlsx', price),
+    }).json()
+
+    assert (first['accepted'], first['rejected'], first['changed']) == (1, 1, True)
+    assert first['diagnostics'] == [{
+        'row': 5,
+        'article': '28200',
+        'code': 'INVALID_PACK_MULTIPLICITY',
+        'message': "Кратность коробки '100+/1' не является точным количеством.",
+    }]
+    project = load_project(path)
+    assert project.pack_multiplicity['28200'].rtp_price_pack_multiple is None
+    assert project.pack_multiplicity['28201'].rtp_price_pack_multiple == 18
+
+    second = client.post('/api/project/pack-multiplicity/import', files={
+        'file': ('rtp.xlsx', price),
+    }).json()
+    assert (second['accepted'], second['rejected'], second['changed']) == (1, 1, False)
 
 
 def test_unitka_change_invalidates_but_noop_preserves_derived_stores(tmp_path,monkeypatch):
@@ -90,11 +173,11 @@ def test_unitka_import_endpoint_invalidates_only_for_baseline_change(tmp_path,mo
     monkeypatch.setattr(api.ANALYSIS_STORE,'clear',lambda:cleared.append('analysis'))
     monkeypatch.setattr(api.SHIPMENT_PLAN_STORE,'clear',lambda:cleared.append('shipment'))
 
-    same=make_real_unitka(pack_rows=[['17261','36/20']])
+    same=make_real_unitka(pack_rows=[['17261','20/1']])
     assert client.post('/api/import/unitka',files={'file':('unitka.xlsx',same)}).status_code==200
     assert cleared==[]
 
-    changed=make_real_unitka(pack_rows=[['17261','100/50']])
+    changed=make_real_unitka(pack_rows=[['17261','50/1']])
     assert client.post('/api/import/unitka',files={'file':('unitka.xlsx',changed)}).status_code==200
     assert cleared==['analysis','shipment']
 

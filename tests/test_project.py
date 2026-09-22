@@ -7,7 +7,8 @@ import pytest
 from backend.domain.contracts import ProductEconomicsInput, ReportMeta, TariffRow
 from backend.project import (
     EconomicsSettings, OperationalSnapshot, OptimizerThresholds, Project,
-    ProjectValidationError, WorkingQuantityOverride, load_project, save_project_atomic,
+    PackMultiplicityRecord, ProjectValidationError, WorkingQuantityOverride,
+    load_project, save_project_atomic,
 )
 
 
@@ -31,7 +32,7 @@ def test_valid_project_round_trip_preserves_all_inputs_and_decimal_strings(tmp_p
     project = sample_project()
     save_project_atomic(path, project)
     payload = json.loads(path.read_text("utf-8"))
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["tariffs"][0]["max_price"] == "635.77"
     assert payload["product_economics"][0]["cost"] == "635.77"
     assert load_project(path) == replace(project, tariffs=(replace(project.tariffs[0], max_price=Decimal("635.77"), logistics_fee=Decimal("49.9")),), product_economics=(replace(project.product_economics[0], cost=Decimal("635.77")),))
@@ -39,7 +40,7 @@ def test_valid_project_round_trip_preserves_all_inputs_and_decimal_strings(tmp_p
 
 @pytest.mark.parametrize("mutation", [
     lambda p: p.pop("schema_version"),
-    lambda p: p.update(schema_version=4),
+    lambda p: p.update(schema_version=5),
     lambda p: p.update(unknown=True),
 ])
 def test_rejects_missing_future_version_and_unknown_top_level_fields(tmp_path, mutation):
@@ -82,7 +83,7 @@ def test_replace_failure_preserves_old_target_and_cleans_temp(tmp_path, monkeypa
     assert list(tmp_path.iterdir()) == [path]
 
 
-def test_v2_migrates_to_v3_with_empty_working_overrides(tmp_path):
+def test_v2_migrates_to_v4_with_empty_working_overrides(tmp_path):
     path = tmp_path / 'project.json'
     save_project_atomic(path, sample_project())
     payload = json.loads(path.read_text('utf-8'))
@@ -90,8 +91,25 @@ def test_v2_migrates_to_v3_with_empty_working_overrides(tmp_path):
     payload.pop('working_quantity_overrides')
     path.write_text(json.dumps(payload), 'utf-8')
     project = load_project(path)
-    assert project.schema_version == 3
+    assert project.schema_version == 4
     assert project.working_quantity_overrides == {}
+
+
+def test_v3_migrates_pack_records_to_v4_without_losing_overrides(tmp_path):
+    path = tmp_path / 'project.json'
+    record = PackMultiplicityRecord(unitka_pack_multiple=10,
+        override_pack_multiple=20,override_origin='manual',override_updated_at='now')
+    save_project_atomic(path, replace(sample_project(), pack_multiplicity={'A':record}))
+    payload = json.loads(path.read_text('utf-8'))
+    payload['schema_version'] = 3
+    payload['pack_multiplicity']['A'].pop('rtp_price_pack_multiple')
+    payload['pack_multiplicity']['A'].pop('rtp_price_updated_at')
+    path.write_text(json.dumps(payload), 'utf-8')
+
+    migrated = load_project(path)
+
+    assert migrated.schema_version == 4
+    assert migrated.pack_multiplicity['A'] == record
 
 
 def test_working_override_nested_identity_round_trip(tmp_path):

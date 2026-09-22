@@ -42,7 +42,7 @@ from backend.project import (EconomicsSettings, OptimizerThresholds, Project,
                              ProjectValidationError, WorkingQuantityOverride, load_project_if_exists,
                              save_project_atomic)
 from backend.working_plan import materialize_working_plan, validate_override_quantity
-from backend.pack_multiplicity import (build_effective_pack_evidence, export_xlsx, parse_import_xlsx,
+from backend.pack_multiplicity import (apply_rtp_price_snapshot, build_effective_pack_evidence, export_xlsx, parse_import_xlsx,
                                        pack_multiplicity_fingerprint,
                                        reset_override,
                                        resolve_pack_multiplicity, set_override,
@@ -1367,7 +1367,9 @@ def _pack_items(project):
     for article in articles:
         resolved=resolve_pack_multiplicity(project.pack_multiplicity.get(article))
         items.append({"article":article,"pack_multiple":resolved.pack_multiple,"source":resolved.source,
-                      "unitka_pack_multiple":resolved.unitka_pack_multiple,"override_pack_multiple":resolved.override_pack_multiple,
+                      "unitka_pack_multiple":resolved.unitka_pack_multiple,
+                      "rtp_price_pack_multiple":resolved.rtp_price_pack_multiple,
+                      "override_pack_multiple":resolved.override_pack_multiple,
                       "updated_at":resolved.updated_at,"product_name":None,"skus":sorted(catalog.get(article,()))})
     return items
 
@@ -1408,14 +1410,25 @@ def delete_pack_multiplicity(article: str):
 async def import_pack_multiplicity(request: Request):
     form=await request.form(); upload=form.get("file")
     if upload is None:return error(400,"MISSING_FIELD","Required multipart field is missing.","file")
-    try: values, diagnostics=parse_import_xlsx(await read(upload,"file"))
+    try: parsed=parse_import_xlsx(await read(upload,"file"))
     except (ValueError,OverflowError) as exc:return error(400,"INVALID_PACK_MULTIPLICITY_FILE",str(exc),"file")
     with PROJECT_PERSISTENCE_LOCK:
         project=load_project_if_exists(PROJECT_PATH)
-        for article,value in values.items(): project,_=set_override(project,article,value,"import")
-        save_project_atomic(PROJECT_PATH,project)
-    ANALYSIS_STORE.clear(); SHIPMENT_PLAN_STORE.clear()
-    return {"api_version":1,"accepted":len(values),"rejected":len(diagnostics),"diagnostics":wire(diagnostics)}
+        old_fingerprint=pack_multiplicity_fingerprint(project)
+        if parsed.source_format == "rtp_price":
+            updated=apply_rtp_price_snapshot(project,parsed.values)
+        else:
+            updated=project
+            for article,value in parsed.values.items():
+                updated,_=set_override(updated,article,value,"import")
+        new_fingerprint=pack_multiplicity_fingerprint(updated)
+        changed=new_fingerprint!=old_fingerprint
+        if changed: save_project_atomic(PROJECT_PATH,updated)
+    if changed:
+        ANALYSIS_STORE.clear(); SHIPMENT_PLAN_STORE.clear()
+    return {"api_version":1,"source_format":parsed.source_format,
+            "accepted":len(parsed.values),"rejected":len(parsed.diagnostics),
+            "changed":changed,"diagnostics":wire(parsed.diagnostics)}
 
 
 @router.get("/api/project/pack-multiplicity/export")

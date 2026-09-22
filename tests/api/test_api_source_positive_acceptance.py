@@ -107,7 +107,7 @@ def test_api_source_reaches_positive_calculated_shippable_and_candidate_before_l
     unitka = make_real_unitka(
         product_rows=[["ART-1", "Product", 100, 1000, "10%", 1]],
         tariff_rows=[(0, "0-0,200 л", "Москва", "Москва", 18, 69)],
-        pack_rows=[["ART-1", "36/6"]],
+        pack_rows=[["ART-1", "6/1"]],
         economics_scheme_fbo=True,
     )
 

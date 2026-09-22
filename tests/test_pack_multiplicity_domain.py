@@ -33,10 +33,22 @@ def test_effective_precedence_reset_and_origins():
     assert resolve_pack_multiplicity(None).source == 'unknown'
 
 
+def test_rtp_price_precedence_and_reset_to_rtp():
+    base=PackMultiplicityRecord(unitka_pack_multiple=10,
+        rtp_price_pack_multiple=15,rtp_price_updated_at='price')
+    resolved=resolve_pack_multiplicity(base)
+    assert (resolved.pack_multiple,resolved.source)==(15,'rtp_price')
+    project,_=set_override(Project(pack_multiplicity={'A':base}),'A',20,'manual',updated_at='now')
+    assert resolve_pack_multiplicity(project.pack_multiplicity['A']).pack_multiple==20
+    project,_=reset_override(project,'A')
+    assert (resolve_pack_multiplicity(project.pack_multiplicity['A']).pack_multiple,
+            resolve_pack_multiplicity(project.pack_multiplicity['A']).source)==(15,'rtp_price')
+
+
 def test_effective_analysis_evidence_override_masks_invalid_unitka():
     invalid=(PackMultiplicityEvidence('17261',None,2,None,('INVALID_PACK_MULTIPLICITY',)),)
     project=Project(pack_multiplicity={
-        '17261':PackMultiplicityRecord(None,50,'manual','now'),
+        '17261':PackMultiplicityRecord(unitka_pack_multiple=None,override_pack_multiple=50,override_origin='manual',override_updated_at='now'),
     })
     assert build_effective_pack_evidence(project,invalid)[0] == \
         build_effective_pack_evidence(project,invalid)[0].__class__('17261',50,'manual',())
@@ -60,7 +72,7 @@ def test_effective_analysis_evidence_prefers_current_unitka_over_persisted():
 def test_effective_analysis_evidence_prefers_override_over_current_unitka():
     current=(PackMultiplicityEvidence('17261',50,2,'x / 50',()),)
     project=Project(pack_multiplicity={
-        '17261':PackMultiplicityRecord(20,40,'manual','now'),
+        '17261':PackMultiplicityRecord(unitka_pack_multiple=20,override_pack_multiple=40,override_origin='manual',override_updated_at='now'),
     })
     assert build_effective_pack_evidence(project,current)[0].pack_multiple == 40
 
@@ -101,6 +113,14 @@ def test_pack_fingerprint_is_deterministic_and_pack_specific():
     assert pack_multiplicity_fingerprint(left) == pack_multiplicity_fingerprint(reordered)
     assert pack_multiplicity_fingerprint(left) != pack_multiplicity_fingerprint(changed)
 
+def test_pack_fingerprint_ignores_display_timestamps():
+    left=Project(pack_multiplicity={'A':PackMultiplicityRecord(
+        rtp_price_pack_multiple=15,rtp_price_updated_at='old',
+        override_pack_multiple=20,override_origin='manual',override_updated_at='old')})
+    right=Project(pack_multiplicity={'A':replace(left.pack_multiplicity['A'],
+        rtp_price_updated_at='new',override_updated_at='new')})
+    assert pack_multiplicity_fingerprint(left)==pack_multiplicity_fingerprint(right)
+
 @pytest.mark.parametrize('value', [1,50])
 def test_valid_pack_multiple(value): assert validate_pack_multiple(value)==value
 @pytest.mark.parametrize('value', [0,-1,1.5,True,'50 шт.',float('nan')])
@@ -108,7 +128,7 @@ def test_invalid_pack_multiple(value):
     with pytest.raises(ValueError): validate_pack_multiple(value)
 
 def test_unitka_refresh_preserves_override_and_updates_baseline():
-    project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(20,40,'manual','now')})
+    project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(unitka_pack_multiple=20,override_pack_multiple=40,override_origin='manual',override_updated_at='now')})
     evidence=(PackMultiplicityEvidence('17261',25,2,'x / 25',()),)
     updated=sync_unitka_baseline(project,evidence).pack_multiplicity['17261']
     assert (updated.unitka_pack_multiple,updated.override_pack_multiple)==(25,40)
@@ -127,7 +147,7 @@ def test_unitka_refresh_clears_stale_baseline_for_present_invalid_evidence(reaso
 
 def test_unitka_refresh_clears_baseline_but_preserves_override():
     project=Project(pack_multiplicity={
-        '17261':PackMultiplicityRecord(50,40,'manual','now'),
+        '17261':PackMultiplicityRecord(unitka_pack_multiple=50,override_pack_multiple=40,override_origin='manual',override_updated_at='now'),
     })
     evidence=(PackMultiplicityEvidence('17261',None,2,None,('INVALID_PACK_MULTIPLICITY',)),)
 
@@ -151,15 +171,38 @@ def test_v1_migrates_and_v2_round_trip_persists(tmp_path):
     path=tmp_path/'project.json'; save_project_atomic(path,Project())
     payload=json.loads(path.read_text()); payload['schema_version']=1; payload.pop('pack_multiplicity'); path.write_text(json.dumps(payload))
     assert load_project(path).pack_multiplicity=={}
-    project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(20,50,'manual','now')})
+    project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(unitka_pack_multiple=20,override_pack_multiple=50,override_origin='manual',override_updated_at='now')})
     save_project_atomic(path,project); assert load_project(path)==project
 
 def test_xlsx_mixed_duplicate_upsert_and_reimportable_export():
-    values,errors=parse_import_xlsx(workbook([['Артикул','Кратность'],[17261.0,50],['BAD',0],['39439',8],['39439',9]]))
+    parsed=parse_import_xlsx(workbook([['Артикул','Кратность'],[17261.0,50],['BAD',0],['39439',8],['39439',9]])); values,errors=parsed.values,parsed.diagnostics
     assert values=={'17261':50}
     assert {e.code for e in errors}=={'INVALID_PACK_MULTIPLICITY','DUPLICATE_ARTICLE'}
     data=export_xlsx([{'article':'17261','pack_multiple':50,'source':'manual','unitka_pack_multiple':20,'updated_at':'now','skus':['1'],'product_name':'Товар'}])
-    imported,errors=parse_import_xlsx(data)
+    parsed=parse_import_xlsx(data); imported,errors=parsed.values,parsed.diagnostics
     assert imported=={'17261':50} and not errors
     sheet=load_workbook(BytesIO(data),read_only=True).active
     assert next(sheet.values)[:2]==('Артикул','Кратность')
+
+
+def test_rtp_parser_rejects_whole_article_when_duplicate_has_invalid_pack():
+    book = Workbook()
+    book.active.title = "Прайс списком"
+    book.active.append(["КОД", "Упак"])
+    book.active.append(["28200", "15/1"])
+    book.active.append(["28200", "100+/1"])
+    stream = BytesIO()
+    book.save(stream)
+    book.close()
+
+    parsed = parse_import_xlsx(stream.getvalue())
+
+    assert "28200" not in parsed.values
+    diagnostic = next(
+        item for item in parsed.diagnostics
+        if item.article == "28200" and item.code == "INVALID_PACK_MULTIPLICITY"
+    )
+    assert diagnostic.row == 3
+    assert diagnostic.message == (
+        "Кратность коробки '100+/1' не является точным количеством."
+    )

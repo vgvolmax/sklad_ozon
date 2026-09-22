@@ -118,7 +118,7 @@ def test_unitka_import_exposes_pack_evidence_from_single_open_bundle():
     assert response.status_code == 200
     payload = response.json()
     assert payload["pack_multiplicity"] == [{
-        "article": "40750", "pack_multiple": 6, "source_row": 2,
+        "article": "40750", "pack_multiple": 72, "source_row": 2,
         "source_value": "72/6", "reason_codes": [],
     }]
     assert payload["record_sources"]["pack_multiplicity"] == [2]

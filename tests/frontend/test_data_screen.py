@@ -160,3 +160,15 @@ def test_pack_directory_search_copy_only_promises_article_search():
 
     assert "Поиск по артикулу <input" in markup
     assert "Поиск по артикулу, SKU или названию" not in markup
+
+
+def test_pack_feedback_uses_override_copy_and_article_with_row_diagnostics():
+    source = APP_JS.read_text()
+    pack_view = source[
+        source.index("function renderPackMultiplicity"):
+        source.index("async function loadMappings")
+    ]
+
+    assert "Переопределение сброшено" in pack_view
+    assert "Ручное значение сброшено" not in pack_view
+    assert "[d.article,d.row?`строка ${d.row}`:null]" in pack_view
