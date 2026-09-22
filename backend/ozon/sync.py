@@ -1,6 +1,7 @@
 """Causal orchestration for one immutable API source snapshot."""
 
-from datetime import datetime, timezone
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta, timezone
 import inspect
 from uuid import uuid4
 
@@ -16,7 +17,10 @@ from backend.ozon.adapters.product_facts import (
 )
 from backend.ozon.adapters.stocks import fetch_fbo_stock, fetch_seller_stock
 from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_POSTINGS_PATH
-from backend.ozon.history import history_window, next_backfill, usable_completed_weeks
+from backend.ozon.history import (
+    HistoryWindow, MAX_COMPLETED_WEEKS, history_window, next_backfill,
+    usable_completed_weeks,
+)
 from backend.ozon.source_contracts import (
     EndpointEvidence, OzonApiErrorEvidence, OzonRecordQualityEvidence,
     OzonSourceSnapshot, SOURCE_TIMEZONE,
@@ -36,6 +40,23 @@ SYNC_STAGES = (
     ("inbound", "Поставки в пути", "Поиск заявок"),
     ("placement_zones", "Зоны размещения", "Получение зон размещения"),
 )
+CLUSTERS_TTL = timedelta(hours=24)
+SELLER_WAREHOUSES_TTL = timedelta(hours=24)
+PRODUCT_ATTRIBUTES_TTL = timedelta(days=7)
+PLACEMENT_ZONES_TTL = timedelta(hours=24)
+ORDER_REFRESH_OVERLAP_DAYS = 28
+
+
+@dataclass(frozen=True, slots=True)
+class OzonRefreshReport:
+    requested_mode: str
+    effective_mode: str
+    base_source_snapshot_id: str | None
+    refreshed_endpoints: tuple[str, ...]
+    reused_endpoints: tuple[str, ...]
+    failed_endpoints: tuple[str, ...]
+    history_refresh_from: date | None
+    activated: bool = True
 _DEFAULT_FETCH_PRODUCT_SKUS = fetch_product_skus
 _STAGE_BY_NAME = {
     name: (index, label, detail)
@@ -62,6 +83,26 @@ def capability_matrix(snapshot: OzonSourceSnapshot, *, include_inbound: bool = T
         "ozon_comparison": {"complete": False, "required": False, "affects": "safe_comparison"},
         "shipment_compatibility": cap("placement_zones", "shipment_compatibility", False),
     }
+
+
+def endpoint_quality(evidence: EndpointEvidence | None) -> int:
+    """Rank completeness without treating volatile record counts as quality."""
+    if evidence is None or not evidence.complete:
+        return 0
+    quality = evidence.record_quality
+    if quality is not None and (quality.rejected_record_count > 0 or quality.incomplete_skus):
+        return 1
+    return 2
+
+
+def source_refresh_regresses(base: OzonSourceSnapshot,
+                             candidate: OzonSourceSnapshot) -> bool:
+    """Return true when a candidate loses any previously established evidence."""
+    candidate_evidence = _evidence_map(candidate)
+    return any(
+        endpoint_quality(candidate_evidence.get(name)) < endpoint_quality(old)
+        for name, old in _evidence_map(base).items()
+    )
 
 
 def sync_ozon_source(client, *, credential_context_id: str | None = None,
@@ -158,6 +199,14 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
             progress(name, completed=True)
             return default
 
+    def blocked_dependency(name, message):
+        diagnostic = ImportDiagnostic(
+            "error", f"OZON_{name.upper()}_FAILED", message)
+        diagnostics.append(diagnostic)
+        evidence.append(EndpointEvidence(
+            name, datetime.now(timezone.utc).isoformat(), 0, False, (diagnostic,)))
+        progress(name, completed=True)
+
     def history_fetch(current_window):
         fbo = run("orders_fbo", lambda: call_with_progress(
             fetch_postings, client, FBO_POSTINGS_PATH, current_window.history_from,
@@ -181,6 +230,7 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
     clusters_result = run("clusters", lambda: fetch_clusters(client), None)
     clusters = clusters_result.clusters if clusters_result is not None else ()
     warehouse_to_macrolocal = clusters_result.warehouse_to_macrolocal if clusters_result is not None else {}
+    clusters_complete = next(item for item in evidence if item.name == "clusters").complete
     seller_warehouses = run("seller_warehouses", lambda: fetch_seller_warehouses(client), ())
     cluster_by_id = {cluster.cluster_id: cluster.name for cluster in clusters}
     cluster_by_warehouse = {
@@ -205,12 +255,9 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
             ("product_prices", "Product prices unavailable without complete product catalog."),
             ("product_attributes", "Product attributes unavailable without complete product catalog."),
         ):
-            diagnostic = ImportDiagnostic("error", f"OZON_{name.upper()}_FAILED", message)
-            diagnostics.append(diagnostic)
-            evidence.append(EndpointEvidence(name, datetime.now(timezone.utc).isoformat(), 0, False, (diagnostic,)))
-            progress(name, completed=True)
+            blocked_dependency(name, message)
     product_facts = merge_product_facts(catalog, prices, attributes)
-    if product_evidence.complete:
+    if product_evidence.complete and clusters_complete:
         fbo = run(
             "fbo_stock",
             lambda: call_with_progress(fetch_fbo_stock, client, product_skus,
@@ -219,38 +266,33 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
         )
     else:
         fbo = ()
-        if not product_evidence.complete:
-            diagnostic = ImportDiagnostic("error", "OZON_FBO_STOCK_FAILED", "FBO stock unavailable without complete SKU universe.")
-            diagnostics.append(diagnostic)
-            evidence.append(EndpointEvidence("fbo_stock", datetime.now(timezone.utc).isoformat(), 0, False, (diagnostic,)))
-            progress("fbo_stock", completed=True)
+        message = ("FBO stock unavailable without complete SKU universe."
+                   if not product_evidence.complete else
+                   "FBO stock unavailable without complete cluster/warehouse mapping.")
+        blocked_dependency("fbo_stock", message)
     if product_evidence.complete:
         seller_stock = run("seller_stock", lambda: call_with_progress(
             fetch_seller_stock, client, product_skus, stage="seller_stock"), ())
     else:
         seller_stock = ()
-        diagnostic = ImportDiagnostic(
-            "error", "OZON_SELLER_STOCK_FAILED",
-            "Seller stock unavailable without complete SKU universe.")
-        diagnostics.append(diagnostic)
-        evidence.append(EndpointEvidence(
-            "seller_stock", datetime.now(timezone.utc).isoformat(), 0, False, (diagnostic,)))
-        progress("seller_stock", completed=True)
-    inbound = run("inbound", lambda: call_with_progress(
-        fetch_inbound, client, cluster_by_id, warehouse_to_macrolocal,
-        stage="inbound"), ())
+        blocked_dependency(
+            "seller_stock", "Seller stock unavailable without complete SKU universe.")
+    if clusters_complete:
+        inbound = run("inbound", lambda: call_with_progress(
+            fetch_inbound, client, cluster_by_id, warehouse_to_macrolocal,
+            stage="inbound"), ())
+    else:
+        inbound = ()
+        blocked_dependency(
+            "inbound", "Inbound unavailable without complete cluster/warehouse mapping.")
     if product_evidence.complete:
         zones = run("placement_zones", lambda: call_with_progress(
             fetch_placement_zones, client, product_skus, stage="placement_zones"), ())
     else:
         zones = ()
-        diagnostic = ImportDiagnostic(
-            "error", "OZON_PLACEMENT_ZONES_FAILED",
+        blocked_dependency(
+            "placement_zones",
             "Placement-zone evidence unavailable because SKU universe is incomplete.")
-        diagnostics.append(diagnostic)
-        evidence.append(EndpointEvidence(
-            "placement_zones", datetime.now(timezone.utc).isoformat(), 0, False, (diagnostic,)))
-        progress("placement_zones", completed=True)
 
     # FBO is warehouse-grained while inbound is cluster-grained.  Preserve them
     # as independent evidence rows so downstream Need aggregation counts each
@@ -260,4 +302,288 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
         uuid4().hex, now.isoformat(), as_of, SOURCE_TIMEZONE, window.history_from,
         window.history_to, orders, availability, seller_stock, clusters,
         seller_warehouses, zones, tuple(evidence), tuple(diagnostics),
-        credential_context_id, product_facts)
+        credential_context_id, product_facts,
+        tuple(sorted(warehouse_to_macrolocal.items())))
+
+
+def _evidence_map(snapshot):
+    return {item.name: item for item in snapshot.endpoint_evidence}
+
+
+def _fresh_complete(evidence, now, ttl):
+    if evidence is None or not evidence.complete:
+        return False
+    try:
+        fetched = datetime.fromisoformat(evidence.fetched_at_utc)
+        if fetched.tzinfo is None:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return now - fetched.astimezone(timezone.utc) <= ttl
+
+
+def _catalog_identity(facts):
+    return tuple(sorted((row.sku, row.product_id, row.article) for row in facts))
+
+
+def _order_day(row):
+    try:
+        return date.fromisoformat(str(row.accepted_at)[:10])
+    except ValueError:
+        return date.min
+
+
+def _smart_history_window(as_of, history_from):
+    """Describe existing coverage in terms understood by ``next_backfill``."""
+    week_start = as_of - timedelta(days=as_of.weekday())
+    completed_weeks = max(
+        history_window(as_of).completed_weeks,
+        min(MAX_COMPLETED_WEEKS, (week_start - history_from).days // 7),
+    )
+    return HistoryWindow(history_from, as_of, completed_weeks)
+
+
+def _refresh_order_history(client, *, base_snapshot, as_of, old_evidence,
+                           run, call, evidence, diagnostics):
+    """Refresh order tails and expand only order history until it is usable."""
+    delta_from = base_snapshot.history_to - timedelta(days=ORDER_REFRESH_OVERLAP_DAYS)
+    channel_starts = {}
+    fresh_orders = []
+    channels = (("orders_fbo", FBO_POSTINGS_PATH, "fbo"),
+                ("orders_fbs", FBS_POSTINGS_PATH, "fbs"))
+
+    for name, path, channel in channels:
+        old = old_evidence.get(name)
+        quality = old.record_quality if old else None
+        unsafe = (old is None or not old.complete or
+                  quality is not None and
+                  (quality.rejected_record_count > 0 or quality.incomplete_skus))
+        start = base_snapshot.history_from if unsafe else delta_from
+        channel_starts[channel] = start
+        fresh_orders.extend(run(
+            name,
+            lambda p=path, start=start, name=name: call(
+                fetch_postings, client, p, start, as_of, stage=name),
+            (),
+        ))
+
+    orders = tuple(
+        row for row in base_snapshot.orders
+        if row.source_channel in channel_starts
+        and _order_day(row) < channel_starts[row.source_channel]
+    ) + tuple(fresh_orders)
+    window = _smart_history_window(as_of, base_snapshot.history_from)
+    refresh_from = min(channel_starts.values())
+
+    while (_order_evidence_complete(evidence) and
+           len(usable_completed_weeks(orders, as_of)) < 8):
+        expanded = next_backfill(window)
+        if expanded is None:
+            diagnostic = ImportDiagnostic(
+                "error", "INSUFFICIENT_ORDER_HISTORY",
+                "Недостаточно завершённых недель истории заказов для расчёта спроса.")
+            diagnostics.append(diagnostic)
+            evidence[:] = [
+                replace(item, complete=False,
+                        diagnostics=item.diagnostics + (diagnostic,))
+                if item.name in {"orders_fbo", "orders_fbs"} else item
+                for item in evidence
+            ]
+            break
+
+        window = expanded
+        refresh_from = expanded.history_from
+        evidence[:] = [item for item in evidence
+                       if item.name not in {"orders_fbo", "orders_fbs"}]
+        expanded_orders = []
+        for name, path, _channel in channels:
+            expanded_orders.extend(run(
+                name,
+                lambda p=path, name=name: call(
+                    fetch_postings, client, p, expanded.history_from, as_of,
+                    stage=name),
+                (),
+            ))
+        # Once replacement begins, never mix either channel with the short tail.
+        orders = tuple(expanded_orders)
+
+    return orders, window.history_from, refresh_from
+
+
+def _order_evidence_complete(evidence):
+    by_name = {item.name: item for item in evidence}
+    return all(by_name.get(name) is not None and by_name[name].complete
+               for name in ("orders_fbo", "orders_fbs"))
+
+
+def refresh_ozon_source(client, *, mode="smart", base_snapshot=None,
+                        credential_context_id=None, progress_callback=None,
+                        now=None):
+    """Refresh a source, reusing only explicit fresh and complete evidence."""
+    if mode not in {"smart", "full"}:
+        raise ValueError("mode must be smart or full")
+    requested = mode
+    if mode == "full" or base_snapshot is None:
+        snapshot = sync_ozon_source(client, credential_context_id=credential_context_id,
+                                    progress_callback=progress_callback)
+        failed = tuple(x.name for x in snapshot.endpoint_evidence if not x.complete)
+        return snapshot, OzonRefreshReport(
+            requested, "full", getattr(base_snapshot, "source_snapshot_id", None),
+            tuple(x.name for x in snapshot.endpoint_evidence), (), failed, None)
+
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    as_of = source_business_date(current)
+    old_evidence = _evidence_map(base_snapshot)
+    evidence = []
+    diagnostics = []
+    refreshed = []
+    reused = []
+
+    def progress(name, *, reused_stage=False, **values):
+        if not progress_callback:
+            return
+        index, label, detail = _STAGE_BY_NAME[name]
+        progress_callback({"type": "progress", "stage": name, "stage_index": index,
+                           "stage_count": len(SYNC_STAGES), "label": label,
+                           "detail": "Используем сохранённые данные" if reused_stage else values.get("detail", detail),
+                           "current": values.get("current"), "total": values.get("total"),
+                           "unit": values.get("unit"), "completed": values.get("completed", False),
+                           "reused": reused_stage})
+
+    def call(function, *args, stage):
+        try:
+            supports = "progress_callback" in inspect.signature(function).parameters
+        except (TypeError, ValueError):
+            supports = False
+        callback = lambda **kw: progress(stage, **kw)
+        return function(*args, progress_callback=callback) if supports else function(*args)
+
+    def run(name, function, default):
+        progress(name)
+        # Each replacement fetch owns its own timestamp; a later backfill must
+        # not retain the timestamp of the discarded overlap request.
+        started = datetime.now(timezone.utc).isoformat()
+        refreshed.append(name)
+        try:
+            value = function()
+            quality = None
+            if name == "clusters":
+                records, item_diagnostics = value.clusters, value.diagnostics
+            elif name in {"orders_fbo", "orders_fbs", "inbound", "fbo_stock", "seller_stock", "placement_zones", "product_prices", "product_attributes"}:
+                if len(value) == 3:
+                    records, item_diagnostics, quality = value
+                else:
+                    records, item_diagnostics = value
+                    quality = OzonRecordQualityEvidence()
+            else:
+                records, item_diagnostics = value
+            diagnostics.extend(item_diagnostics)
+            complete = not any(x.severity == "error" for x in item_diagnostics)
+            evidence.append(EndpointEvidence(name, started, len(records), complete,
+                                             tuple(item_diagnostics), record_quality=quality))
+            progress(name, completed=True)
+            return value if name == "clusters" else tuple(records)
+        except Exception as exc:
+            diagnostic = ImportDiagnostic("error", f"OZON_{name.upper()}_FAILED",
+                                          f"Ozon {name} evidence unavailable: {type(exc).__name__}")
+            diagnostics.append(diagnostic)
+            api_error = None
+            if isinstance(exc, OzonClientError):
+                api_error = OzonApiErrorEvidence(exc.code.value, exc.endpoint, exc.status,
+                    exc.vendor_code, exc.vendor_message, exc.request_id, exc.transport_kind,
+                    exc.attempts, exc.elapsed_ms)
+            evidence.append(EndpointEvidence(name, started, 0, False, (diagnostic,), api_error))
+            progress(name, completed=True)
+            return default
+
+    def reuse(name):
+        reused.append(name)
+        evidence.append(old_evidence[name])
+        progress(name, reused_stage=True, completed=True)
+
+    def blocked_dependency(name, message):
+        diagnostic = ImportDiagnostic(
+            "error", f"OZON_{name.upper()}_FAILED", message)
+        diagnostics.append(diagnostic)
+        evidence.append(EndpointEvidence(
+            name, current.isoformat(), 0, False, (diagnostic,)))
+        refreshed.append(name)
+        progress(name, completed=True)
+
+    orders, candidate_history_from, history_refresh_from = _refresh_order_history(
+        client, base_snapshot=base_snapshot, as_of=as_of,
+        old_evidence=old_evidence, run=run, call=call, evidence=evidence,
+        diagnostics=diagnostics,
+    )
+
+    if _fresh_complete(old_evidence.get("clusters"), current, CLUSTERS_TTL):
+        reuse("clusters")
+        clusters = base_snapshot.clusters
+        warehouse_to_macrolocal = dict(base_snapshot.warehouse_to_macrolocal)
+    else:
+        result = run("clusters", lambda: fetch_clusters(client), None)
+        clusters = result.clusters if result else ()
+        warehouse_to_macrolocal = result.warehouse_to_macrolocal if result else {}
+    clusters_complete = next(item for item in evidence if item.name == "clusters").complete
+    if _fresh_complete(old_evidence.get("seller_warehouses"), current, SELLER_WAREHOUSES_TTL):
+        reuse("seller_warehouses"); seller_warehouses = base_snapshot.seller_warehouses
+    else:
+        seller_warehouses = run("seller_warehouses", lambda: fetch_seller_warehouses(client), ())
+
+    catalog = run("products", lambda: (call(fetch_product_catalog, client, stage="products"), ()), ())
+    product_skus = tuple(x.sku for x in catalog)
+    product_evidence = next(item for item in evidence if item.name == "products")
+    catalog_changed = _catalog_identity(base_snapshot.product_facts) != tuple(sorted((x.sku, x.product_id, x.offer_id) for x in catalog))
+    if product_evidence.complete:
+        prices = run("product_prices", lambda: call(fetch_product_prices, client, catalog, stage="product_prices"), ())
+        reuse_attributes = (not catalog_changed and
+                            _fresh_complete(old_evidence.get("product_attributes"), current, PRODUCT_ATTRIBUTES_TTL))
+        if reuse_attributes:
+            reuse("product_attributes")
+            attributes = tuple(row for row in base_snapshot.product_facts if row.volume_liters is not None)
+        else:
+            attributes = run("product_attributes", lambda: call(fetch_product_attributes, client, catalog, stage="product_attributes"), ())
+    else:
+        prices = attributes = ()
+        blocked_dependency("product_prices", "Product prices unavailable without complete product catalog.")
+        blocked_dependency("product_attributes", "Product attributes unavailable without complete product catalog.")
+    product_facts = merge_product_facts(catalog, prices, attributes)
+    cluster_by_id = {row.cluster_id: row.name for row in clusters}
+    cluster_by_warehouse = {str(k): cluster_by_id[v] for k, v in warehouse_to_macrolocal.items() if v in cluster_by_id}
+    if product_evidence.complete and clusters_complete:
+        fbo = run("fbo_stock", lambda: call(fetch_fbo_stock, client, product_skus, cluster_by_warehouse, stage="fbo_stock"), ())
+    else:
+        fbo = ()
+        blocked_dependency("fbo_stock", "FBO stock unavailable without complete product and cluster/warehouse evidence.")
+    if product_evidence.complete:
+        seller_stock = run("seller_stock", lambda: call(fetch_seller_stock, client, product_skus, stage="seller_stock"), ())
+    else:
+        seller_stock = ()
+        blocked_dependency("seller_stock", "Seller stock unavailable without complete product catalog.")
+    if clusters_complete:
+        inbound = run("inbound", lambda: call(fetch_inbound, client, cluster_by_id, warehouse_to_macrolocal, stage="inbound"), ())
+    else:
+        inbound = ()
+        blocked_dependency("inbound", "Inbound unavailable without complete cluster/warehouse mapping.")
+    reuse_zones = (not catalog_changed and
+                   _fresh_complete(old_evidence.get("placement_zones"), current, PLACEMENT_ZONES_TTL))
+    if not product_evidence.complete:
+        zones = ()
+        blocked_dependency("placement_zones", "Placement-zone evidence unavailable without complete product catalog.")
+    elif reuse_zones:
+        reuse("placement_zones"); zones = base_snapshot.placement_zones
+    else:
+        zones = run("placement_zones", lambda: call(fetch_placement_zones, client, product_skus, stage="placement_zones"), ())
+
+    candidate = OzonSourceSnapshot(
+        uuid4().hex, current.isoformat(), as_of, SOURCE_TIMEZONE,
+        candidate_history_from, as_of, orders, tuple(fbo) + tuple(inbound),
+        seller_stock, clusters, seller_warehouses, zones, tuple(evidence),
+        tuple(diagnostics), credential_context_id, product_facts,
+        tuple(sorted(warehouse_to_macrolocal.items())))
+    failed = tuple(x.name for x in evidence if not x.complete)
+    return candidate, OzonRefreshReport(requested, "smart", base_snapshot.source_snapshot_id,
+        tuple(dict.fromkeys(refreshed)), tuple(reused), failed,
+        history_refresh_from)

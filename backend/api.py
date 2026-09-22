@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 import asyncio
+import inspect
 import json
 import logging
 from pathlib import Path, PurePath
@@ -55,7 +56,12 @@ from backend.ozon.transport_compare import compare_transports
 from backend.ozon.vault import CredentialVault, OzonVaultError
 from backend.ozon.handoff import HandoffPointStore, handoff_supply_types, search_handoff_points
 from backend.ozon.source_store import OzonSourceSnapshotStore
-from backend.ozon.sync import capability_matrix, sync_ozon_source
+from backend.ozon.source_persistence import (delete_source_snapshot,
+    load_source_snapshot_if_exists, save_source_snapshot_atomic)
+from backend.ozon.sync import (OzonRefreshReport, capability_matrix,
+                               refresh_ozon_source, source_refresh_regresses,
+                               sync_ozon_source)
+_ORIGINAL_SYNC_OZON_SOURCE=sync_ozon_source
 from backend.ozon.draft_validation import DraftValidationService
 from backend.shipment import (DEFAULT_MAX_CANDIDATES, build_candidate_result,
                               build_shipment_input, WorkingPlanIdentityError)
@@ -72,6 +78,7 @@ MAX_UPLOAD_BYTES=64*1024*1024
 router=APIRouter()
 logger=logging.getLogger(__name__)
 PROJECT_PATH=Path(__file__).resolve().parents[1]/"data"/"project.json"
+OZON_SOURCE_PATH=Path(__file__).resolve().parents[1]/"data"/"ozon-source-snapshot.json"
 OZON_VAULT=CredentialVault(Path(__file__).resolve().parents[1]/"data"/"ozon-credentials.json")
 OZON_CLIENT=OzonClient(OZON_VAULT)
 HANDOFF_STORE=HandoffPointStore()
@@ -127,9 +134,35 @@ def vault_response(status): return wire(status)
 
 def invalidate_ozon_account_context_state():
     OZON_SOURCE_STORE.clear()
+    delete_source_snapshot(OZON_SOURCE_PATH)
     HANDOFF_STORE.clear()
     ANALYSIS_STORE.clear_api()
     SHIPMENT_PLAN_STORE.clear()
+
+def source_status_view(snapshot):
+    """Small browser view; normalized row collections remain backend-owned."""
+    return {
+        'source_snapshot_id':snapshot.source_snapshot_id,
+        'synced_at_utc':snapshot.synced_at_utc,
+        'source_as_of':snapshot.source_as_of.isoformat(),
+        'source_timezone':snapshot.source_timezone,
+        'history_from':snapshot.history_from.isoformat(),
+        'history_to':snapshot.history_to.isoformat(),
+        'credential_context_id':snapshot.credential_context_id,
+        'seller_warehouses':wire(snapshot.seller_warehouses),
+        'endpoint_evidence':wire(snapshot.endpoint_evidence),
+        'diagnostics':wire(snapshot.diagnostics),
+    }
+
+def _restore_persisted_source():
+    try:
+        snapshot=load_source_snapshot_if_exists(OZON_SOURCE_PATH)
+        if snapshot is not None and snapshot.credential_context_id==OZON_VAULT.credential_context_id():
+            OZON_SOURCE_STORE.put(snapshot)
+    except (OSError,ValueError,TypeError,json.JSONDecodeError):
+        logger.warning('Ignoring invalid persisted Ozon source snapshot',exc_info=True)
+
+_restore_persisted_source()
 
 def credential_context_error(field=None):
     return error(409,'OZON_CREDENTIAL_CONTEXT_CHANGED',CREDENTIAL_CONTEXT_MESSAGE,field)
@@ -544,14 +577,45 @@ async def ozon_handoff_search(request:Request):
         return error(503,exc.code.value,str(exc),None)
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
 
+def _refresh_response(context, mode, progress_callback=None):
+    base=OZON_SOURCE_STORE.latest()
+    # Preserve the established injection seam used by transport/concurrency tests.
+    if sync_ozon_source is not _ORIGINAL_SYNC_OZON_SOURCE:
+        kwargs={'credential_context_id':context.context_id}
+        if progress_callback is not None and 'progress_callback' in inspect.signature(sync_ozon_source).parameters:
+            kwargs['progress_callback']=progress_callback
+        candidate=sync_ozon_source(OZON_CLIENT.bind_context(context),**kwargs)
+        report=OzonRefreshReport(mode,'full',getattr(base,'source_snapshot_id',None),
+            tuple(x.name for x in candidate.endpoint_evidence),(),
+            tuple(x.name for x in candidate.endpoint_evidence if not x.complete),None)
+    else:
+        candidate,report=refresh_ozon_source(
+            OZON_CLIENT.bind_context(context),mode=mode,base_snapshot=base,
+            credential_context_id=context.context_id,progress_callback=progress_callback)
+
+    def commit():
+        active=base
+        activated=base is None or not source_refresh_regresses(base,candidate)
+        if activated:
+            save_source_snapshot_atomic(OZON_SOURCE_PATH,candidate)
+            OZON_SOURCE_STORE.put(candidate)
+            active=candidate
+        authoritative_report=replace(report,activated=activated)
+        result={'api_version':1,'source':source_status_view(active),
+                'capabilities':capability_matrix(active),'refresh':wire(authoritative_report)}
+        if not activated:
+            result['attempt']=source_status_view(candidate)
+        return result
+    return commit_active_credential_context(context,commit)
+
 @router.post('/api/ozon/sync')
-def ozon_sync():
+def ozon_sync(mode:str='smart'):
+    if mode not in {'smart','full'}:
+        return error(400,'INVALID_REFRESH_MODE','Expected smart or full.','mode')
     try:
         context=OZON_VAULT.capture_context()
-        snapshot=sync_ozon_source(OZON_CLIENT.bind_context(context),credential_context_id=context.context_id)
-        return commit_active_credential_context(
-            context,lambda:(OZON_SOURCE_STORE.put(snapshot),
-                            {'api_version':1,'source':wire(snapshot),'capabilities':capability_matrix(snapshot)})[1])
+        return _refresh_response(context,mode)
+    except OSError:return error(500,'OZON_SOURCE_WRITE_FAILED','Could not save Ozon source data.',None)
     except OzonVaultError as exc:return error(423,exc.code.value,'Unlock the Ozon credential vault first.',None)
     except OzonClientError as exc:
         if exc.code is OzonErrorCode.CREDENTIAL_CONTEXT_CHANGED:return credential_context_error()
@@ -559,20 +623,16 @@ def ozon_sync():
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
 
 @router.post('/api/ozon/sync/stream')
-def ozon_sync_stream():
+def ozon_sync_stream(mode:str='smart'):
     """Stream sync observations while retaining the regular sync's commit path."""
     events=Queue()
 
     def worker():
         try:
+            if mode not in {'smart','full'}:
+                events.put({'type':'error','error':{'code':'INVALID_REFRESH_MODE','message':'Expected smart or full.'}});return
             context=OZON_VAULT.capture_context()
-            snapshot=sync_ozon_source(
-                OZON_CLIENT.bind_context(context), credential_context_id=context.context_id,
-                progress_callback=events.put)
-            data=commit_active_credential_context(
-                context,lambda:(OZON_SOURCE_STORE.put(snapshot),
-                                {'api_version':1,'source':wire(snapshot),
-                                 'capabilities':capability_matrix(snapshot)})[1])
+            data=_refresh_response(context,mode,events.put)
             events.put({'type':'result','data':data})
         except OzonVaultError as exc:
             events.put({'type':'error','error':{
@@ -602,6 +662,14 @@ def ozon_sync_stream():
         finally:
             await asyncio.shield(asyncio.to_thread(thread.join))
     return StreamingResponse(stream(),media_type='application/x-ndjson')
+
+@router.get('/api/ozon/source/latest')
+def ozon_source_latest():
+    snapshot=OZON_SOURCE_STORE.latest()
+    if snapshot is None:
+        return {'api_version':1,'source':None}
+    return {'api_version':1,'source':source_status_view(snapshot),
+            'capabilities':capability_matrix(snapshot)}
 
 @router.get('/api/ozon/source/{source_snapshot_id}/status')
 def ozon_source_status(source_snapshot_id:str):

@@ -1,5 +1,5 @@
 from dataclasses import asdict, replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
@@ -11,17 +11,21 @@ from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_STOCK_PATH, PRODUCT_LI
 from backend.ozon.client import OzonClientError
 from backend.ozon.contracts import OzonErrorCode
 from backend.ozon.adapters.catalog import ClusterCatalogResult
+from backend.ozon.adapters.product_facts import ProductApiFacts
+from backend.ozon.adapters.products import ProductCatalogItem
 from backend.ozon.source_contracts import (
-    Cluster, OzonRecordQualityEvidence, SellerWarehouse,
+    Cluster, EndpointEvidence, OzonRecordQualityEvidence, SellerWarehouse,
 )
-from backend.ozon.sync import capability_matrix, sync_ozon_source
+from backend.ozon.sync import (capability_matrix, refresh_ozon_source,
+                               source_refresh_regresses, sync_ozon_source)
 from tests.ozon.test_source_store import snap
 
 
-def _orders(as_of: date, weeks: int, *, include_new=False):
+def _orders(as_of: date, weeks: int, *, include_new=False, source_channel=""):
     week_start = as_of - timedelta(days=as_of.weekday())
     result = [OrderRecord("OLD", 1, "Москва", "Москва", OrderLifecycle.FULFILLED,
-                          (week_start - timedelta(weeks=index)).isoformat())
+                          (week_start - timedelta(weeks=index)).isoformat(),
+                          source_channel=source_channel)
               for index in range(1, weeks + 1)]
     if include_new:
         result.append(OrderRecord("NEW", 1, "Москва", "Москва", OrderLifecycle.FULFILLED,
@@ -65,6 +69,7 @@ def test_sync_snapshot_carries_captured_credential_context(monkeypatch):
     source = sync_ozon_source(object(), credential_context_id="opaque-context-a")
 
     assert source.credential_context_id == "opaque-context-a"
+    assert source.warehouse_to_macrolocal == ((501, 10),)
 
 
 def test_initial_twelve_window_with_eight_usable_weeks_fetches_once(monkeypatch):
@@ -415,9 +420,15 @@ def test_malformed_product_list_sku_blocks_dependent_capabilities(monkeypatch):
 
 def test_partial_sync_response_does_not_evict_or_mask_last_healthy_source(monkeypatch):
     context_id = api_module.OZON_VAULT.credential_context_id()
-    healthy = replace(snap("healthy-source"), credential_context_id=context_id)
+    healthy = replace(
+        snap("healthy-source"), credential_context_id=context_id,
+        seller_warehouses=(SellerWarehouse(123, "Active base", None, True, False),),
+    )
     api_module.OZON_SOURCE_STORE.put(healthy)
     attempts = iter(range(1, 5))
+    persisted = []
+    monkeypatch.setattr(api_module, "save_source_snapshot_atomic",
+                        lambda *_args: persisted.append(_args[-1].source_snapshot_id))
 
     def partial_sync(_client, *, credential_context_id):
         number = next(attempts)
@@ -430,6 +441,7 @@ def test_partial_sync_response_does_not_evict_or_mask_last_healthy_source(monkey
             snap(f"partial-source-{number}", healthy=False),
             diagnostics=(diagnostic,),
             credential_context_id=credential_context_id,
+            seller_warehouses=(SellerWarehouse(999, "Attempt", None, True, False),),
         )
 
     monkeypatch.setattr(api_module, "sync_ozon_source", partial_sync)
@@ -438,9 +450,320 @@ def test_partial_sync_response_does_not_evict_or_mask_last_healthy_source(monkey
 
     assert all(response.status_code == 200 for response in responses)
     latest = responses[-1].json()
-    assert latest["source"]["source_snapshot_id"] == "partial-source-4"
-    assert latest["source"]["endpoint_evidence"][0]["complete"] is False
-    assert latest["source"]["diagnostics"][0]["code"] == "OZON_FBO_STOCK_FAILED"
+    assert latest["source"]["source_snapshot_id"] == "healthy-source"
+    assert latest["source"]["seller_warehouses"][0]["seller_warehouse_id"] == 123
+    assert latest["attempt"]["source_snapshot_id"] == "partial-source-4"
+    assert latest["attempt"]["seller_warehouses"][0]["seller_warehouse_id"] == 999
+    assert latest["refresh"]["activated"] is False
+    assert persisted == []
     assert api_module.OZON_SOURCE_STORE.get("healthy-source") is not None
     assert api_module.OZON_SOURCE_STORE.last_healthy() == healthy
-    assert len(api_module.OZON_SOURCE_STORE) == 3
+    assert len(api_module.OZON_SOURCE_STORE) == 1
+
+
+def test_latest_source_includes_seller_warehouses_but_not_heavy_rows():
+    context_id = api_module.OZON_VAULT.credential_context_id()
+    source = replace(
+        snap("restored-source"), credential_context_id=context_id,
+        seller_warehouses=(SellerWarehouse(123, "Active", None, True, False),),
+    )
+    api_module.OZON_SOURCE_STORE.put(source)
+
+    payload = TestClient(app).get("/api/ozon/source/latest").json()["source"]
+
+    assert payload["seller_warehouses"][0]["seller_warehouse_id"] == 123
+    assert not {"orders", "availability", "operational_seller_stock", "product_facts"} & payload.keys()
+
+
+def _quality_source(identity, evidence):
+    return replace(snap(identity), endpoint_evidence=tuple(evidence))
+
+
+def test_source_refresh_regression_compares_every_endpoint_quality():
+    clean = EndpointEvidence("seller_stock", "2026-09-22T00:00:00+00:00", 10, True)
+    incomplete = replace(clean, complete=False, record_count=0)
+    scoped = replace(clean, record_quality=OzonRecordQualityEvidence(1, ("A",)))
+    missing_zones = EndpointEvidence("placement_zones", clean.fetched_at_utc, 0, False)
+    complete_zones = replace(missing_zones, complete=True)
+    base = _quality_source("base", (clean, missing_zones))
+
+    assert source_refresh_regresses(base, _quality_source("worse", (incomplete, complete_zones))) is True
+    assert source_refresh_regresses(base, _quality_source("scoped", (scoped, missing_zones))) is True
+    assert source_refresh_regresses(base, _quality_source("better", (clean, complete_zones))) is False
+    assert source_refresh_regresses(base, _quality_source("same", (clean, missing_zones))) is False
+    assert source_refresh_regresses(base, _quality_source("missing", (missing_zones,))) is True
+
+
+def _smart_base(now):
+    names = ("orders_fbo", "orders_fbs", "clusters", "seller_warehouses",
+             "products", "product_prices", "product_attributes", "fbo_stock",
+             "seller_stock", "inbound", "placement_zones")
+    evidence = tuple(EndpointEvidence(name, now.isoformat(), 1, True) for name in names)
+    return replace(
+        snap("smart-base"), synced_at_utc=now.isoformat(), source_as_of=now.date(),
+        history_from=date(2026, 6, 1), history_to=date(2026, 9, 21),
+        orders=_orders(now.date(), 12, source_channel="fbo"),
+        clusters=(Cluster(10, "Москва"),), endpoint_evidence=evidence,
+        product_facts=(ProductApiFacts("A", "article-a", 1),),
+        warehouse_to_macrolocal=((777, 10),),
+    )
+
+
+def _patch_smart_success(monkeypatch, calls):
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_postings", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_clusters", lambda *_args: (
+        calls.append("clusters") or ClusterCatalogResult((Cluster(10, "Москва"),), {888: 10}, ())))
+    monkeypatch.setattr(module, "fetch_product_catalog", lambda *_args: (
+        ProductCatalogItem("A", 1, "article-a"),))
+    monkeypatch.setattr(module, "fetch_product_prices", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_product_attributes", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_seller_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_placement_zones", lambda *_args: ((), ()))
+
+
+def test_smart_reuse_restores_warehouse_mapping_for_fbo_and_inbound(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+
+    def fbo(_client, _skus, mapping):
+        calls.append(("fbo", mapping.copy()))
+        return (AvailabilityRecord("A", "Ozon 777", mapping["777"], 4, fbo_quantity=4),), ()
+
+    def inbound(_client, clusters, mapping):
+        calls.append(("inbound", clusters.copy(), mapping.copy()))
+        return (AvailabilityRecord("A", "inbound", clusters[mapping[777]], 2,
+                                   inbound_quantity=2),), ()
+
+    monkeypatch.setattr(module, "fetch_fbo_stock", fbo)
+    monkeypatch.setattr(module, "fetch_inbound", inbound)
+
+    candidate, report = refresh_ozon_source(object(), base_snapshot=_smart_base(now), now=now)
+
+    assert "clusters" not in calls
+    assert ("fbo", {"777": "Москва"}) in calls
+    assert ("inbound", {10: "Москва"}, {777: 10}) in calls
+    assert candidate.warehouse_to_macrolocal == ((777, 10),)
+    assert "clusters" in report.reused_endpoints
+    assert {row.cluster for row in candidate.availability} == {"Москва"}
+
+
+def test_stale_clusters_refreshes_and_persists_new_mapping(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
+    base = _smart_base(now)
+    old = {row.name: replace(row, fetched_at_utc=(now - timedelta(hours=25)).isoformat())
+           if row.name == "clusters" else row for row in base.endpoint_evidence}
+    base = replace(base, endpoint_evidence=tuple(old.values()))
+
+    candidate, _ = refresh_ozon_source(object(), base_snapshot=base, now=now)
+
+    assert calls.count("clusters") == 1
+    assert candidate.warehouse_to_macrolocal == ((888, 10),)
+
+
+def test_smart_product_failure_blocks_all_product_dependencies(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_product_catalog", lambda *_args: (_ for _ in ()).throw(RuntimeError("products")))
+    for name in ("fetch_product_prices", "fetch_product_attributes", "fetch_fbo_stock",
+                 "fetch_seller_stock", "fetch_placement_zones"):
+        monkeypatch.setattr(module, name, lambda *_args, n=name: calls.append(n))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: (calls.append("inbound") or (), ()))
+
+    candidate, _ = refresh_ozon_source(object(), base_snapshot=_smart_base(now), now=now)
+    evidence = {row.name: row for row in candidate.endpoint_evidence}
+
+    dependencies = ("products", "product_prices", "product_attributes", "fbo_stock",
+                    "seller_stock", "placement_zones")
+    assert all(evidence[name].complete is False for name in dependencies)
+    assert not set(calls) & {"fetch_product_prices", "fetch_product_attributes", "fetch_fbo_stock",
+                             "fetch_seller_stock", "fetch_placement_zones"}
+    assert "inbound" in calls and evidence["inbound"].complete is True
+
+
+def test_smart_cluster_failure_blocks_fbo_and_inbound_but_not_seller_stock(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_clusters", lambda *_args: (_ for _ in ()).throw(RuntimeError("clusters")))
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: calls.append("fbo"))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: calls.append("inbound"))
+    monkeypatch.setattr(module, "fetch_seller_stock", lambda *_args: (calls.append("seller") or (), ()))
+    base = _smart_base(now)
+    evidence = tuple(replace(row, fetched_at_utc=(now - timedelta(hours=25)).isoformat())
+                     if row.name == "clusters" else row for row in base.endpoint_evidence)
+
+    candidate, _ = refresh_ozon_source(object(), base_snapshot=replace(base, endpoint_evidence=evidence), now=now)
+    by_name = {row.name: row for row in candidate.endpoint_evidence}
+
+    assert by_name["clusters"].complete is False
+    assert by_name["fbo_stock"].complete is False
+    assert by_name["inbound"].complete is False
+    assert "fbo" not in calls and "inbound" not in calls and "seller" in calls
+
+
+def test_smart_orders_use_overlap_from_previous_history_end_per_channel(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
+    starts = []
+    def postings(_client, path, start, _end):
+        starts.append((path, start))
+        return (_orders(now.date(), 8, source_channel="fbo")
+                if path == FBO_POSTINGS_PATH else ()), ()
+    monkeypatch.setattr(module, "fetch_postings", postings)
+
+    refresh_ozon_source(object(), base_snapshot=_smart_base(now), now=now)
+
+    assert {start for _path, start in starts} == {date(2026, 8, 24)}
+    assert len(starts) == 2
+
+
+def test_smart_orders_anchor_downtime_overlap_and_fallback_per_incomplete_channel(monkeypatch):
+    now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
+    starts = []
+    def postings(_client, path, start, _end):
+        starts.append((path, start))
+        return (_orders(now.date(), 8, source_channel="fbo")
+                if path == FBO_POSTINGS_PATH else ()), ()
+    monkeypatch.setattr(module, "fetch_postings", postings)
+    base = replace(_smart_base(now), history_from=date(2026, 5, 1), history_to=date(2026, 8, 1))
+    evidence = tuple(replace(row, complete=False) if row.name == "orders_fbo" else row
+                     for row in base.endpoint_evidence)
+
+    _, report = refresh_ozon_source(
+        object(), base_snapshot=replace(base, endpoint_evidence=evidence), now=now)
+
+    assert starts[0] == (FBO_POSTINGS_PATH, date(2026, 5, 1))
+    fbs_start = next(start for path, start in starts if path != FBO_POSTINGS_PATH)
+    assert fbs_start == date(2026, 7, 4)
+    assert report.history_refresh_from == date(2026, 5, 1)
+
+
+def test_smart_shallow_merge_backfills_orders_only(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
+    order_calls = []
+
+    def postings(_client, path, start, end):
+        order_calls.append((path, start))
+        weeks = 6 if start == date(2026, 8, 24) else 8
+        return (_orders(end, weeks, source_channel="fbo")
+                if path == FBO_POSTINGS_PATH else ()), ()
+
+    monkeypatch.setattr(module, "fetch_postings", postings)
+    base = replace(_smart_base(now), orders=())
+
+    candidate, report = refresh_ozon_source(
+        object(), base_snapshot=base, now=now)
+
+    assert [start for path, start in order_calls if path == FBO_POSTINGS_PATH] == [
+        date(2026, 8, 24), date(2026, 5, 4)]
+    assert len(module.usable_completed_weeks(candidate.orders, now.date())) == 8
+    assert candidate.history_from == date(2026, 5, 4)
+    assert report.history_refresh_from == date(2026, 5, 4)
+    assert report.refreshed_endpoints.count("orders_fbo") == 1
+    assert calls.count("clusters") == 0
+
+
+def test_smart_history_can_require_multiple_backfill_rounds(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
+    starts = []
+
+    def postings(_client, path, start, end):
+        if path == FBO_POSTINGS_PATH:
+            starts.append(start)
+        weeks = {date(2026, 8, 24): 6, date(2026, 5, 4): 7}.get(start, 9)
+        return (_orders(end, weeks, source_channel="fbo")
+                if path == FBO_POSTINGS_PATH else ()), ()
+
+    monkeypatch.setattr(module, "fetch_postings", postings)
+    base = replace(_smart_base(now), orders=())
+
+    candidate, report = refresh_ozon_source(
+        object(), base_snapshot=base, now=now)
+
+    assert starts == [date(2026, 8, 24), date(2026, 5, 4), date(2026, 4, 6)]
+    assert candidate.history_from == date(2026, 4, 6)
+    assert report.history_refresh_from == date(2026, 4, 6)
+    assert len(module.usable_completed_weeks(candidate.orders, now.date())) == 9
+
+
+def test_smart_exhausted_history_fails_order_evidence_closed(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, _start, end: (
+        _orders(end, 5, source_channel="fbo") if path == FBO_POSTINGS_PATH else (), ()))
+    base = replace(_smart_base(now), orders=_orders(
+        now.date(), 5, source_channel="fbo"))
+
+    candidate, _ = refresh_ozon_source(
+        object(), base_snapshot=base, now=now)
+    order_evidence = {row.name: row for row in candidate.endpoint_evidence
+                      if row.name.startswith("orders_")}
+
+    assert all(not row.complete for row in order_evidence.values())
+    assert all(any(item.code == "INSUFFICIENT_ORDER_HISTORY"
+                   for item in row.diagnostics)
+               for row in order_evidence.values())
+    assert capability_matrix(candidate)["demand_flow"]["complete"] is False
+
+
+def test_smart_backfill_failure_does_not_reuse_short_channel(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
+
+    def postings(_client, path, start, end):
+        if start < date(2026, 8, 24) and path != FBO_POSTINGS_PATH:
+            raise RuntimeError("rate limited")
+        return (_orders(end, 6, source_channel="fbo")
+                if path == FBO_POSTINGS_PATH else ()), ()
+
+    monkeypatch.setattr(module, "fetch_postings", postings)
+    base = replace(_smart_base(now), orders=_orders(
+        now.date(), 6, source_channel="fbo"))
+
+    candidate, report = refresh_ozon_source(
+        object(), base_snapshot=base, now=now)
+    by_name = {row.name: row for row in candidate.endpoint_evidence}
+
+    assert by_name["orders_fbo"].complete is True
+    assert by_name["orders_fbs"].complete is False
+    assert capability_matrix(candidate)["demand_flow"]["complete"] is False
+    assert candidate.history_from == date(2026, 5, 4)
+    assert report.history_refresh_from == date(2026, 5, 4)
