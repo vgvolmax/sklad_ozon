@@ -16,7 +16,7 @@ from backend.ozon.source_contracts import (
     OzonSourceSnapshot, PlacementZoneEvidence, SellerWarehouse,
 )
 
-SOURCE_PERSISTENCE_SCHEMA_VERSION = 1
+SOURCE_PERSISTENCE_SCHEMA_VERSION = 2
 
 
 def _object(value):
@@ -43,6 +43,25 @@ def _tuple(value, decoder):
     if not isinstance(value, list):
         raise ValueError("expected array")
     return tuple(decoder(item) for item in value)
+
+
+def _warehouse_mapping(value):
+    if not isinstance(value, list):
+        raise ValueError("invalid warehouse_to_macrolocal")
+    result = []
+    warehouse_mapping = {}
+    for pair in value:
+        if (not isinstance(pair, list) or len(pair) != 2
+                or type(pair[0]) is not int or type(pair[1]) is not int
+                or pair[0] <= 0 or pair[1] <= 0):
+            raise ValueError("invalid warehouse_to_macrolocal pair")
+        warehouse_id, macrolocal_id = pair
+        previous = warehouse_mapping.get(warehouse_id)
+        if previous is not None and previous != macrolocal_id:
+            raise ValueError("conflicting warehouse_to_macrolocal mapping")
+        warehouse_mapping[warehouse_id] = macrolocal_id
+        result.append((warehouse_id, macrolocal_id))
+    return tuple(result)
 
 
 def _diagnostic(value):
@@ -187,6 +206,7 @@ def source_snapshot_from_document(document: object) -> OzonSourceSnapshot:
         _tuple(_required(item, "diagnostics", list), _diagnostic),
         _optional(item, "credential_context_id", str),
         _tuple(_required(item, "product_facts", list), _facts),
+        _warehouse_mapping(_required(item, "warehouse_to_macrolocal", list)),
     )
 
 

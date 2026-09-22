@@ -31,6 +31,11 @@ def test_local_date_uses_calendar_parts():
     assert node("SkladOzon.localDate({getFullYear:()=>2026,getMonth:()=>0,getDate:()=>2})") == '2026-01-02'
 
 
+def test_restored_source_keeps_crossdock_seller_warehouse_available():
+    result = node("""(()=>{let state=SkladOzon.createInitialState();state=SkladOzon.applyRestoredSource(state,{source:{source_snapshot_id:'saved',seller_warehouses:[{seller_warehouse_id:123,name:'Active',is_active:true,is_pickup:false}]}});return SkladOzon.sellerWarehouseMode(['pvz_crossdock'],state.source.source.seller_warehouses).kind;})()""")
+    assert result == "fixed"
+
+
 def test_navigation_preserves_plan_state_and_url_only_overrides_present_values():
     expression="""(()=>{let s={...SkladOzon.createInitialState(),planView:{...SkladOzon.createInitialState().planView,search:'39439',quickFilter:'blocked',pageSize:100,page:2}};s=SkladOzon.resolveNavigation(s,'#data');s=SkladOzon.resolveNavigation(s,'#plan');return s.planView})()"""
     view=node(expression)
