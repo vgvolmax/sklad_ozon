@@ -86,3 +86,4 @@ class OzonSourceSnapshot:
     diagnostics: tuple[Any, ...]
     credential_context_id: str | None = None
     product_facts: tuple[Any, ...] = ()
+    warehouse_to_macrolocal: tuple[tuple[int, int], ...] = ()

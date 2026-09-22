@@ -34,6 +34,17 @@ def test_sync_uses_diagnostic_endpoint_before_stream_and_fail_fast_copy_is_prese
     assert "Seller API" in source and "timeout" not in source  # reason comes from safe backend wire
 
 
+def test_boot_restores_saved_source_without_automatic_ozon_calls():
+    source = (ROOT / 'frontend/assets/js/app.js').read_text()
+    boot = source[source.index('S.boot=function()'):source.index(';if(root.document)')]
+
+    assert 'loadSavedSource()' in boot
+    assert "'/api/ozon/source/latest'" not in boot  # owned by the restore helper
+    assert 'syncSource(' not in boot
+    assert 'streamSource(' not in boot
+    assert 'diagnoseOzon(' not in boot
+
+
 def test_source_progress_is_stateful_and_stale_events_are_ignored():
     result=node("(()=>{let s=SkladOzon.beginSourceRun(SkladOzon.createInitialState()),id=s.source.runId;s=SkladOzon.applySourceProgress(s,id,{stage:'inbound',stage_index:8,stage_count:9,label:'Поставки в пути',detail:'Получение состава поставок',current:12,total:19,unit:'bundles'});const same=SkladOzon.applySourceProgress(s,id-1,{stage:'old',stage_index:1,stage_count:9,label:'old'});return {progress:s.source.syncProgress,staleIgnored:same===s,busy:s.source.syncBusy};})()")
     assert result['busy'] is True and result['staleIgnored'] is True

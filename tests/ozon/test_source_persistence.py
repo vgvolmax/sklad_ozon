@@ -38,6 +38,7 @@ def snapshot(identity="source-a"):
         (diagnostic,), "credential-a",
         (ProductApiFacts("sku-1", "article-1", 3, Decimal("10.50"),
                          Decimal("0.15"), Decimal("1.25")),),
+        ((777, 10), (888, 20)),
     )
 
 
@@ -51,6 +52,7 @@ def test_source_snapshot_round_trip_restores_domain_types(tmp_path):
 @pytest.mark.parametrize("mutation", [
     lambda document: "{broken",
     lambda document: {**document, "schema_version": 99},
+    lambda document: {**document, "schema_version": 1},
     lambda document: ({**document, "snapshot": {**document["snapshot"],
         "product_facts": [{**document["snapshot"]["product_facts"][0], "price": "wrong"}]}}),
     lambda document: ({**document, "snapshot": {**document["snapshot"],
@@ -76,3 +78,19 @@ def test_replace_failure_preserves_previous_snapshot(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         save_source_snapshot_atomic(path, replace(original, source_snapshot_id="source-b"))
     assert source_snapshot_from_document(json.loads(path.read_text(encoding="utf-8"))) == original
+
+
+@pytest.mark.parametrize("mapping", [
+    [[-1, 10]],
+    [[777, 0]],
+    [[777, 10], [777, 20]],
+    [[777]],
+    [["777", 10]],
+    [[True, 10]],
+])
+def test_corrupt_warehouse_mapping_is_rejected(mapping):
+    document = source_snapshot_to_document(snapshot())
+    document["snapshot"]["warehouse_to_macrolocal"] = mapping
+
+    with pytest.raises(ValueError):
+        source_snapshot_from_document(document)

@@ -56,11 +56,11 @@ from backend.ozon.transport_compare import compare_transports
 from backend.ozon.vault import CredentialVault, OzonVaultError
 from backend.ozon.handoff import HandoffPointStore, handoff_supply_types, search_handoff_points
 from backend.ozon.source_store import OzonSourceSnapshotStore
-from backend.ozon.source_store import is_healthy_source_snapshot
 from backend.ozon.source_persistence import (delete_source_snapshot,
     load_source_snapshot_if_exists, save_source_snapshot_atomic)
 from backend.ozon.sync import (OzonRefreshReport, capability_matrix,
-                               refresh_ozon_source, sync_ozon_source)
+                               refresh_ozon_source, source_refresh_regresses,
+                               sync_ozon_source)
 _ORIGINAL_SYNC_OZON_SOURCE=sync_ozon_source
 from backend.ozon.draft_validation import DraftValidationService
 from backend.shipment import (DEFAULT_MAX_CANDIDATES, build_candidate_result,
@@ -149,6 +149,7 @@ def source_status_view(snapshot):
         'history_from':snapshot.history_from.isoformat(),
         'history_to':snapshot.history_to.isoformat(),
         'credential_context_id':snapshot.credential_context_id,
+        'seller_warehouses':wire(snapshot.seller_warehouses),
         'endpoint_evidence':wire(snapshot.endpoint_evidence),
         'diagnostics':wire(snapshot.diagnostics),
     }
@@ -587,24 +588,21 @@ def _refresh_response(context, mode, progress_callback=None):
         report=OzonRefreshReport(mode,'full',getattr(base,'source_snapshot_id',None),
             tuple(x.name for x in candidate.endpoint_evidence),(),
             tuple(x.name for x in candidate.endpoint_evidence if not x.complete),None)
-        legacy_injected=True
     else:
         candidate,report=refresh_ozon_source(
             OZON_CLIENT.bind_context(context),mode=mode,base_snapshot=base,
             credential_context_id=context.context_id,progress_callback=progress_callback)
-        legacy_injected=False
 
     def commit():
         active=base
-        activated=legacy_injected or not (base is not None and is_healthy_source_snapshot(base)
-                       and not is_healthy_source_snapshot(candidate))
+        activated=base is None or not source_refresh_regresses(base,candidate)
         if activated:
             save_source_snapshot_atomic(OZON_SOURCE_PATH,candidate)
             OZON_SOURCE_STORE.put(candidate)
             active=candidate
-        report_data={**wire(report),'activated':activated}
+        authoritative_report=replace(report,activated=activated)
         result={'api_version':1,'source':source_status_view(active),
-                'capabilities':capability_matrix(active),'refresh':report_data}
+                'capabilities':capability_matrix(active),'refresh':wire(authoritative_report)}
         if not activated:
             result['attempt']=source_status_view(candidate)
         return result
