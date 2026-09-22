@@ -50,6 +50,12 @@ def test_working_plan_failure_and_legacy_shipment_guard_are_explicit():
     assert 'runId:state.shipmentView.runId+1,candidates:null,plan:null' in app
 
 
+def test_missing_working_line_is_compact_but_accessible():
+    app = (ROOT / 'frontend/assets/js/app.js').read_text()
+    assert "if(!line)return planUnknown('Рабочий план недоступен')" in app
+    assert "boxes=qty!=null&&pack?`${qty/pack} кор.`:planUnknown('Количество коробок не рассчитано')" in app
+
+
 def test_second_mutation_waits_for_success_before_another_request_can_start():
     result = run_working_plan_lifecycle("""
 const test=SkladOzon.__workingPlanTest;

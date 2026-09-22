@@ -10,6 +10,12 @@ def node(expression):
     return json.loads(subprocess.check_output(['node','-e',f"{prefix};console.log(JSON.stringify({expression}))"], text=True))
 
 
+def app_node(expression):
+    files = [ROOT/'frontend/assets/js/core.js', ROOT/'frontend/assets/js/components.js', ROOT/'frontend/assets/js/app.js']
+    prefix = ';'.join(f"require({json.dumps(str(x))})" for x in files)
+    return json.loads(subprocess.check_output(['node','-e',f"{prefix};console.log(JSON.stringify({expression}))"], text=True))
+
+
 def rows():
     base=[]
     for i in range(6):
@@ -262,3 +268,33 @@ def test_compact_plan_table_headers_and_sticky_context_are_presentational():
     assert '-webkit-line-clamp:3' in css
     assert '.plan-table thead th{position:sticky' in css
     assert '.plan-table-identity{position:sticky' in css
+
+
+def test_plan_table_compacts_unknown_numbers_without_hiding_zero():
+    values = app_node("[SkladOzon.planCellNumber(null),SkladOzon.planCellNumber(undefined),SkladOzon.planCellNumber(NaN),SkladOzon.planCellNumber(0),SkladOzon.planCellNumber(12.5)]")
+    assert all('>—</span>' in value for value in values[:3])
+    assert all('title="Не рассчитано"' in value and 'aria-label="Не рассчитано"' in value for value in values[:3])
+    assert values[3:] == ['0', '12,5']
+
+
+def test_plan_table_compacts_partial_ordered_demand_and_unknown_zone():
+    ordered = app_node("SkladOzon.planOrderedDemand({ordered_qty_56d:31,ordered_qty_horizon:null},120)")
+    assert '>31 / —</span>' in ordered
+    assert 'title="31 / Не рассчитано"' in ordered
+    assert 'aria-label="31 / Не рассчитано"' in ordered
+    assert app_node("SkladOzon.planOrderedDemand({ordered_qty_56d:0,ordered_qty_horizon:0},28)") == '0 / 0'
+    zone = app_node("SkladOzon.planZone([])")
+    assert '>—</span>' in zone
+    assert 'title="Зона не рассчитана"' in zone and 'aria-label="Зона не рассчитана"' in zone
+
+
+def test_plan_table_css_has_one_canonical_geometry_block():
+    css = (ROOT / 'frontend/assets/css/app.css').read_text()
+    compact = ''.join(css.split())
+    assert '.cluster-tabletd{white-space:nowrap}' not in compact
+    assert css.count('.plan-table{table-layout:fixed;min-width:1320px}') == 1
+    assert css.count('.plan-table .col-ship{width:142px}') == 1
+    assert css.count('.plan-table{') == 1
+    assert css.count('.plan-table .col-ship{') == 1
+    assert '.plan-table--products .plan-table-identity{width:170px' in css
+    assert '.plan-table--clusters .plan-table-identity{width:190px' in css
