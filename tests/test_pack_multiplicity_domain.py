@@ -183,3 +183,26 @@ def test_xlsx_mixed_duplicate_upsert_and_reimportable_export():
     assert imported=={'17261':50} and not errors
     sheet=load_workbook(BytesIO(data),read_only=True).active
     assert next(sheet.values)[:2]==('Артикул','Кратность')
+
+
+def test_rtp_parser_rejects_whole_article_when_duplicate_has_invalid_pack():
+    book = Workbook()
+    book.active.title = "Прайс списком"
+    book.active.append(["КОД", "Упак"])
+    book.active.append(["28200", "15/1"])
+    book.active.append(["28200", "100+/1"])
+    stream = BytesIO()
+    book.save(stream)
+    book.close()
+
+    parsed = parse_import_xlsx(stream.getvalue())
+
+    assert "28200" not in parsed.values
+    diagnostic = next(
+        item for item in parsed.diagnostics
+        if item.article == "28200" and item.code == "INVALID_PACK_MULTIPLICITY"
+    )
+    assert diagnostic.row == 3
+    assert diagnostic.message == (
+        "Кратность коробки '100+/1' не является точным количеством."
+    )

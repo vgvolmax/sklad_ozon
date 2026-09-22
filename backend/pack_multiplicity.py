@@ -11,7 +11,8 @@ from openpyxl import Workbook, load_workbook
 
 from backend.ingestion.normalization import normalize_header
 from backend.domain.contracts import ReportMeta
-from backend.ingestion.supplier_packaging import (import_supplier_packaging,
+from backend.ingestion.supplier_packaging import (PackMultiplicityEvidence,
+                                                   import_supplier_packaging,
                                                    normalize_supplier_article)
 from backend.project import PackMultiplicityRecord, Project
 
@@ -119,10 +120,10 @@ def pack_multiplicity_fingerprint(project: Project) -> str:
 
 
 def build_effective_pack_evidence(project: Project, current_unitka_evidence) -> tuple[EffectivePackEvidence, ...]:
-    """Resolve override > current Unitka > persisted Unitka > unknown.
+    """Resolve override > RTP price > current valid Unitka > persisted Unitka.
 
-    Current invalid/conflicting Unitka evidence remains causal evidence.  A valid
-    persisted override masks that error for operational planning.
+    Current invalid/conflicting Unitka evidence remains causal only when it is
+    not masked by a valid override or RTP-price value.
     """
     current = {item.article: item for item in current_unitka_evidence}
     articles = sorted(set(project.pack_multiplicity) | set(current))
@@ -151,6 +152,21 @@ def build_effective_pack_evidence(project: Project, current_unitka_evidence) -> 
     return tuple(result)
 
 
+def _rtp_import_diagnostic(
+        item: PackMultiplicityEvidence) -> PackImportDiagnostic:
+    code = item.reason_codes[0]
+    if code == "INVALID_PACK_MULTIPLICITY":
+        message = (
+            f"Кратность коробки {item.source_value!r} не является точным количеством."
+            if item.source_value is not None
+            else "Кратность коробки не является точным количеством."
+        )
+    else:
+        message = "Для артикула указаны разные кратности внешней коробки."
+    return PackImportDiagnostic(
+        item.source_row or 0, item.article, code, message)
+
+
 def parse_import_xlsx(data: bytes) -> ParsedPackImport:
     try: workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
     except Exception as exc: raise ValueError("Файл должен быть корректным XLSX.") from exc
@@ -168,12 +184,10 @@ def parse_import_xlsx(data: bytes) -> ParsedPackImport:
                     workbook=workbook)
                 values = {item.article: item.pack_multiple for item in result.records
                           if item.pack_multiple is not None}
-                diagnostics = [PackImportDiagnostic(
-                    item.source_row or 0, item.article, item.reason_codes[0],
-                    (f"Кратность коробки {item.source_value!r} не является точным количеством."
-                     if item.reason_codes[0] == "INVALID_PACK_MULTIPLICITY" else
-                     "Для артикула указаны разные кратности внешней коробки."))
-                    for item in result.records if item.reason_codes]
+                diagnostics = [
+                    _rtp_import_diagnostic(item)
+                    for item in result.records if item.reason_codes
+                ]
                 diagnostics.extend(PackImportDiagnostic(
                     diagnostic.row or 0, None, diagnostic.code,
                     diagnostic.message)

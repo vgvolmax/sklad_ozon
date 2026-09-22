@@ -69,3 +69,25 @@ def test_import_collapses_identical_duplicates_and_blocks_conflicts_without_abor
         "INVALID_SUPPLIER_ARTICLE", "INVALID_PACK_MULTIPLICITY", "CONFLICTING_PACK_MULTIPLICITY",
     }
     assert next(d for d in result.diagnostics if d.code == "INVALID_SUPPLIER_ARTICLE").row == 6
+
+
+def test_valid_and_invalid_duplicate_article_is_fail_closed():
+    data = make_multisheet_xlsx([
+        ("Прайс списком", ["КОД", "Упак"], [
+            ["28200", "15/1"],
+            ["28200", "100+/1"],
+        ]),
+    ])
+
+    result = import_supplier_packaging(data, META)
+    by_article = {record.article: record for record in result.records}
+
+    record = by_article["28200"]
+    assert record.pack_multiple is None
+    assert record.reason_codes == ("INVALID_PACK_MULTIPLICITY",)
+    assert record.source_row == 3
+    assert record.source_value == "100+/1"
+    assert any(
+        diagnostic.code == "INVALID_PACK_MULTIPLICITY"
+        for diagnostic in result.diagnostics
+    )

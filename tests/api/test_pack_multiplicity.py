@@ -110,6 +110,41 @@ def test_real_rtp_price_import_precedence_snapshot_and_noop(tmp_path,monkeypatch
     assert load_project(path).pack_multiplicity['28200'].rtp_price_updated_at==stamp
 
 
+def test_rtp_mixed_duplicate_clears_stale_value_and_reimport_is_noop(
+        tmp_path, monkeypatch):
+    path = tmp_path / 'project.json'
+    monkeypatch.setattr(api, 'PROJECT_PATH', path)
+    save_project_atomic(path, Project(pack_multiplicity={
+        '28200': PackMultiplicityRecord(
+            rtp_price_pack_multiple=30, rtp_price_updated_at='old'),
+    }))
+    price = rtp_xlsx([
+        ['28200', '15/1'],
+        ['28200', '100+/1'],
+        ['28201', '18/1'],
+    ])
+
+    first = client.post('/api/project/pack-multiplicity/import', files={
+        'file': ('rtp.xlsx', price),
+    }).json()
+
+    assert (first['accepted'], first['rejected'], first['changed']) == (1, 1, True)
+    assert first['diagnostics'] == [{
+        'row': 5,
+        'article': '28200',
+        'code': 'INVALID_PACK_MULTIPLICITY',
+        'message': "Кратность коробки '100+/1' не является точным количеством.",
+    }]
+    project = load_project(path)
+    assert project.pack_multiplicity['28200'].rtp_price_pack_multiple is None
+    assert project.pack_multiplicity['28201'].rtp_price_pack_multiple == 18
+
+    second = client.post('/api/project/pack-multiplicity/import', files={
+        'file': ('rtp.xlsx', price),
+    }).json()
+    assert (second['accepted'], second['rejected'], second['changed']) == (1, 1, False)
+
+
 def test_unitka_change_invalidates_but_noop_preserves_derived_stores(tmp_path,monkeypatch):
     path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
     project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(20)})
