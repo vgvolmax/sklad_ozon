@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -966,6 +967,30 @@ async def import_unitka(request:Request):
             "record_sources":{"product_economics":list(products.record_sources),"tariffs":list(tariffs.record_sources),
                               "pack_multiplicity":list(packs.record_sources)}}
 
+@router.post('/api/import/unitka/validate')
+async def validate_unitka(request:Request):
+    """Parse a Unitka upload without changing Project or runtime stores."""
+    form=await request.form(); upload=form.get('file')
+    if upload is None:return error(400,'MISSING_FIELD','Required multipart field is missing.','file')
+    try:
+        data=await read(upload,'file')
+        bundle=import_unitka_bundle(data,meta(upload))
+    except OverflowError:
+        return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.','unitka_file')
+    except Exception as exc:
+        return error(400,'INVALID_UNITKA_FILE',str(exc) or 'Файл Юнитки не удалось прочитать.','unitka_file')
+    diagnostics=(bundle.product_economics.diagnostics+bundle.tariffs.diagnostics+
+                 bundle.pack_multiplicity.diagnostics)
+    error_count=sum(item.severity=='error' for item in diagnostics)
+    warning_count=sum(item.severity=='warning' for item in diagnostics)
+    return {'api_version':1,'valid':error_count==0,
+            'product_count':len(bundle.product_economics.records),
+            'tariff_count':len(bundle.tariffs.records),
+            'pack_count':len(bundle.pack_multiplicity.records),
+            'warning_count':warning_count,'error_count':error_count,
+            'diagnostics':wire(diagnostics),
+            'content_sha256':hashlib.sha256(data).hexdigest()}
+
 async def prepare_analysis(request:Request, request_id="http"):
     form=await request.form(); common=['availability_file','restrictions_file','orders_file']
     try: source_mode=SourceMode(str(form.get('source_mode','files')).strip().lower())
@@ -1417,9 +1442,11 @@ async def put_project_mappings(request: Request):
     try:
         with PROJECT_PERSISTENCE_LOCK:
             project=load_project_if_exists(PROJECT_PATH)
+            changed=project.manual_cluster_mappings!=mappings
             project=replace(project,manual_cluster_mappings=mappings)
-            save_project_atomic(PROJECT_PATH,project)
+            if changed:save_project_atomic(PROJECT_PATH,project)
     except ProjectValidationError: return error(400,"INVALID_MAPPINGS","Mappings are invalid.","mappings")
+    if changed:ANALYSIS_STORE.clear();SHIPMENT_PLAN_STORE.clear()
     return {"api_version":1,"mappings":dict(sorted(mappings.items()))}
 
 
@@ -1430,6 +1457,12 @@ def _pack_items(project):
         try: article=normalize_supplier_article(product.article)
         except ValueError: continue
         catalog.setdefault(article,set()).add(str(product.sku))
+    source=OZON_SOURCE_STORE.latest()
+    if source is not None:
+        for fact in source.product_facts:
+            try: article=normalize_supplier_article(fact.offer_id)
+            except (AttributeError,TypeError,ValueError): continue
+            catalog.setdefault(article,set()).add(str(fact.sku))
     articles=sorted(set(catalog)|set(project.pack_multiplicity))
     items=[]
     for article in articles:
@@ -1456,22 +1489,26 @@ async def put_pack_multiplicity(article: str, request: Request):
         return error(400,"INVALID_PACK_MULTIPLICITY","Expected pack_multiple only.","pack_multiple")
     try:
         with PROJECT_PERSISTENCE_LOCK:
-            project, normalized=set_override(load_project_if_exists(PROJECT_PATH),article,payload["pack_multiple"],"manual")
-            save_project_atomic(PROJECT_PATH,project)
+            before=load_project_if_exists(PROJECT_PATH);old=pack_multiplicity_fingerprint(before)
+            project, normalized=set_override(before,article,payload["pack_multiple"],"manual")
+            changed=pack_multiplicity_fingerprint(project)!=old
+            if changed:save_project_atomic(PROJECT_PATH,project)
     except (ValueError,ProjectValidationError): return error(400,"INVALID_PACK_MULTIPLICITY","Кратность должна быть положительным целым числом.","pack_multiple")
-    ANALYSIS_STORE.clear(); SHIPMENT_PLAN_STORE.clear()
-    return {"api_version":1,"item":next(item for item in _pack_items(project) if item["article"]==normalized)}
+    if changed:ANALYSIS_STORE.clear(); SHIPMENT_PLAN_STORE.clear()
+    return {"api_version":1,"changed":changed,"item":next(item for item in _pack_items(project) if item["article"]==normalized)}
 
 
 @router.delete("/api/project/pack-multiplicity/{article}")
 def delete_pack_multiplicity(article: str):
     try:
         with PROJECT_PERSISTENCE_LOCK:
-            project, normalized=reset_override(load_project_if_exists(PROJECT_PATH),article)
-            save_project_atomic(PROJECT_PATH,project)
+            before=load_project_if_exists(PROJECT_PATH);old=pack_multiplicity_fingerprint(before)
+            project, normalized=reset_override(before,article)
+            changed=pack_multiplicity_fingerprint(project)!=old
+            if changed:save_project_atomic(PROJECT_PATH,project)
     except (ValueError,ProjectValidationError): return error(400,"INVALID_ARTICLE","Некорректный артикул.","article")
-    ANALYSIS_STORE.clear(); SHIPMENT_PLAN_STORE.clear()
-    return {"api_version":1,"item":next(item for item in _pack_items(project) if item["article"]==normalized)}
+    if changed:ANALYSIS_STORE.clear(); SHIPMENT_PLAN_STORE.clear()
+    return {"api_version":1,"changed":changed,"item":next(item for item in _pack_items(project) if item["article"]==normalized)}
 
 
 @router.post("/api/project/pack-multiplicity/import")

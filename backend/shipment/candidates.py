@@ -40,8 +40,7 @@ def select_shipment_scope(
     selected = set(selected_cluster_ids)
     selected_rows = tuple(line for line in shipment_input.lines
                           if line.destination_cluster_id in selected)
-    if any(line.working_status == "BLOCKED" or line.quantity is None
-           for line in selected_rows):
+    if any(line.working_status == "BLOCKED" for line in selected_rows):
         raise ShipmentScopeError("WORKING_PLAN_SCOPE_BLOCKED")
     rows = tuple(line for line in selected_rows
                  if line.quantity is not None and line.quantity > 0)

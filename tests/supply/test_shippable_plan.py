@@ -383,3 +383,16 @@ def test_plan_rejects_duplicate_identity_and_priority():
     )
     with pytest.raises(ValueError, match="duplicate"):
         ShippablePlan(**common, lines=(line, line))
+
+
+def test_unavailable_decision_row_still_has_nullable_operational_line():
+    from types import SimpleNamespace
+    row = SimpleNamespace(sku="SKU-1", destination_cluster_id="A", calculated_plan_qty=None)
+    plan = build(decisions=(), facts=(fact("A", pack=20),), blocked_decision_rows=(row,))
+    line = plan.lines[0]
+    assert line.analytical_qty is None
+    assert line.rounded_target_qty is None
+    assert line.rounding_delta_qty is None
+    assert line.shippable_qty is None
+    assert line.pack_multiple == 20
+    assert "CALCULATED_PLAN_UNAVAILABLE" in line.reason_codes

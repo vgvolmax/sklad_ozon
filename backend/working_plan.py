@@ -32,7 +32,7 @@ class WorkingPlanLine:
     working_qty: int | None
     override_qty: int | None
     pack_multiple: int | None
-    resolved_seller_stock: int
+    resolved_seller_stock: int | None
     delta_qty: int | None
     unit_volume_l: Decimal | None
     total_volume_l: Decimal | None
@@ -71,7 +71,7 @@ def validate_override_quantity(line: ShippableLine, quantity: object) -> int:
 
 
 def _status(reasons: list[str], overridden: bool) -> str:
-    blocking = {"WORKING_QTY_UNKNOWN", "OVERRIDE_NOT_PACK_MULTIPLE",
+    blocking = {"OVERRIDE_NOT_PACK_MULTIPLE",
                 "POSITIVE_QTY_WITHOUT_PACK", "KNOWN_CAPACITY_EXCEEDED",
                 "SKU_SELLER_STOCK_EXCEEDED"}
     if blocking.intersection(reasons):
@@ -109,6 +109,8 @@ def materialize_working_plan(
         changed = bool(override and override.base_system_qty != line.shippable_qty)
         if working is None:
             reasons.append("WORKING_QTY_UNKNOWN")
+            if line.analytical_qty is not None and line.analytical_qty > 0 and line.pack_multiple is None:
+                reasons.append("POSITIVE_QTY_WITHOUT_PACK")
         elif working > 0 and line.pack_multiple is None:
             reasons.append("POSITIVE_QTY_WITHOUT_PACK")
         elif working > 0 and working % line.pack_multiple:
@@ -117,10 +119,13 @@ def materialize_working_plan(
                                               RestrictionCapacityKind.ZERO}:
             if line.whole_pack_capacity_qty is None or working > line.whole_pack_capacity_qty:
                 reasons.append("KNOWN_CAPACITY_EXCEEDED")
-        if (override and working is not None and line.shippable_qty is not None and
-                working > line.shippable_qty and
+        if override and working is not None and line.shippable_qty is None:
+            reasons.append("MANUAL_WITHOUT_SYSTEM_RECOMMENDATION")
+        if (override is not None and working is not None and working > 0 and
                 line.capacity_kind is RestrictionCapacityKind.UNKNOWN):
             reasons.append("NEEDS_OZON_VALIDATION")
+        if working is not None and working > 0 and line.resolved_seller_stock is None:
+            reasons.extend(("SELLER_STOCK_UNCONFIRMED", "NEEDS_OZON_VALIDATION"))
         if changed:
             reasons.append("RECOMMENDATION_CHANGED")
         drafts.append([line, override, working, reasons, changed])
@@ -130,7 +135,8 @@ def materialize_working_plan(
     for line, _, working, _, _ in drafts:
         totals[line.sku] = totals.get(line.sku, 0) + (working or 0)
         stocks[line.sku] = line.resolved_seller_stock
-    exceeded = {sku for sku, total in totals.items() if total > stocks[sku]}
+    exceeded = {sku for sku, total in totals.items()
+                if stocks[sku] is not None and total > stocks[sku]}
     diagnostics = []
     for sku in sorted(exceeded):
         excess = totals[sku] - stocks[sku]

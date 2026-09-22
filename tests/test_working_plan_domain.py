@@ -98,3 +98,31 @@ def test_known_and_unknown_capacity_semantics():
     unknown = materialize_working_plan(plan(line(stock=200)), {'SKU': {'Moscow': override(80)}})
     assert unknown.lines[0].status == 'ATTENTION'
     assert 'NEEDS_OZON_VALIDATION' in unknown.lines[0].reason_codes
+
+
+def test_manual_whole_pack_is_allowed_without_system_recommendation():
+    unknown = replace(line(system=40, pack=20), analytical_qty=None,
+                      rounded_target_qty=None, rounding_delta_qty=None,
+                      allocation_priority_rank=None, shippable_qty=None,
+                      total_volume_l=None)
+    result = materialize_working_plan(plan(unknown),
+        {'SKU': {'Moscow': override(40, base=None, pack=20)}})
+    row = result.lines[0]
+    assert row.system_qty is None
+    assert row.working_qty == 40
+    assert row.status == 'ATTENTION'
+    assert 'MANUAL_WITHOUT_SYSTEM_RECOMMENDATION' in row.reason_codes
+    assert 'NEEDS_OZON_VALIDATION' in row.reason_codes
+
+
+def test_unknown_seller_stock_is_attention_not_zero_or_blocked():
+    unknown = replace(line(system=40, pack=20), analytical_qty=None,
+                      rounded_target_qty=None, rounding_delta_qty=None,
+                      allocation_priority_rank=None, resolved_seller_stock=None,
+                      shippable_qty=None, total_volume_l=None)
+    result = materialize_working_plan(plan(unknown),
+        {'SKU': {'Moscow': override(40, base=None, pack=20)}})
+    row = result.lines[0]
+    assert row.resolved_seller_stock is None
+    assert row.status == 'ATTENTION'
+    assert 'SELLER_STOCK_UNCONFIRMED' in row.reason_codes
