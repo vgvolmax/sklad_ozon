@@ -196,6 +196,7 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
             article=_product_text(product, "offer_id", "product_offer_id", fbs=fbs),
             product_name=_product_text(product, "name", "product_name", fbs=fbs),
             origin_warehouse=origin_warehouse, seller_price=seller_price,
+            source_channel="fbs" if fbs else "fbo",
         ))
     if not destination and lifecycle in {OrderLifecycle.FULFILLED, OrderLifecycle.IN_PROGRESS}:
         diagnostics.append(ImportDiagnostic(

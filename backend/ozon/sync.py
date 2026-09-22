@@ -1,6 +1,7 @@
 """Causal orchestration for one immutable API source snapshot."""
 
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 import inspect
 from uuid import uuid4
 
@@ -36,6 +37,23 @@ SYNC_STAGES = (
     ("inbound", "Поставки в пути", "Поиск заявок"),
     ("placement_zones", "Зоны размещения", "Получение зон размещения"),
 )
+CLUSTERS_TTL = timedelta(hours=24)
+SELLER_WAREHOUSES_TTL = timedelta(hours=24)
+PRODUCT_ATTRIBUTES_TTL = timedelta(days=7)
+PLACEMENT_ZONES_TTL = timedelta(hours=24)
+ORDER_REFRESH_OVERLAP_DAYS = 28
+
+
+@dataclass(frozen=True, slots=True)
+class OzonRefreshReport:
+    requested_mode: str
+    effective_mode: str
+    base_source_snapshot_id: str | None
+    refreshed_endpoints: tuple[str, ...]
+    reused_endpoints: tuple[str, ...]
+    failed_endpoints: tuple[str, ...]
+    history_refresh_from: date | None
+    activated: bool = True
 _DEFAULT_FETCH_PRODUCT_SKUS = fetch_product_skus
 _STAGE_BY_NAME = {
     name: (index, label, detail)
@@ -261,3 +279,180 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
         window.history_to, orders, availability, seller_stock, clusters,
         seller_warehouses, zones, tuple(evidence), tuple(diagnostics),
         credential_context_id, product_facts)
+
+
+def _evidence_map(snapshot):
+    return {item.name: item for item in snapshot.endpoint_evidence}
+
+
+def _fresh_complete(evidence, now, ttl):
+    if evidence is None or not evidence.complete:
+        return False
+    try:
+        fetched = datetime.fromisoformat(evidence.fetched_at_utc)
+        if fetched.tzinfo is None:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return now - fetched.astimezone(timezone.utc) <= ttl
+
+
+def _catalog_identity(facts):
+    return tuple(sorted((row.sku, row.product_id, row.article) for row in facts))
+
+
+def _order_day(row):
+    try:
+        return date.fromisoformat(str(row.accepted_at)[:10])
+    except ValueError:
+        return date.min
+
+
+def refresh_ozon_source(client, *, mode="smart", base_snapshot=None,
+                        credential_context_id=None, progress_callback=None,
+                        now=None):
+    """Refresh a source, reusing only explicit fresh and complete evidence."""
+    if mode not in {"smart", "full"}:
+        raise ValueError("mode must be smart or full")
+    requested = mode
+    if mode == "full" or base_snapshot is None:
+        snapshot = sync_ozon_source(client, credential_context_id=credential_context_id,
+                                    progress_callback=progress_callback)
+        failed = tuple(x.name for x in snapshot.endpoint_evidence if not x.complete)
+        return snapshot, OzonRefreshReport(
+            requested, "full", getattr(base_snapshot, "source_snapshot_id", None),
+            tuple(x.name for x in snapshot.endpoint_evidence), (), failed, None)
+
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    as_of = source_business_date(current)
+    old_evidence = _evidence_map(base_snapshot)
+    evidence = []
+    diagnostics = []
+    refreshed = []
+    reused = []
+
+    def progress(name, *, reused_stage=False, **values):
+        if not progress_callback:
+            return
+        index, label, detail = _STAGE_BY_NAME[name]
+        progress_callback({"type": "progress", "stage": name, "stage_index": index,
+                           "stage_count": len(SYNC_STAGES), "label": label,
+                           "detail": "Используем сохранённые данные" if reused_stage else values.get("detail", detail),
+                           "current": values.get("current"), "total": values.get("total"),
+                           "unit": values.get("unit"), "completed": values.get("completed", False),
+                           "reused": reused_stage})
+
+    def call(function, *args, stage):
+        try:
+            supports = "progress_callback" in inspect.signature(function).parameters
+        except (TypeError, ValueError):
+            supports = False
+        callback = lambda **kw: progress(stage, **kw)
+        return function(*args, progress_callback=callback) if supports else function(*args)
+
+    def run(name, function, default):
+        progress(name)
+        started = current.isoformat()
+        refreshed.append(name)
+        try:
+            value = function()
+            quality = None
+            if name == "clusters":
+                records, item_diagnostics = value.clusters, value.diagnostics
+            elif name in {"orders_fbo", "orders_fbs", "inbound", "fbo_stock", "seller_stock", "placement_zones", "product_prices", "product_attributes"}:
+                if len(value) == 3:
+                    records, item_diagnostics, quality = value
+                else:
+                    records, item_diagnostics = value
+                    quality = OzonRecordQualityEvidence()
+            else:
+                records, item_diagnostics = value
+            diagnostics.extend(item_diagnostics)
+            complete = not any(x.severity == "error" for x in item_diagnostics)
+            evidence.append(EndpointEvidence(name, started, len(records), complete,
+                                             tuple(item_diagnostics), record_quality=quality))
+            progress(name, completed=True)
+            return value if name == "clusters" else tuple(records)
+        except Exception as exc:
+            diagnostic = ImportDiagnostic("error", f"OZON_{name.upper()}_FAILED",
+                                          f"Ozon {name} evidence unavailable: {type(exc).__name__}")
+            diagnostics.append(diagnostic)
+            api_error = None
+            if isinstance(exc, OzonClientError):
+                api_error = OzonApiErrorEvidence(exc.code.value, exc.endpoint, exc.status,
+                    exc.vendor_code, exc.vendor_message, exc.request_id, exc.transport_kind,
+                    exc.attempts, exc.elapsed_ms)
+            evidence.append(EndpointEvidence(name, started, 0, False, (diagnostic,), api_error))
+            progress(name, completed=True)
+            return default
+
+    def reuse(name):
+        reused.append(name)
+        evidence.append(old_evidence[name])
+        progress(name, reused_stage=True, completed=True)
+
+    delta_from = base_snapshot.history_to - timedelta(days=ORDER_REFRESH_OVERLAP_DAYS)
+    fresh_orders = []
+    channel_starts = {}
+    for name, path, channel in (("orders_fbo", FBO_POSTINGS_PATH, "fbo"),
+                                ("orders_fbs", FBS_POSTINGS_PATH, "fbs")):
+        old = old_evidence.get(name)
+        quality = old.record_quality if old else None
+        unsafe = (old is None or not old.complete or
+                  quality is not None and (quality.rejected_record_count > 0 or quality.incomplete_skus))
+        start = base_snapshot.history_from if unsafe else delta_from
+        channel_starts[channel] = start
+        rows = run(name, lambda p=path, start=start: call(fetch_postings, client, p, start, as_of, stage=name), ())
+        fresh_orders.extend(rows)
+        if unsafe:
+            # This channel is a complete replacement; the other channel may still use a delta.
+            continue
+    orders = tuple(row for row in base_snapshot.orders
+                   if row.source_channel in channel_starts
+                   and _order_day(row) < channel_starts[row.source_channel]) + tuple(fresh_orders)
+
+    if _fresh_complete(old_evidence.get("clusters"), current, CLUSTERS_TTL):
+        reuse("clusters"); clusters = base_snapshot.clusters; warehouse_to_macrolocal = {}
+    else:
+        result = run("clusters", lambda: fetch_clusters(client), None)
+        clusters = result.clusters if result else ()
+        warehouse_to_macrolocal = result.warehouse_to_macrolocal if result else {}
+    if _fresh_complete(old_evidence.get("seller_warehouses"), current, SELLER_WAREHOUSES_TTL):
+        reuse("seller_warehouses"); seller_warehouses = base_snapshot.seller_warehouses
+    else:
+        seller_warehouses = run("seller_warehouses", lambda: fetch_seller_warehouses(client), ())
+
+    catalog = run("products", lambda: (call(fetch_product_catalog, client, stage="products"), ()), ())
+    product_skus = tuple(x.sku for x in catalog)
+    catalog_changed = _catalog_identity(base_snapshot.product_facts) != tuple(sorted((x.sku, x.product_id, x.offer_id) for x in catalog))
+    prices = run("product_prices", lambda: call(fetch_product_prices, client, catalog, stage="product_prices"), ())
+    reuse_attributes = (not catalog_changed and
+                        _fresh_complete(old_evidence.get("product_attributes"), current, PRODUCT_ATTRIBUTES_TTL))
+    if reuse_attributes:
+        reuse("product_attributes")
+        attributes = tuple(row for row in base_snapshot.product_facts if row.volume_liters is not None)
+    else:
+        attributes = run("product_attributes", lambda: call(fetch_product_attributes, client, catalog, stage="product_attributes"), ())
+    product_facts = merge_product_facts(catalog, prices, attributes)
+    cluster_by_id = {row.cluster_id: row.name for row in clusters}
+    cluster_by_warehouse = {str(k): cluster_by_id[v] for k, v in warehouse_to_macrolocal.items() if v in cluster_by_id}
+    fbo = run("fbo_stock", lambda: call(fetch_fbo_stock, client, product_skus, cluster_by_warehouse, stage="fbo_stock"), ())
+    seller_stock = run("seller_stock", lambda: call(fetch_seller_stock, client, product_skus, stage="seller_stock"), ())
+    inbound = run("inbound", lambda: call(fetch_inbound, client, cluster_by_id, warehouse_to_macrolocal, stage="inbound"), ())
+    reuse_zones = (not catalog_changed and
+                   _fresh_complete(old_evidence.get("placement_zones"), current, PLACEMENT_ZONES_TTL))
+    if reuse_zones:
+        reuse("placement_zones"); zones = base_snapshot.placement_zones
+    else:
+        zones = run("placement_zones", lambda: call(fetch_placement_zones, client, product_skus, stage="placement_zones"), ())
+
+    candidate = OzonSourceSnapshot(
+        uuid4().hex, current.isoformat(), as_of, SOURCE_TIMEZONE,
+        base_snapshot.history_from, as_of, orders, tuple(fbo) + tuple(inbound),
+        seller_stock, clusters, seller_warehouses, zones, tuple(evidence),
+        tuple(diagnostics), credential_context_id, product_facts)
+    failed = tuple(x.name for x in evidence if not x.complete)
+    return candidate, OzonRefreshReport(requested, "smart", base_snapshot.source_snapshot_id,
+        tuple(refreshed), tuple(reused), failed, delta_from)

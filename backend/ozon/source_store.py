@@ -51,6 +51,9 @@ class OzonSourceSnapshotStore:
             return None
         return self._snapshots.get(self._last_healthy_snapshot_id)
 
+    def latest(self) -> OzonSourceSnapshot | None:
+        return next(reversed(self._snapshots.values()), None) if self._snapshots else None
+
     def clear(self) -> None:
         self._snapshots.clear()
         self._last_healthy_snapshot_id = None

@@ -96,6 +96,9 @@ class OrderRecord:
     seller_price: float = 0.0
     origin_warehouse: str | None = None
     volumetric_weight_kg: float | None = None
+    # Backend provenance used when an API history tail replaces one channel.
+    # File imports intentionally keep the empty default.
+    source_channel: str = ""
 
 
 RecordT = TypeVar("RecordT")
