@@ -21,10 +21,11 @@ from backend.ozon.sync import (capability_matrix, refresh_ozon_source,
 from tests.ozon.test_source_store import snap
 
 
-def _orders(as_of: date, weeks: int, *, include_new=False):
+def _orders(as_of: date, weeks: int, *, include_new=False, source_channel=""):
     week_start = as_of - timedelta(days=as_of.weekday())
     result = [OrderRecord("OLD", 1, "Москва", "Москва", OrderLifecycle.FULFILLED,
-                          (week_start - timedelta(weeks=index)).isoformat())
+                          (week_start - timedelta(weeks=index)).isoformat(),
+                          source_channel=source_channel)
               for index in range(1, weeks + 1)]
     if include_new:
         result.append(OrderRecord("NEW", 1, "Москва", "Москва", OrderLifecycle.FULFILLED,
@@ -501,6 +502,7 @@ def _smart_base(now):
     return replace(
         snap("smart-base"), synced_at_utc=now.isoformat(), source_as_of=now.date(),
         history_from=date(2026, 6, 1), history_to=date(2026, 9, 21),
+        orders=_orders(now.date(), 12, source_channel="fbo"),
         clusters=(Cluster(10, "Москва"),), endpoint_evidence=evidence,
         product_facts=(ProductApiFacts("A", "article-a", 1),),
         warehouse_to_macrolocal=((777, 10),),
@@ -617,15 +619,17 @@ def test_smart_orders_use_overlap_from_previous_history_end_per_channel(monkeypa
     import backend.ozon.sync as module
     monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
     monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
-    starts = {}
+    starts = []
     def postings(_client, path, start, _end):
-        starts[path] = start
-        return (), ()
+        starts.append((path, start))
+        return (_orders(now.date(), 8, source_channel="fbo")
+                if path == FBO_POSTINGS_PATH else ()), ()
     monkeypatch.setattr(module, "fetch_postings", postings)
 
     refresh_ozon_source(object(), base_snapshot=_smart_base(now), now=now)
 
-    assert set(starts.values()) == {date(2026, 8, 24)}
+    assert {start for _path, start in starts} == {date(2026, 8, 24)}
+    assert len(starts) == 2
 
 
 def test_smart_orders_anchor_downtime_overlap_and_fallback_per_incomplete_channel(monkeypatch):
@@ -635,17 +639,131 @@ def test_smart_orders_anchor_downtime_overlap_and_fallback_per_incomplete_channe
     import backend.ozon.sync as module
     monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
     monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
-    starts = {}
+    starts = []
     def postings(_client, path, start, _end):
-        starts[path] = start
-        return (), ()
+        starts.append((path, start))
+        return (_orders(now.date(), 8, source_channel="fbo")
+                if path == FBO_POSTINGS_PATH else ()), ()
     monkeypatch.setattr(module, "fetch_postings", postings)
     base = replace(_smart_base(now), history_from=date(2026, 5, 1), history_to=date(2026, 8, 1))
     evidence = tuple(replace(row, complete=False) if row.name == "orders_fbo" else row
                      for row in base.endpoint_evidence)
 
-    refresh_ozon_source(object(), base_snapshot=replace(base, endpoint_evidence=evidence), now=now)
+    _, report = refresh_ozon_source(
+        object(), base_snapshot=replace(base, endpoint_evidence=evidence), now=now)
 
-    assert starts[FBO_POSTINGS_PATH] == date(2026, 5, 1)
-    fbs_start = next(start for path, start in starts.items() if path != FBO_POSTINGS_PATH)
+    assert starts[0] == (FBO_POSTINGS_PATH, date(2026, 5, 1))
+    fbs_start = next(start for path, start in starts if path != FBO_POSTINGS_PATH)
     assert fbs_start == date(2026, 7, 4)
+    assert report.history_refresh_from == date(2026, 5, 1)
+
+
+def test_smart_shallow_merge_backfills_orders_only(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
+    order_calls = []
+
+    def postings(_client, path, start, end):
+        order_calls.append((path, start))
+        weeks = 6 if start == date(2026, 8, 24) else 8
+        return (_orders(end, weeks, source_channel="fbo")
+                if path == FBO_POSTINGS_PATH else ()), ()
+
+    monkeypatch.setattr(module, "fetch_postings", postings)
+    base = replace(_smart_base(now), orders=())
+
+    candidate, report = refresh_ozon_source(
+        object(), base_snapshot=base, now=now)
+
+    assert [start for path, start in order_calls if path == FBO_POSTINGS_PATH] == [
+        date(2026, 8, 24), date(2026, 5, 4)]
+    assert len(module.usable_completed_weeks(candidate.orders, now.date())) == 8
+    assert candidate.history_from == date(2026, 5, 4)
+    assert report.history_refresh_from == date(2026, 5, 4)
+    assert report.refreshed_endpoints.count("orders_fbo") == 1
+    assert calls.count("clusters") == 0
+
+
+def test_smart_history_can_require_multiple_backfill_rounds(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
+    starts = []
+
+    def postings(_client, path, start, end):
+        if path == FBO_POSTINGS_PATH:
+            starts.append(start)
+        weeks = {date(2026, 8, 24): 6, date(2026, 5, 4): 7}.get(start, 9)
+        return (_orders(end, weeks, source_channel="fbo")
+                if path == FBO_POSTINGS_PATH else ()), ()
+
+    monkeypatch.setattr(module, "fetch_postings", postings)
+    base = replace(_smart_base(now), orders=())
+
+    candidate, report = refresh_ozon_source(
+        object(), base_snapshot=base, now=now)
+
+    assert starts == [date(2026, 8, 24), date(2026, 5, 4), date(2026, 4, 6)]
+    assert candidate.history_from == date(2026, 4, 6)
+    assert report.history_refresh_from == date(2026, 4, 6)
+    assert len(module.usable_completed_weeks(candidate.orders, now.date())) == 9
+
+
+def test_smart_exhausted_history_fails_order_evidence_closed(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_postings", lambda _client, path, _start, end: (
+        _orders(end, 5, source_channel="fbo") if path == FBO_POSTINGS_PATH else (), ()))
+    base = replace(_smart_base(now), orders=_orders(
+        now.date(), 5, source_channel="fbo"))
+
+    candidate, _ = refresh_ozon_source(
+        object(), base_snapshot=base, now=now)
+    order_evidence = {row.name: row for row in candidate.endpoint_evidence
+                      if row.name.startswith("orders_")}
+
+    assert all(not row.complete for row in order_evidence.values())
+    assert all(any(item.code == "INSUFFICIENT_ORDER_HISTORY"
+                   for item in row.diagnostics)
+               for row in order_evidence.values())
+    assert capability_matrix(candidate)["demand_flow"]["complete"] is False
+
+
+def test_smart_backfill_failure_does_not_reuse_short_channel(monkeypatch):
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    calls = []
+    _patch_smart_success(monkeypatch, calls)
+    import backend.ozon.sync as module
+    monkeypatch.setattr(module, "fetch_fbo_stock", lambda *_args: ((), ()))
+    monkeypatch.setattr(module, "fetch_inbound", lambda *_args: ((), ()))
+
+    def postings(_client, path, start, end):
+        if start < date(2026, 8, 24) and path != FBO_POSTINGS_PATH:
+            raise RuntimeError("rate limited")
+        return (_orders(end, 6, source_channel="fbo")
+                if path == FBO_POSTINGS_PATH else ()), ()
+
+    monkeypatch.setattr(module, "fetch_postings", postings)
+    base = replace(_smart_base(now), orders=_orders(
+        now.date(), 6, source_channel="fbo"))
+
+    candidate, report = refresh_ozon_source(
+        object(), base_snapshot=base, now=now)
+    by_name = {row.name: row for row in candidate.endpoint_evidence}
+
+    assert by_name["orders_fbo"].complete is True
+    assert by_name["orders_fbs"].complete is False
+    assert capability_matrix(candidate)["demand_flow"]["complete"] is False
+    assert candidate.history_from == date(2026, 5, 4)
+    assert report.history_refresh_from == date(2026, 5, 4)

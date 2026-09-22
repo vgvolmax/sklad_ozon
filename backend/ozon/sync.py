@@ -1,6 +1,6 @@
 """Causal orchestration for one immutable API source snapshot."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 import inspect
 from uuid import uuid4
@@ -17,7 +17,10 @@ from backend.ozon.adapters.product_facts import (
 )
 from backend.ozon.adapters.stocks import fetch_fbo_stock, fetch_seller_stock
 from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_POSTINGS_PATH
-from backend.ozon.history import history_window, next_backfill, usable_completed_weeks
+from backend.ozon.history import (
+    HistoryWindow, MAX_COMPLETED_WEEKS, history_window, next_backfill,
+    usable_completed_weeks,
+)
 from backend.ozon.source_contracts import (
     EndpointEvidence, OzonApiErrorEvidence, OzonRecordQualityEvidence,
     OzonSourceSnapshot, SOURCE_TIMEZONE,
@@ -330,6 +333,89 @@ def _order_day(row):
         return date.min
 
 
+def _smart_history_window(as_of, history_from):
+    """Describe existing coverage in terms understood by ``next_backfill``."""
+    week_start = as_of - timedelta(days=as_of.weekday())
+    completed_weeks = max(
+        history_window(as_of).completed_weeks,
+        min(MAX_COMPLETED_WEEKS, (week_start - history_from).days // 7),
+    )
+    return HistoryWindow(history_from, as_of, completed_weeks)
+
+
+def _refresh_order_history(client, *, base_snapshot, as_of, old_evidence,
+                           run, call, evidence, diagnostics):
+    """Refresh order tails and expand only order history until it is usable."""
+    delta_from = base_snapshot.history_to - timedelta(days=ORDER_REFRESH_OVERLAP_DAYS)
+    channel_starts = {}
+    fresh_orders = []
+    channels = (("orders_fbo", FBO_POSTINGS_PATH, "fbo"),
+                ("orders_fbs", FBS_POSTINGS_PATH, "fbs"))
+
+    for name, path, channel in channels:
+        old = old_evidence.get(name)
+        quality = old.record_quality if old else None
+        unsafe = (old is None or not old.complete or
+                  quality is not None and
+                  (quality.rejected_record_count > 0 or quality.incomplete_skus))
+        start = base_snapshot.history_from if unsafe else delta_from
+        channel_starts[channel] = start
+        fresh_orders.extend(run(
+            name,
+            lambda p=path, start=start, name=name: call(
+                fetch_postings, client, p, start, as_of, stage=name),
+            (),
+        ))
+
+    orders = tuple(
+        row for row in base_snapshot.orders
+        if row.source_channel in channel_starts
+        and _order_day(row) < channel_starts[row.source_channel]
+    ) + tuple(fresh_orders)
+    window = _smart_history_window(as_of, base_snapshot.history_from)
+    refresh_from = min(channel_starts.values())
+
+    while (_order_evidence_complete(evidence) and
+           len(usable_completed_weeks(orders, as_of)) < 8):
+        expanded = next_backfill(window)
+        if expanded is None:
+            diagnostic = ImportDiagnostic(
+                "error", "INSUFFICIENT_ORDER_HISTORY",
+                "Недостаточно завершённых недель истории заказов для расчёта спроса.")
+            diagnostics.append(diagnostic)
+            evidence[:] = [
+                replace(item, complete=False,
+                        diagnostics=item.diagnostics + (diagnostic,))
+                if item.name in {"orders_fbo", "orders_fbs"} else item
+                for item in evidence
+            ]
+            break
+
+        window = expanded
+        refresh_from = expanded.history_from
+        evidence[:] = [item for item in evidence
+                       if item.name not in {"orders_fbo", "orders_fbs"}]
+        expanded_orders = []
+        for name, path, _channel in channels:
+            expanded_orders.extend(run(
+                name,
+                lambda p=path, name=name: call(
+                    fetch_postings, client, p, expanded.history_from, as_of,
+                    stage=name),
+                (),
+            ))
+        # Once replacement begins, never mix either channel with the short tail.
+        orders = tuple(expanded_orders)
+
+    return orders, window.history_from, refresh_from
+
+
+def _order_evidence_complete(evidence):
+    by_name = {item.name: item for item in evidence}
+    return all(by_name.get(name) is not None and by_name[name].complete
+               for name in ("orders_fbo", "orders_fbs"))
+
+
 def refresh_ozon_source(client, *, mode="smart", base_snapshot=None,
                         credential_context_id=None, progress_callback=None,
                         now=None):
@@ -376,7 +462,9 @@ def refresh_ozon_source(client, *, mode="smart", base_snapshot=None,
 
     def run(name, function, default):
         progress(name)
-        started = current.isoformat()
+        # Each replacement fetch owns its own timestamp; a later backfill must
+        # not retain the timestamp of the discarded overlap request.
+        started = datetime.now(timezone.utc).isoformat()
         refreshed.append(name)
         try:
             value = function()
@@ -424,25 +512,11 @@ def refresh_ozon_source(client, *, mode="smart", base_snapshot=None,
         refreshed.append(name)
         progress(name, completed=True)
 
-    delta_from = base_snapshot.history_to - timedelta(days=ORDER_REFRESH_OVERLAP_DAYS)
-    fresh_orders = []
-    channel_starts = {}
-    for name, path, channel in (("orders_fbo", FBO_POSTINGS_PATH, "fbo"),
-                                ("orders_fbs", FBS_POSTINGS_PATH, "fbs")):
-        old = old_evidence.get(name)
-        quality = old.record_quality if old else None
-        unsafe = (old is None or not old.complete or
-                  quality is not None and (quality.rejected_record_count > 0 or quality.incomplete_skus))
-        start = base_snapshot.history_from if unsafe else delta_from
-        channel_starts[channel] = start
-        rows = run(name, lambda p=path, start=start: call(fetch_postings, client, p, start, as_of, stage=name), ())
-        fresh_orders.extend(rows)
-        if unsafe:
-            # This channel is a complete replacement; the other channel may still use a delta.
-            continue
-    orders = tuple(row for row in base_snapshot.orders
-                   if row.source_channel in channel_starts
-                   and _order_day(row) < channel_starts[row.source_channel]) + tuple(fresh_orders)
+    orders, candidate_history_from, history_refresh_from = _refresh_order_history(
+        client, base_snapshot=base_snapshot, as_of=as_of,
+        old_evidence=old_evidence, run=run, call=call, evidence=evidence,
+        diagnostics=diagnostics,
+    )
 
     if _fresh_complete(old_evidence.get("clusters"), current, CLUSTERS_TTL):
         reuse("clusters")
@@ -505,10 +579,11 @@ def refresh_ozon_source(client, *, mode="smart", base_snapshot=None,
 
     candidate = OzonSourceSnapshot(
         uuid4().hex, current.isoformat(), as_of, SOURCE_TIMEZONE,
-        base_snapshot.history_from, as_of, orders, tuple(fbo) + tuple(inbound),
+        candidate_history_from, as_of, orders, tuple(fbo) + tuple(inbound),
         seller_stock, clusters, seller_warehouses, zones, tuple(evidence),
         tuple(diagnostics), credential_context_id, product_facts,
         tuple(sorted(warehouse_to_macrolocal.items())))
     failed = tuple(x.name for x in evidence if not x.complete)
     return candidate, OzonRefreshReport(requested, "smart", base_snapshot.source_snapshot_id,
-        tuple(refreshed), tuple(reused), failed, delta_from)
+        tuple(dict.fromkeys(refreshed)), tuple(reused), failed,
+        history_refresh_from)
