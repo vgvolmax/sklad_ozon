@@ -246,15 +246,15 @@ def build_shippable_plan(
 
     # Calculated allocation is intentionally partial: analytical evidence may
     # be unavailable for an otherwise real DecisionRow.  Operational planning
-    # still needs that identity so a person can make an explicit whole-pack
-    # decision.  Keep unknown quantities unknown rather than manufacturing a
-    # zero allocation.
+    # still needs that identity. A DecisionRow's known zero is already a
+    # complete analytical decision and needs no optimizer result; all other
+    # absent allocations remain unknown rather than manufacturing a zero.
     drafted_keys = {
         (sku, draft["decision"].cluster_id)
         for sku, drafts in drafts_by_sku.items() for draft in drafts
     }
     for key, analytical_qty in decision_row_quantities.items():
-        if key in drafted_keys or analytical_qty is not None:
+        if key in drafted_keys or analytical_qty not in (None, 0):
             continue
         sku, cluster = key
         fact = facts_by_key.get(key)
@@ -263,7 +263,8 @@ def build_shippable_plan(
         volume = (product.volume_liters if product is not None else
                   None if fallback_product is None else fallback_product.volume_liters)
         reasons = list(() if fact is None else fact.reason_codes)
-        reasons.append("CALCULATED_PLAN_UNAVAILABLE")
+        if analytical_qty is None:
+            reasons.append("CALCULATED_PLAN_UNAVAILABLE")
         if fact is None:
             reasons.extend(("MISSING_SUPPLIER_ARTICLE", "MISSING_PACK_MULTIPLICITY",
                             "UNKNOWN_PLACEMENT_ZONE"))
@@ -274,14 +275,14 @@ def build_shippable_plan(
             reasons.append("INVALID_UNIT_VOLUME")
         # A small private decision-shaped value keeps the known path below
         # simple while preserving the nullable public contract.
-        class _UnavailableDecision:
-            allocation_qty = None
+        class _DecisionWithoutAllocation:
+            allocation_qty = analytical_qty
             allocation_priority_rank = None
             cluster_id = cluster
         drafts_by_sku[sku].append({
-            "decision": _UnavailableDecision(), "fact": fact,
+            "decision": _DecisionWithoutAllocation(), "fact": fact,
             "pack": None if fact is None else fact.pack_multiple,
-            "rounded": None, "delta": None, "volume": volume,
+            "rounded": analytical_qty, "delta": analytical_qty, "volume": volume,
             "reasons": list(dict.fromkeys(reasons)),
             "stock": (results_by_sku[sku].available_stock
                       if sku in results_by_sku else None),

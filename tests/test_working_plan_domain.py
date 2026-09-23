@@ -74,6 +74,28 @@ def test_unknown_system_stays_unknown_but_explicit_zero_is_allowed():
     assert zero.lines[0].status == 'ATTENTION'
 
 
+def test_known_zero_without_pack_or_stock_is_ready_system_decision():
+    known_zero = replace(
+        line(system=0), allocation_priority_rank=None, pack_multiple=None,
+        resolved_seller_stock=None, capacity_kind=RestrictionCapacityKind.UNKNOWN,
+    )
+    row = materialize_working_plan(plan(known_zero), {}).lines[0]
+    assert (row.system_qty, row.working_qty, row.override_qty) == (0, 0, None)
+    assert row.status == 'READY'
+    assert 'WORKING_QTY_UNKNOWN' not in row.reason_codes
+    assert 'MANUAL_WITHOUT_SYSTEM_RECOMMENDATION' not in row.reason_codes
+
+
+def test_zero_and_positive_clusters_aggregate_to_fully_known_total():
+    current = materialize_working_plan(plan(
+        replace(line('Moscow', system=0), allocation_priority_rank=None),
+        line('Kazan', system=40),
+    ), {})
+    assert sum(row.working_qty for row in current.lines) == 40
+    assert all(row.working_qty is not None for row in current.lines)
+    assert current.ready_count == 2
+
+
 @pytest.mark.parametrize('quantity,valid', [(0, True), (40, True), (80, True), (65, False)])
 def test_input_pack_validation(quantity, valid):
     if valid:

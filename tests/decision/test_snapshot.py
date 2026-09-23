@@ -7,6 +7,7 @@ import pytest
 from backend.decision import FlowView, HorizonComparability, NeedComparison
 from backend.decision.explanations import explain_decision
 from backend.decision.snapshot import (_is_incomplete_row, _route_aggregate,
+                                       _calculated_plan_qty,
                                        _observed_demand_qty,
                                        _signal_status_codes,
                                        _total_safe_plan_qty, _views,
@@ -74,6 +75,18 @@ def test_observed_demand_preserves_zero_and_fails_closed_per_window():
     assert _observed(points, days=56, start=ninety_day_start) == 34
     assert _observed(points, days=120, start=ninety_day_start) is None
     assert _observed(points, days=56, start=as_of - timedelta(days=54)) is None
+
+
+def test_known_zero_need_is_a_plan_without_an_optimizer_decision():
+    known_zero = SimpleNamespace(complete=True, calculated_need_qty=0)
+    unknown = SimpleNamespace(complete=False, calculated_need_qty=None)
+    positive = SimpleNamespace(complete=True, calculated_need_qty=45)
+    allocation = SimpleNamespace(allocation_qty=40)
+
+    assert _calculated_plan_qty(known_zero, None) == 0
+    assert _calculated_plan_qty(unknown, None) is None
+    assert _calculated_plan_qty(positive, None) is None
+    assert _calculated_plan_qty(positive, allocation) == 40
 
 
 def test_observed_demand_incomplete_sku_fails_closed_and_56_horizon_matches():

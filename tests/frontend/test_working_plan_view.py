@@ -56,6 +56,29 @@ def test_missing_working_line_is_compact_but_accessible():
     assert "boxes=qty!=null&&pack?`${qty/pack} кор.`:planUnknown('Количество коробок не рассчитано')" in app
 
 
+def test_backend_zero_renders_as_automatic_decision_and_aggregates_as_known():
+    result = run_working_plan_lifecycle("""
+const test=SkladOzon.__workingPlanTest;
+SkladOzon.escapeHtml=value=>String(value);
+const zero={sku:'SKU',destination_cluster_id:'Moscow',system_qty:0,working_qty:0,
+  override_qty:null,pack_multiple:20,is_overridden:false,status:'READY',reason_codes:[]};
+let current=test.getState();
+test.setState({...current,workingPlan:{...current.workingPlan,plan:{working_plan_id:'WP',lines:[zero]}}});
+const row={sku:'SKU',article:'ART',destination_cluster_id:'Moscow'};
+const snapshot={decision_rows:[row],shippable_plan:{lines:[{sku:'SKU',destination_cluster_id:'Moscow',shippable_qty:0}]}};
+const article=SkladOzon.buildArticlePlanItems(snapshot,{lines:[zero]})[0];
+const cluster=SkladOzon.buildClusterPlanItems(snapshot,{lines:[zero]})[0];
+console.log(JSON.stringify({html:test.workingEditor(row),article,cluster}));
+""")
+    assert 'value="0"' in result['html']
+    assert '0 кор. · авто' in result['html']
+    assert 'решение не задано' not in result['html']
+    assert result['article']['workingQty'] == 0
+    assert result['article']['hasUnknownWorking'] is False
+    assert result['cluster']['knownWorkingQty'] == 0
+    assert result['cluster']['hasUnknownWorking'] is False
+
+
 def test_second_mutation_waits_for_success_before_another_request_can_start():
     result = run_working_plan_lifecycle("""
 const test=SkladOzon.__workingPlanTest;
