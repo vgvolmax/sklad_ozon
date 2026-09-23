@@ -153,6 +153,7 @@ def build_shippable_plan(
     calculated_allocations: Iterable[OptimizationResult],
     products: Iterable[ProductEconomicsInput],
     supply_facts: Iterable[OperationalSupplyFact],
+    operational_product_facts: Iterable[object] = (),
     blocked_decision_rows: Iterable[object] = (),
 ) -> ShippablePlan:
     """Build one deterministic plan across every Calculated destination cluster."""
@@ -171,6 +172,8 @@ def build_shippable_plan(
         raise ValueError("Calculated allocation objective must match plan objective")
     results_by_sku = _unique_by(results, lambda item: item.sku, "Calculated result SKU")
     products_by_sku = _unique_by(tuple(products), lambda item: item.sku, "product SKU")
+    operational_by_sku = _unique_by(tuple(operational_product_facts),
+                                    lambda item: item.sku, "operational product SKU")
     facts_by_key = _unique_by(tuple(supply_facts),
                               lambda item: (item.sku, item.cluster_id), "supply fact")
 
@@ -214,7 +217,9 @@ def build_shippable_plan(
                 reasons.extend(("MISSING_SUPPLIER_ARTICLE", "MISSING_PACK_MULTIPLICITY",
                                 "UNKNOWN_PLACEMENT_ZONE"))
             product = products_by_sku.get(sku)
-            volume = None if product is None else product.volume_liters
+            fallback_product = operational_by_sku.get(sku)
+            volume = (product.volume_liters if product is not None else
+                      None if fallback_product is None else fallback_product.volume_liters)
             if volume is None:
                 reasons.append("MISSING_UNIT_VOLUME")
             elif (not isinstance(volume, Decimal) or not volume.is_finite() or volume <= 0):
@@ -254,7 +259,9 @@ def build_shippable_plan(
         sku, cluster = key
         fact = facts_by_key.get(key)
         product = products_by_sku.get(sku)
-        volume = None if product is None else product.volume_liters
+        fallback_product = operational_by_sku.get(sku)
+        volume = (product.volume_liters if product is not None else
+                  None if fallback_product is None else fallback_product.volume_liters)
         reasons = list(() if fact is None else fact.reason_codes)
         reasons.append("CALCULATED_PLAN_UNAVAILABLE")
         if fact is None:

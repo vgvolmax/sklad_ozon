@@ -32,7 +32,7 @@ def test_shipment_edit_invalidates_pending_run_and_preserves_old_plan():
 def test_source_mode_change_invalidates_pending_shipment_run():
     result=node("(()=>{let s=SkladOzon.createInitialState();s={...s,snapshot:{snapshot_id:'A1'},shipmentView:{...s.shipmentView,runId:5,busyStage:'plan',dirty:false,plan:{shipment_plan_id:'old'}}};return SkladOzon.selectSourceMode(s,'files').shipmentView})()")
     assert result['runId']==6 and result['busyStage'] is None and result['dirty'] is True
-    assert result['plan']['shipment_plan_id']=='old'
+    assert result['plan'] is None
 
 def test_readiness_and_plan_freshness_follow_source_provenance():
     expression="""(()=>{let s=SkladOzon.createInitialState(),snap={snapshot_id:'A1',source_mode:'api',source_snapshot_id:'S1',shippable_plan:{shippable_plan_id:'SP1'}};s={...s,snapshot:snap,source:{...s.source,snapshotId:'S1',source:{source_snapshot_id:'S1',credential_context_id:'C1'}},workingPlan:{...s.workingPlan,plan:{working_plan_id:'WP1',analysis_snapshot_id:'A1',shippable_plan_id:'SP1'}},ozonConnection:{...s.ozonConnection,locked:false,credentialContextId:'C1'},shipmentView:{...s.shipmentView,plan:{analysis_snapshot_id:'A1',source_snapshot_id:'S1',shippable_plan_id:'SP1',working_plan_id:'WP1'},dirty:false}};return {ready:SkladOzon.shipmentReadiness(s),current:SkladOzon.isShipmentPlanCurrent(s),afterSync:SkladOzon.shipmentReadiness(SkladOzon.applySourceSuccess(SkladOzon.beginSourceRun(s),1,{source:{source_snapshot_id:'S2',credential_context_id:'C1'}}))};})()"""
