@@ -99,6 +99,7 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             availability_fbs_authoritative: bool = False, operational_availability=None,
             ozon_horizon_days: int | None = None,
             source_mode: SourceMode = SourceMode.FILES,
+            current_catalog_skus: frozenset[str] | None = None,
             source_coverage: AnalysisSourceCoverage | None = None,
             order_coverage: ObservationCoverage | None = None,
             order_coverage_valid: bool = True,
@@ -106,6 +107,10 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             scenario_settings: ScenarioSettings = _DEFAULT_SCENARIO) -> AnalysisResult:
     if not isinstance(scenario_settings, ScenarioSettings):
         raise TypeError("scenario_settings must be ScenarioSettings")
+    if source_mode is SourceMode.API and current_catalog_skus is None:
+        raise ValueError("current_catalog_skus is required for API analysis")
+    if source_mode is SourceMode.FILES and current_catalog_skus is not None:
+        raise ValueError("current_catalog_skus is only valid for API analysis")
     def progress(stage, current=None, total=None):
         if progress_callback is not None:
             progress_callback(stage, current, total)
@@ -174,7 +179,11 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
     conflicting_fbs = {sku for sku, values in positive_fbs.items() if len(values) > 1}
     for sku in sorted(conflicting_fbs):
         diagnostics.append(AnalysisDiagnostic("error", "CONFLICTING_FBS_AVAILABLE_STOCK", "Conflicting FBS seller stock values.", sku))
-    skus = sorted({c.sku for c in demand.cells} | {r.sku for r in observed.routes} | {k[0] for k in rec_values})
+    evidence_skus = ({c.sku for c in demand.cells}
+                     | {r.sku for r in observed.routes}
+                     | {k[0] for k in rec_values})
+    skus = sorted(current_catalog_skus if current_catalog_skus is not None
+                  else evidence_skus)
     def grouped(items, key):
         result = defaultdict(list)
         for item in items:

@@ -869,6 +869,21 @@ class PreparedAnalysisInputs:
     placement_zone_evidence: tuple = ()
     source_coverage: AnalysisSourceCoverage | None = None
     product_facts: tuple = ()
+    current_catalog_skus: frozenset[str] | None = None
+
+
+def _complete_current_catalog(snapshot) -> frozenset[str] | None:
+    """Return the authoritative API SKU universe, or ``None`` if unproven."""
+    products = next((item for item in snapshot.endpoint_evidence
+                     if item.name == "products"), None)
+    if products is None or not products.complete:
+        return None
+    return frozenset(item.sku for item in snapshot.product_facts)
+
+
+def _scope_to_current_catalog(records, current_skus: frozenset[str]):
+    """Project source evidence without mutating the retained source snapshot."""
+    return tuple(row for row in records if row.sku in current_skus)
 
 
 def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedAnalysisInputs:
@@ -910,12 +925,26 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
     availability_diagnostics = diagnostics_by_endpoint.get("fbo_stock", ())
     if include_inbound:
         availability_diagnostics += diagnostics_by_endpoint.get("inbound", ())
-    return PreparedAnalysisInputs(
-        ImportResult(tuple(snapshot.availability), availability_diagnostics, availability_meta),
-        restrictions,
-        ImportResult(tuple(snapshot.orders), order_diagnostics, orders_meta),
+    current_catalog_skus = _complete_current_catalog(snapshot)
+    if current_catalog_skus is None:
+        raise ShipmentPreparationError(
+            "CURRENT_OZON_CATALOG_INCOMPLETE",
+            "Не удалось подтвердить текущий ассортимент Ozon. Обновите данные Ozon и повторите расчёт.",
+            "source_snapshot_id", 409)
+    analysis_availability = _scope_to_current_catalog(
+        snapshot.availability, current_catalog_skus)
+    analysis_orders = _scope_to_current_catalog(snapshot.orders, current_catalog_skus)
+    operational_availability = _scope_to_current_catalog(
         tuple(snapshot.availability) + tuple(snapshot.operational_seller_stock),
-        tuple(snapshot.placement_zones),
+        current_catalog_skus)
+    placement_zones = _scope_to_current_catalog(
+        snapshot.placement_zones, current_catalog_skus)
+    return PreparedAnalysisInputs(
+        ImportResult(analysis_availability, availability_diagnostics, availability_meta),
+        restrictions,
+        ImportResult(analysis_orders, order_diagnostics, orders_meta),
+        operational_availability,
+        placement_zones,
         AnalysisSourceCoverage(
             orders_fbo_complete=completeness.get("orders_fbo", False),
             orders_fbs_complete=completeness.get("orders_fbs", False),
@@ -928,6 +957,7 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
             seller_stock_incomplete_skus=seller_stock_incomplete_skus,
         ),
         tuple(snapshot.product_facts),
+        current_catalog_skus,
     )
 
 _IMPORTERS={"availability":import_availability,"restrictions":import_restrictions,"orders":import_orders,"tariffs":import_tariffs,"product-economics":import_product_economics}
@@ -1008,6 +1038,10 @@ async def prepare_analysis(request:Request, request_id="http"):
         if not source_snapshot_id:return error(400,'MISSING_SOURCE_SNAPSHOT_ID','API source snapshot identity is required.','source_snapshot_id')
         snapshot=OZON_SOURCE_STORE.get(source_snapshot_id)
         if snapshot is None:return error(400,'OZON_SOURCE_SNAPSHOT_NOT_FOUND','Ozon source snapshot was not found.','source_snapshot_id')
+        if _complete_current_catalog(snapshot) is None:
+            return error(409,'CURRENT_OZON_CATALOG_INCOMPLETE',
+                         'Не удалось подтвердить текущий ассортимент Ozon. Обновите данные Ozon и повторите расчёт.',
+                         'source_snapshot_id')
         credential_context_id=OZON_VAULT.credential_context_id()
         try:require_source_credential_context(snapshot,credential_context_id,field='source_snapshot_id')
         except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
@@ -1210,6 +1244,17 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     analysis_availability = resolution.availability
     analysis_restrictions = resolution.restrictions
     analysis_orders = resolution.orders
+    current_catalog_skus = (source_inputs.current_catalog_skus
+                            if source_inputs is not None else None)
+    if current_catalog_skus is not None:
+        analysis_availability = _scope_to_current_catalog(
+            analysis_availability, current_catalog_skus)
+        analysis_restrictions = _scope_to_current_catalog(
+            analysis_restrictions, current_catalog_skus)
+        analysis_orders = _scope_to_current_catalog(
+            analysis_orders, current_catalog_skus)
+        operational_availability = _scope_to_current_catalog(
+            operational_availability, current_catalog_skus)
     analysis_tariffs = replace(tariffs, records=resolution.tariffs)
     join_started=perf_counter()
     raw_unitka_products=products.records
@@ -1259,6 +1304,8 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         )
         products = replace(products, records=merged_products,
                            diagnostics=products.diagnostics + merge_diagnostics)
+        products = replace(products, records=_scope_to_current_catalog(
+            products.records, current_catalog_skus))
     logger.info("[analysis %s] article_join done %.3fs rows=%d",request_id,perf_counter()-join_started,len(products.records))
     logger.info("[analysis %s] reports done %.3fs",request_id,perf_counter()-reports_started)
     imported=[availability,restrictions,orders,tariffs,products]
@@ -1270,7 +1317,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         and diagnostic.severity == "error"
         for diagnostic in orders.diagnostics
     )
-    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=operational_availability,ozon_horizon_days=availability.meta.recommendation_horizon_days,source_mode=provenance[0],source_coverage=(source_inputs.source_coverage if source_inputs is not None else None),order_coverage=order_coverage,order_coverage_valid=order_coverage_valid,progress_callback=progress_callback,scenario_settings=scenario)
+    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=operational_availability,ozon_horizon_days=availability.meta.recommendation_horizon_days,source_mode=provenance[0],current_catalog_skus=current_catalog_skus,source_coverage=(source_inputs.source_coverage if source_inputs is not None else None),order_coverage=order_coverage,order_coverage_valid=order_coverage_valid,progress_callback=progress_callback,scenario_settings=scenario)
     progress("serialization")
     coverage={key:0 for key in ('complete','partial','none','no_profile')}
     for item in result.logistics:coverage[item.coverage_status.value]+=1
@@ -1301,7 +1348,10 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         warnings.append(f"Горизонты различаются: Ozon {availability.meta.recommendation_horizon_days} дней, наш расчёт {scenario.horizon_days} дней.")
     periods={(m.period_start,m.period_end) for m in report_meta.values() if m.period_start and m.period_end}
     if len(periods)>1:warnings.append("Периоды загруженных отчётов различаются.")
-    product_identities = {}
+    product_identities = {
+        item.sku: (item.article, getattr(item, "product_name", "") or "")
+        for item in (source_inputs.product_facts if source_inputs is not None else ())
+    }
     for item in analysis_availability:
         previous = product_identities.get(item.sku, ("", ""))
         product_identities[item.sku] = (
