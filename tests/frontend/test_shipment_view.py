@@ -9,6 +9,46 @@ def test_cluster_initialization_and_scope_reconciliation():
     assert node(f"SkladOzon.reconcileShipmentClusters(SkladOzon.createInitialState().shipmentView,{plan}).selectedClusters")==['A']
     result=node("SkladOzon.reconcileShipmentClusters({...SkladOzon.createInitialState().shipmentView,scopeTouched:true,selectedClusters:['A']},{lines:[{destination_cluster_id:'A',working_qty:1,status:'READY'},{destination_cluster_id:'C',working_qty:1,status:'READY'}]}).selectedClusters")
     assert result==['A']
+
+
+def test_cluster_scope_only_blocks_positive_working_rows():
+    options = node("SkladOzon.buildShipmentClusterOptions({lines:["
+        "{destination_cluster_id:'A',working_qty:40,status:'ATTENTION'},"
+        "{destination_cluster_id:'A',working_qty:null,status:'BLOCKED'},"
+        "{destination_cluster_id:'A',working_qty:0,status:'BLOCKED'}]})")
+    selected = node("SkladOzon.reconcileShipmentClusters("
+        "SkladOzon.createInitialState().shipmentView,{lines:["
+        "{destination_cluster_id:'A',working_qty:40,status:'ATTENTION'},"
+        "{destination_cluster_id:'A',working_qty:null,status:'BLOCKED'},"
+        "{destination_cluster_id:'A',working_qty:0,status:'BLOCKED'}]}).selectedClusters")
+
+    assert options[0]['state'] == 'attention'
+    assert options[0]['unknownCount'] == 1
+    assert selected == ['A']
+
+
+def test_cluster_scope_disables_positive_blocked_rows():
+    options = node("SkladOzon.buildShipmentClusterOptions({lines:["
+        "{destination_cluster_id:'A',working_qty:40,status:'BLOCKED'}]})")
+    selected = node("SkladOzon.reconcileShipmentClusters("
+        "SkladOzon.createInitialState().shipmentView,{lines:["
+        "{destination_cluster_id:'A',working_qty:40,status:'BLOCKED'}]}).selectedClusters")
+
+    assert options[0]['state'] == 'blocked'
+    assert selected == []
+
+
+def test_cluster_scope_without_positive_rows_is_unavailable_not_blocked():
+    options = node("SkladOzon.buildShipmentClusterOptions({lines:["
+        "{destination_cluster_id:'A',working_qty:null,status:'BLOCKED'},"
+        "{destination_cluster_id:'A',working_qty:0,status:'READY'}]})")
+    selected = node("SkladOzon.reconcileShipmentClusters("
+        "SkladOzon.createInitialState().shipmentView,{lines:["
+        "{destination_cluster_id:'A',working_qty:null,status:'BLOCKED'},"
+        "{destination_cluster_id:'A',working_qty:0,status:'READY'}]}).selectedClusters")
+
+    assert options[0]['state'] == 'unknown'
+    assert selected == []
 def test_seller_warehouse_zero_one_many_and_direct():
     assert node("SkladOzon.sellerWarehouseMode(['direct'],[]).kind")=='not-required'
     assert node("SkladOzon.sellerWarehouseMode(['sc_crossdock'],[]).kind")=='blocked'

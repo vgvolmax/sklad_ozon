@@ -1,10 +1,18 @@
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
+
+import pytest
 
 from backend.domain.contracts import ProductEconomicsInput, SourceMode
 from backend.ozon.handoff import HandoffPoint, HandoffPointStore
 from backend.ozon.source_contracts import SellerWarehouse
-from backend.shipment.candidates import build_candidate_result, build_candidate_shipments, select_shipment_scope
+from backend.shipment.candidates import (
+    ShipmentScopeError,
+    build_candidate_result,
+    build_candidate_shipments,
+    select_shipment_scope,
+)
 from backend.shipment.contracts import ShipmentMethod, ShipmentScenario
 from backend.shipment.working_input import build_shipment_input
 from backend.working_plan import materialize_working_plan
@@ -38,6 +46,64 @@ def test_scope_is_filter_only_and_never_redistributes(line_factory, plan_factory
     selected = select_shipment_scope(execution(plan), ("Moscow", "Perm"))
     assert {(line.destination_cluster_id, line.quantity) for line in selected} == {
         ("Moscow", 60), ("Perm", 24)}
+
+
+def _scope_input(line_factory, plan_factory, quantities_and_statuses):
+    plan = plan_factory(tuple(
+        line_factory(sku, "Krasnoyarsk", max(quantity or 0, 20), pack=20)
+        for sku, quantity, _ in quantities_and_statuses
+    ))
+    shipment_input = execution(plan)
+    return replace(shipment_input, lines=tuple(
+        replace(line, quantity=quantity, working_status=status)
+        for line, (_, quantity, status) in zip(
+            shipment_input.lines, quantities_and_statuses, strict=True)
+    ))
+
+
+def test_unresolved_and_zero_blocked_rows_do_not_block_positive_attention_scope(
+        line_factory, plan_factory):
+    shipment_input = _scope_input(line_factory, plan_factory, (
+        ("SKU-A", 40, "ATTENTION"),
+        ("SKU-B", None, "BLOCKED"),
+        ("SKU-C", 0, "BLOCKED"),
+    ))
+
+    selected = select_shipment_scope(shipment_input, ("Krasnoyarsk",))
+    assert [(line.sku, line.quantity) for line in selected] == [("SKU-A", 40)]
+
+    result = build_candidate_result(
+        shipment_input=shipment_input, scenario=scenario(("Krasnoyarsk",)),
+        seller_warehouses=(), handoff_store=HandoffPointStore(),
+    )
+    assert len(result.candidates) == 1
+    assert [(item.sku, item.quantity)
+            for item in result.candidates[0].assignments] == [("SKU-A", 40)]
+
+
+def test_positive_blocked_row_blocks_scope_and_candidate(line_factory, plan_factory):
+    shipment_input = _scope_input(
+        line_factory, plan_factory, (("SKU-A", 40, "BLOCKED"),))
+
+    with pytest.raises(ShipmentScopeError, match="WORKING_PLAN_SCOPE_BLOCKED"):
+        select_shipment_scope(shipment_input, ("Krasnoyarsk",))
+    result = build_candidate_result(
+        shipment_input=shipment_input, scenario=scenario(("Krasnoyarsk",)),
+        seller_warehouses=(), handoff_store=HandoffPointStore(),
+    )
+    assert result.candidates == ()
+    assert tuple(item.code for item in result.diagnostics) == (
+        "WORKING_PLAN_SCOPE_BLOCKED",)
+
+
+def test_scope_without_positive_rows_is_empty_even_when_unresolved_row_is_blocked(
+        line_factory, plan_factory):
+    shipment_input = _scope_input(line_factory, plan_factory, (
+        ("SKU-A", None, "BLOCKED"), ("SKU-B", 0, "READY"),
+    ))
+
+    with pytest.raises(ShipmentScopeError, match="EMPTY_SHIPMENT_SCOPE"):
+        select_shipment_scope(shipment_input, ("Krasnoyarsk",))
 
 
 def test_candidate_excludes_allocation_when_no_whole_pack_fits_physical_capacity():

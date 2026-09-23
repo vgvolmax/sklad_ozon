@@ -104,7 +104,8 @@ def test_manual_whole_pack_is_allowed_without_system_recommendation():
     unknown = replace(line(system=40, pack=20), analytical_qty=None,
                       rounded_target_qty=None, rounding_delta_qty=None,
                       allocation_priority_rank=None, shippable_qty=None,
-                      total_volume_l=None)
+                      total_volume_l=None,
+                      capacity_kind=RestrictionCapacityKind.UNLIMITED)
     result = materialize_working_plan(plan(unknown),
         {'SKU': {'Moscow': override(40, base=None, pack=20)}})
     row = result.lines[0]
