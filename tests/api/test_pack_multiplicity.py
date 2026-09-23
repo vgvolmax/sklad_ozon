@@ -9,11 +9,33 @@ from backend.main import app
 from backend.ozon.contracts import OzonCredentialContext, OzonCredentials
 from backend.project import PackMultiplicityRecord, Project, load_project, save_project_atomic
 from backend.ingestion.supplier_packaging import PackMultiplicityEvidence
+from backend.ozon.adapters.product_facts import ProductApiFacts
 from backend.pack_multiplicity import pack_multiplicity_fingerprint, resolve_pack_multiplicity
 from backend.shipment.api_context import ShipmentPreparationError
 from tests.helpers.xlsx_fixtures import make_real_unitka
 
 client=TestClient(app)
+
+
+def test_pack_catalog_enriches_sku_from_ozon_product_article(tmp_path, monkeypatch):
+    path = tmp_path / 'project.json'
+    monkeypatch.setattr(api, 'PROJECT_PATH', path)
+    save_project_atomic(path, Project(pack_multiplicity={
+        '28202': PackMultiplicityRecord(rtp_price_pack_multiple=15,
+                                        rtp_price_updated_at='2026-09-23T00:00:00Z'),
+    }))
+    source = SimpleNamespace(product_facts=(
+        ProductApiFacts('1832759751', '28202', 1),
+    ))
+    monkeypatch.setattr(api.OZON_SOURCE_STORE, 'latest', lambda: source)
+
+    response = client.get('/api/project/pack-multiplicity')
+
+    assert response.status_code == 200
+    item = response.json()['items'][0]
+    assert item['article'] == '28202'
+    assert item['skus'] == ['1832759751']
+    assert item['product_name'] is None
 
 def xlsx(rows):
     book=Workbook(); sheet=book.active

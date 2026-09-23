@@ -981,6 +981,14 @@ async def validate_unitka(request:Request):
         return error(400,'INVALID_UNITKA_FILE',str(exc) or 'Файл Юнитки не удалось прочитать.','unitka_file')
     diagnostics=(bundle.product_economics.diagnostics+bundle.tariffs.diagnostics+
                  bundle.pack_multiplicity.diagnostics)
+    synthetic=[]
+    if not bundle.product_economics.records:
+        synthetic.append(ImportDiagnostic('error','UNITKA_PRODUCTS_EMPTY',
+            'В Юнитке не найдено ни одной строки товарной экономики.'))
+    if not bundle.tariffs.records:
+        synthetic.append(ImportDiagnostic('error','UNITKA_TARIFFS_EMPTY',
+            'В Юнитке не найдено ни одной строки тарифов.'))
+    diagnostics=diagnostics+tuple(synthetic)
     error_count=sum(item.severity=='error' for item in diagnostics)
     warning_count=sum(item.severity=='warning' for item in diagnostics)
     return {'api_version':1,'valid':error_count==0,
@@ -1393,9 +1401,20 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         source_mode=provenance[0],source_snapshot_id=provenance[1],
         demand_window=result.demand.window)
     cluster_ids=tuple(sorted({row.destination_cluster_id for row in snapshot.decision_rows}))
+    economics_by_sku={product.sku:product for product in products.records}
+    ozon_by_sku=({fact.sku:fact for fact in source_inputs.product_facts}
+                 if source_inputs is not None else {})
+    supply_identities=[]
+    seen_supply_skus=set()
+    for row in snapshot.decision_rows:
+        if row.sku in seen_supply_skus: continue
+        seen_supply_skus.add(row.sku)
+        economics=economics_by_sku.get(row.sku); ozon=ozon_by_sku.get(row.sku)
+        article=(row.article or (economics.article if economics is not None else '') or
+                 (ozon.article if ozon is not None else '') or '')
+        supply_identities.append(SupplyProductIdentity(row.sku,article))
     supply_facts=build_operational_supply_facts(
-        products=(SupplyProductIdentity(product.sku, product.article)
-                  for product in products.records),
+        products=supply_identities,
         cluster_ids=cluster_ids,
         pack_evidence=pack_evidence,
         source_mode=snapshot.source_mode,
@@ -1414,6 +1433,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         objective=snapshot.scenario.objective,
         calculated_allocations=snapshot.calculated_allocations,
         products=products.records,
+        operational_product_facts=(() if source_inputs is None else source_inputs.product_facts),
         supply_facts=supply_facts,
         blocked_decision_rows=snapshot.decision_rows,
     )
@@ -1460,8 +1480,8 @@ def _pack_items(project):
     source=OZON_SOURCE_STORE.latest()
     if source is not None:
         for fact in source.product_facts:
-            try: article=normalize_supplier_article(fact.offer_id)
-            except (AttributeError,TypeError,ValueError): continue
+            try: article=normalize_supplier_article(fact.article)
+            except (TypeError,ValueError): continue
             catalog.setdefault(article,set()).add(str(fact.sku))
     articles=sorted(set(catalog)|set(project.pack_multiplicity))
     items=[]

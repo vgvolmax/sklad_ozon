@@ -65,7 +65,8 @@ def make_real_unitka(*, product_rows=None, tariff_rows=None, pack_rows=None, fbo
     if product_available_qty is not None:
         product_headers.append("Доступный остаток")
     economics.append(product_headers)
-    for row in product_rows or [["ART-1", "Товар", 100, 1000, "10%", 1]]:
+    for row in ([["ART-1", "Товар", 100, 1000, "10%", 1]]
+                if product_rows is None else product_rows):
         values = [*row, "FBO"] if economics_scheme_fbo else list(row)
         economics.append([*values, product_available_qty] if product_available_qty is not None else values)
     for index in range(extra_fbo_data_sheets):
@@ -80,7 +81,8 @@ def make_real_unitka(*, product_rows=None, tariff_rows=None, pack_rows=None, fbo
         for offset, header in enumerate(headers): tariffs.cell(4, start + offset, header)
     if not fbo_complete:
         tariffs.cell(4, 9).value = None
-    rows = tariff_rows or [(0, "0-0,200 л", "Москва", "Москва", 18, 69)]
+    rows = ([(0, "0-0,200 л", "Москва", "Москва", 18, 69)]
+            if tariff_rows is None else tariff_rows)
     for index, (minimum, label, origin, destination, low, high) in enumerate(rows, 5):
         values = [minimum, "", "", label, origin, destination, low, high]
         for offset, value in enumerate(values): tariffs.cell(index, 2 + offset, value)

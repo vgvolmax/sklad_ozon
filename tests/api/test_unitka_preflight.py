@@ -50,4 +50,16 @@ def test_unitka_preflight_error_diagnostics_make_file_invalid():
                            files={"file": ("empty-unitka.xlsx", data)})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["valid"] is (payload["error_count"] == 0)
+    assert payload["valid"] is False
+    codes = {item["code"] for item in payload["diagnostics"]}
+    assert {"UNITKA_PRODUCTS_EMPTY", "UNITKA_TARIFFS_EMPTY"} <= codes
+
+
+def test_unitka_without_packs_is_still_suitable():
+    payload = CLIENT.post("/api/import/unitka/validate", files={
+        "file": ("unitka.xlsx", make_real_unitka(pack_rows=[])),
+    }).json()
+    assert payload["valid"] is True
+    assert payload["product_count"] > 0
+    assert payload["tariff_count"] > 0
+    assert payload["pack_count"] == 0

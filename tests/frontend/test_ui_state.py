@@ -106,6 +106,23 @@ def test_scenario_draft_input_revision_and_date_only_format():
     assert node("SkladOzon.presentIsoDate('2026-09-01')") == '01.09.2026'
 
 
+def test_operational_revision_is_single_and_unitka_validation_is_race_safe():
+    result = node("(()=>{let s=SkladOzon.createInitialState();s={...s,snapshot:{snapshot_id:'old'},workingPlan:{...s.workingPlan,plan:{working_plan_id:'wp'}},shipmentView:{...s.shipmentView,plan:{shipment_plan_id:'ship'}}};s=SkladOzon.beginUnitkaValidation(s,'A.xlsx');const a=s.unitkaValidation.runId;s=SkladOzon.beginUnitkaValidation(s,'B.xlsx');const b=s.unitkaValidation.runId;const stale=SkladOzon.applyUnitkaValidation(s,a,{valid:true});const current=SkladOzon.applyUnitkaValidation(stale,b,{valid:true});const scenario=SkladOzon.updateScenario(current,{horizonDays:28});const noop=SkladOzon.updateScenario(scenario,{horizonDays:28});return {revision:current.inputRevision,status:current.unitkaValidation.status,file:current.unitkaValidation.fileName,cleared:current.workingPlan.plan===null&&current.shipmentView.plan===null,scenarioDelta:scenario.inputRevision-current.inputRevision,noopDelta:noop.inputRevision-scenario.inputRevision};})()")
+    assert result == {"revision": 2, "status": "valid", "file": "B.xlsx",
+                      "cleared": True, "scenarioDelta": 1, "noopDelta": 0}
+
+
+def test_activated_source_revision_makes_inflight_analysis_stale_but_degraded_does_not():
+    result = node("(()=>{let s=SkladOzon.createInitialState();s={...s,inputRevision:5,snapshot:{snapshot_id:'old'},snapshotInputRevision:5,source:{...s.source,runId:1,snapshotId:'A',source:{source_snapshot_id:'A',endpoint_evidence:[{complete:true}]}}};const changed=SkladOzon.applySourceSuccess(s,1,{source:{source_snapshot_id:'B',endpoint_evidence:[{complete:true}]},refresh:{activated:true}});const degraded=SkladOzon.applySourceSuccess(s,1,{source:{source_snapshot_id:'C',endpoint_evidence:[]},refresh:{activated:false}});return {changedRevision:changed.inputRevision,oldRunStale:SkladOzon.isSnapshotStale({runInputRevision:5,currentInputRevision:changed.inputRevision,currentScenario:changed.scenario,resultScenario:{horizon_days:56,include_inbound:true}}),degradedRevision:degraded.inputRevision};})()")
+    assert result == {"changedRevision": 6, "oldRunStale": True, "degradedRevision": 5}
+
+
+def test_reason_codes_have_user_facing_labels():
+    for code in ("CALCULATED_PLAN_UNAVAILABLE", "MANUAL_WITHOUT_SYSTEM_RECOMMENDATION",
+                 "NEEDS_OZON_VALIDATION", "SELLER_STOCK_UNCONFIRMED"):
+        assert node(f"SkladOzon.shippableReasonLabel('{code}')") != code
+
+
 def test_objective_is_not_state_or_persisted_and_legacy_preference_is_ignored():
     state = node("SkladOzon.createInitialState()")
     assert "objective" not in state["scenario"]
