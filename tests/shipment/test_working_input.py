@@ -61,7 +61,7 @@ def test_manual_zero_is_omitted():
     assert result.diagnostics[0].code == "EMPTY_SHIPMENT_SCOPE"
 
 
-def test_selected_blocked_row_fails_closed_instead_of_silent_omission():
+def test_selected_unresolved_blocked_row_is_outside_positive_scope():
     ready = make_line("ready", "Moscow", 40)
     blocked = replace(make_line("blocked", "Moscow", 40), pack_multiple=None,
                       rounded_target_qty=None, rounding_delta_qty=None,
@@ -71,8 +71,9 @@ def test_selected_blocked_row_fails_closed_instead_of_silent_omission():
     result = build_candidate_result(
         shipment_input=execution, scenario=scenario(("Moscow",)),
         seller_warehouses=(), handoff_store=HandoffPointStore())
-    assert result.candidates == ()
-    assert result.diagnostics[0].code == "WORKING_PLAN_SCOPE_BLOCKED"
+    assert len(result.candidates) == 1
+    assert [(item.sku, item.quantity)
+            for item in result.candidates[0].assignments] == [("ready", 40)]
 
 
 def test_identity_coverage_is_exact():

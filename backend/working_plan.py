@@ -119,8 +119,10 @@ def materialize_working_plan(
                                               RestrictionCapacityKind.ZERO}:
             if line.whole_pack_capacity_qty is None or working > line.whole_pack_capacity_qty:
                 reasons.append("KNOWN_CAPACITY_EXCEEDED")
-        if override and working is not None and line.shippable_qty is None:
-            reasons.append("MANUAL_WITHOUT_SYSTEM_RECOMMENDATION")
+        if (override is not None and working is not None and working > 0 and
+                line.shippable_qty is None):
+            reasons.extend(("MANUAL_WITHOUT_SYSTEM_RECOMMENDATION",
+                            "NEEDS_OZON_VALIDATION"))
         if (override is not None and working is not None and working > 0 and
                 line.capacity_kind is RestrictionCapacityKind.UNKNOWN):
             reasons.append("NEEDS_OZON_VALIDATION")
