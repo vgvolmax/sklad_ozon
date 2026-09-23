@@ -120,7 +120,7 @@ class OperationalSupplyFact:
                 raise ValueError("pack_multiple must be positive")
         RestrictionCapacityEvidence(
             self.restriction_eligibility, self.capacity_kind, self.capacity_qty)
-        if self.pack_source not in {"manual", "import", "unitka", "unknown"}:
+        if self.pack_source not in {"manual", "import", "rtp_price", "unitka", "unknown"}:
             raise ValueError("pack_source is invalid")
 
 
@@ -279,12 +279,12 @@ class ShippableLine:
     sku: str
     article: str
     destination_cluster_id: str
-    analytical_qty: int
+    analytical_qty: int | None
     rounded_target_qty: int | None
     rounding_delta_qty: int | None
     allocation_priority_rank: int | None
     pack_multiple: int | None
-    resolved_seller_stock: int
+    resolved_seller_stock: int | None
     shippable_qty: int | None
     unit_volume_l: Decimal | None
     total_volume_l: Decimal | None
@@ -300,8 +300,8 @@ class ShippableLine:
         if not isinstance(self.article, str):
             raise TypeError("article must be a string")
         _require_nonblank(self.destination_cluster_id, "destination_cluster_id")
-        _require_nonnegative_int(self.analytical_qty, "analytical_qty")
-        _require_nonnegative_int(self.resolved_seller_stock, "resolved_seller_stock")
+        _optional_nonnegative_int(self.analytical_qty, "analytical_qty")
+        _optional_nonnegative_int(self.resolved_seller_stock, "resolved_seller_stock")
         for name in ("rounded_target_qty", "shippable_qty"):
             _optional_nonnegative_int(getattr(self, name), name)
         if self.rounding_delta_qty is not None and (
@@ -316,7 +316,12 @@ class ShippableLine:
             _require_nonnegative_int(self.allocation_priority_rank, "allocation_priority_rank")
             if self.allocation_priority_rank == 0:
                 raise ValueError("allocation_priority_rank must be positive")
-        if self.analytical_qty > 0 and self.pack_multiple is not None:
+        if self.analytical_qty is None:
+            if any(value is not None for value in (
+                    self.rounded_target_qty, self.rounding_delta_qty,
+                    self.shippable_qty)):
+                raise ValueError("unknown analytical quantity requires unknown operational quantities")
+        elif self.analytical_qty > 0 and self.pack_multiple is not None:
             if self.rounded_target_qty is None:
                 raise ValueError("positive analytical quantity with pack requires rounded target")
             if self.rounded_target_qty % self.pack_multiple:
@@ -325,11 +330,13 @@ class ShippableLine:
                 self.rounded_target_qty != 0 or self.rounding_delta_qty != 0
                 or self.shippable_qty != 0):
             raise ValueError("zero analytical quantity requires zero operational quantities")
-        if self.analytical_qty > 0 and self.pack_multiple is None and any(
+        if self.analytical_qty is not None and self.analytical_qty > 0 and self.pack_multiple is None and any(
                 value is not None for value in (
                     self.rounded_target_qty, self.rounding_delta_qty, self.shippable_qty)):
             raise ValueError("positive analytical quantity with missing pack must remain unknown")
         if self.rounded_target_qty is not None:
+            if self.analytical_qty is None:
+                raise ValueError("rounded_target_qty requires analytical_qty")
             expected_delta = self.rounded_target_qty - self.analytical_qty
             if self.rounding_delta_qty != expected_delta:
                 raise ValueError("rounding_delta_qty must equal rounded target minus analytical quantity")
@@ -363,7 +370,7 @@ class ShippableLine:
         if not isinstance(self.reason_codes, tuple) or any(
                 not isinstance(code, str) or not code.strip() for code in self.reason_codes):
             raise TypeError("reason_codes must contain nonblank strings")
-        if self.pack_source not in {"manual", "import", "unitka", "unknown"}:
+        if self.pack_source not in {"manual", "import", "rtp_price", "unitka", "unknown"}:
             raise ValueError("pack_source is invalid")
         if not isinstance(self.capacity_kind, RestrictionCapacityKind):
             raise TypeError("capacity_kind must be RestrictionCapacityKind")
@@ -420,7 +427,8 @@ class ShippablePlan:
             if len(stocks) != 1:
                 raise ValueError("resolved seller stock must be consistent per SKU")
             shipped = sum(line.shippable_qty or 0 for line in sku_lines)
-            if shipped > next(iter(stocks)):
+            stock = next(iter(stocks))
+            if stock is not None and shipped > stock:
                 raise ValueError("shippable quantity exceeds resolved seller stock")
             ranks = [line.allocation_priority_rank for line in sku_lines
                      if line.allocation_priority_rank is not None]

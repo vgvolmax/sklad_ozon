@@ -153,6 +153,7 @@ def build_shippable_plan(
     calculated_allocations: Iterable[OptimizationResult],
     products: Iterable[ProductEconomicsInput],
     supply_facts: Iterable[OperationalSupplyFact],
+    operational_product_facts: Iterable[object] = (),
     blocked_decision_rows: Iterable[object] = (),
 ) -> ShippablePlan:
     """Build one deterministic plan across every Calculated destination cluster."""
@@ -171,6 +172,8 @@ def build_shippable_plan(
         raise ValueError("Calculated allocation objective must match plan objective")
     results_by_sku = _unique_by(results, lambda item: item.sku, "Calculated result SKU")
     products_by_sku = _unique_by(tuple(products), lambda item: item.sku, "product SKU")
+    operational_by_sku = _unique_by(tuple(operational_product_facts),
+                                    lambda item: item.sku, "operational product SKU")
     facts_by_key = _unique_by(tuple(supply_facts),
                               lambda item: (item.sku, item.cluster_id), "supply fact")
 
@@ -214,7 +217,9 @@ def build_shippable_plan(
                 reasons.extend(("MISSING_SUPPLIER_ARTICLE", "MISSING_PACK_MULTIPLICITY",
                                 "UNKNOWN_PLACEMENT_ZONE"))
             product = products_by_sku.get(sku)
-            volume = None if product is None else product.volume_liters
+            fallback_product = operational_by_sku.get(sku)
+            volume = (product.volume_liters if product is not None else
+                      None if fallback_product is None else fallback_product.volume_liters)
             if volume is None:
                 reasons.append("MISSING_UNIT_VOLUME")
             elif (not isinstance(volume, Decimal) or not volume.is_finite() or volume <= 0):
@@ -239,6 +244,49 @@ def build_shippable_plan(
                 "stock": optimization.available_stock,
             })
 
+    # Calculated allocation is intentionally partial: analytical evidence may
+    # be unavailable for an otherwise real DecisionRow.  Operational planning
+    # still needs that identity so a person can make an explicit whole-pack
+    # decision.  Keep unknown quantities unknown rather than manufacturing a
+    # zero allocation.
+    drafted_keys = {
+        (sku, draft["decision"].cluster_id)
+        for sku, drafts in drafts_by_sku.items() for draft in drafts
+    }
+    for key, analytical_qty in decision_row_quantities.items():
+        if key in drafted_keys or analytical_qty is not None:
+            continue
+        sku, cluster = key
+        fact = facts_by_key.get(key)
+        product = products_by_sku.get(sku)
+        fallback_product = operational_by_sku.get(sku)
+        volume = (product.volume_liters if product is not None else
+                  None if fallback_product is None else fallback_product.volume_liters)
+        reasons = list(() if fact is None else fact.reason_codes)
+        reasons.append("CALCULATED_PLAN_UNAVAILABLE")
+        if fact is None:
+            reasons.extend(("MISSING_SUPPLIER_ARTICLE", "MISSING_PACK_MULTIPLICITY",
+                            "UNKNOWN_PLACEMENT_ZONE"))
+        if volume is None:
+            reasons.append("MISSING_UNIT_VOLUME")
+        elif (not isinstance(volume, Decimal) or not volume.is_finite() or volume <= 0):
+            volume = None
+            reasons.append("INVALID_UNIT_VOLUME")
+        # A small private decision-shaped value keeps the known path below
+        # simple while preserving the nullable public contract.
+        class _UnavailableDecision:
+            allocation_qty = None
+            allocation_priority_rank = None
+            cluster_id = cluster
+        drafts_by_sku[sku].append({
+            "decision": _UnavailableDecision(), "fact": fact,
+            "pack": None if fact is None else fact.pack_multiple,
+            "rounded": None, "delta": None, "volume": volume,
+            "reasons": list(dict.fromkeys(reasons)),
+            "stock": (results_by_sku[sku].available_stock
+                      if sku in results_by_sku else None),
+        })
+
     for sku, drafts in drafts_by_sku.items():
         for draft in drafts:
             cluster = draft["decision"].cluster_id
@@ -250,7 +298,9 @@ def build_shippable_plan(
     lines = []
     for sku in sorted(drafts_by_sku):
         drafts = drafts_by_sku[sku]
-        positive = [draft for draft in drafts if draft["decision"].allocation_qty > 0]
+        positive = [draft for draft in drafts
+                    if draft["decision"].allocation_qty is not None
+                    and draft["decision"].allocation_qty > 0]
         positive.sort(key=lambda draft: draft["decision"].allocation_priority_rank)
         remaining = drafts[0]["stock"]
         shipped_by_cluster = {}
@@ -281,8 +331,9 @@ def build_shippable_plan(
         for draft in drafts:
             decision = draft["decision"]
             fact = draft["fact"]
-            shipped = (0 if decision.allocation_qty == 0
-                       else shipped_by_cluster[decision.cluster_id])
+            shipped = (None if decision.allocation_qty is None else
+                       0 if decision.allocation_qty == 0 else
+                       shipped_by_cluster[decision.cluster_id])
             volume = draft["volume"]
             lines.append(ShippableLine(
                 sku=sku,

@@ -34,19 +34,18 @@ class ShipmentScopeError(ValueError):
 def select_shipment_scope(
     shipment_input: ShipmentInput, selected_cluster_ids: tuple[str, ...],
 ) -> tuple[ShipmentInputLine, ...]:
-    """Validate every selected Working row before selecting positive quantities."""
+    """Select positive Working rows, then validate only that shipment scope."""
     if not isinstance(shipment_input, ShipmentInput):
         raise TypeError("shipment_input must be ShipmentInput")
     selected = set(selected_cluster_ids)
     selected_rows = tuple(line for line in shipment_input.lines
                           if line.destination_cluster_id in selected)
-    if any(line.working_status == "BLOCKED" or line.quantity is None
-           for line in selected_rows):
-        raise ShipmentScopeError("WORKING_PLAN_SCOPE_BLOCKED")
     rows = tuple(line for line in selected_rows
                  if line.quantity is not None and line.quantity > 0)
     if not rows:
         raise ShipmentScopeError("EMPTY_SHIPMENT_SCOPE")
+    if any(line.working_status == "BLOCKED" for line in rows):
+        raise ShipmentScopeError("WORKING_PLAN_SCOPE_BLOCKED")
     return rows
 
 

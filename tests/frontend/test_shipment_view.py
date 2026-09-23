@@ -9,6 +9,46 @@ def test_cluster_initialization_and_scope_reconciliation():
     assert node(f"SkladOzon.reconcileShipmentClusters(SkladOzon.createInitialState().shipmentView,{plan}).selectedClusters")==['A']
     result=node("SkladOzon.reconcileShipmentClusters({...SkladOzon.createInitialState().shipmentView,scopeTouched:true,selectedClusters:['A']},{lines:[{destination_cluster_id:'A',working_qty:1,status:'READY'},{destination_cluster_id:'C',working_qty:1,status:'READY'}]}).selectedClusters")
     assert result==['A']
+
+
+def test_cluster_scope_only_blocks_positive_working_rows():
+    options = node("SkladOzon.buildShipmentClusterOptions({lines:["
+        "{destination_cluster_id:'A',working_qty:40,status:'ATTENTION'},"
+        "{destination_cluster_id:'A',working_qty:null,status:'BLOCKED'},"
+        "{destination_cluster_id:'A',working_qty:0,status:'BLOCKED'}]})")
+    selected = node("SkladOzon.reconcileShipmentClusters("
+        "SkladOzon.createInitialState().shipmentView,{lines:["
+        "{destination_cluster_id:'A',working_qty:40,status:'ATTENTION'},"
+        "{destination_cluster_id:'A',working_qty:null,status:'BLOCKED'},"
+        "{destination_cluster_id:'A',working_qty:0,status:'BLOCKED'}]}).selectedClusters")
+
+    assert options[0]['state'] == 'attention'
+    assert options[0]['unknownCount'] == 1
+    assert selected == ['A']
+
+
+def test_cluster_scope_disables_positive_blocked_rows():
+    options = node("SkladOzon.buildShipmentClusterOptions({lines:["
+        "{destination_cluster_id:'A',working_qty:40,status:'BLOCKED'}]})")
+    selected = node("SkladOzon.reconcileShipmentClusters("
+        "SkladOzon.createInitialState().shipmentView,{lines:["
+        "{destination_cluster_id:'A',working_qty:40,status:'BLOCKED'}]}).selectedClusters")
+
+    assert options[0]['state'] == 'blocked'
+    assert selected == []
+
+
+def test_cluster_scope_without_positive_rows_is_unavailable_not_blocked():
+    options = node("SkladOzon.buildShipmentClusterOptions({lines:["
+        "{destination_cluster_id:'A',working_qty:null,status:'BLOCKED'},"
+        "{destination_cluster_id:'A',working_qty:0,status:'READY'}]})")
+    selected = node("SkladOzon.reconcileShipmentClusters("
+        "SkladOzon.createInitialState().shipmentView,{lines:["
+        "{destination_cluster_id:'A',working_qty:null,status:'BLOCKED'},"
+        "{destination_cluster_id:'A',working_qty:0,status:'READY'}]}).selectedClusters")
+
+    assert options[0]['state'] == 'unknown'
+    assert selected == []
 def test_seller_warehouse_zero_one_many_and_direct():
     assert node("SkladOzon.sellerWarehouseMode(['direct'],[]).kind")=='not-required'
     assert node("SkladOzon.sellerWarehouseMode(['sc_crossdock'],[]).kind")=='blocked'
@@ -32,7 +72,7 @@ def test_shipment_edit_invalidates_pending_run_and_preserves_old_plan():
 def test_source_mode_change_invalidates_pending_shipment_run():
     result=node("(()=>{let s=SkladOzon.createInitialState();s={...s,snapshot:{snapshot_id:'A1'},shipmentView:{...s.shipmentView,runId:5,busyStage:'plan',dirty:false,plan:{shipment_plan_id:'old'}}};return SkladOzon.selectSourceMode(s,'files').shipmentView})()")
     assert result['runId']==6 and result['busyStage'] is None and result['dirty'] is True
-    assert result['plan']['shipment_plan_id']=='old'
+    assert result['plan'] is None
 
 def test_readiness_and_plan_freshness_follow_source_provenance():
     expression="""(()=>{let s=SkladOzon.createInitialState(),snap={snapshot_id:'A1',source_mode:'api',source_snapshot_id:'S1',shippable_plan:{shippable_plan_id:'SP1'}};s={...s,snapshot:snap,source:{...s.source,snapshotId:'S1',source:{source_snapshot_id:'S1',credential_context_id:'C1'}},workingPlan:{...s.workingPlan,plan:{working_plan_id:'WP1',analysis_snapshot_id:'A1',shippable_plan_id:'SP1'}},ozonConnection:{...s.ozonConnection,locked:false,credentialContextId:'C1'},shipmentView:{...s.shipmentView,plan:{analysis_snapshot_id:'A1',source_snapshot_id:'S1',shippable_plan_id:'SP1',working_plan_id:'WP1'},dirty:false}};return {ready:SkladOzon.shipmentReadiness(s),current:SkladOzon.isShipmentPlanCurrent(s),afterSync:SkladOzon.shipmentReadiness(SkladOzon.applySourceSuccess(SkladOzon.beginSourceRun(s),1,{source:{source_snapshot_id:'S2',credential_context_id:'C1'}}))};})()"""

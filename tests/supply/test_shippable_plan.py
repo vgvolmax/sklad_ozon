@@ -21,6 +21,11 @@ from backend.supply import (
     round_up_to_pack,
 )
 from backend.supply.shippable_plan import whole_pack_capacity
+from backend.supply.facts import build_operational_supply_facts
+from backend.supply.contracts import SupplyProductIdentity
+from backend.pack_multiplicity import build_effective_pack_evidence
+from backend.project import PackMultiplicityRecord, Project
+from backend.ozon.adapters.product_facts import ProductApiFacts
 
 
 def decision(cluster, qty, rank, *, sku="SKU-1"):
@@ -99,6 +104,56 @@ def test_pack_targets_are_independent_per_cluster_and_can_round_to_zero():
     assert (lines["Rostov"].rounded_target_qty, lines["Rostov"].shippable_qty) == (0, 0)
     assert lines["Rostov"].rounding_delta_qty == -5
     assert "ROUNDED_DOWN_TO_WHOLE_PACK" in lines["Rostov"].reason_codes
+
+
+def test_rtp_pack_source_survives_effective_facts_and_shippable_plan():
+    evidence = build_effective_pack_evidence(Project(pack_multiplicity={
+        "28202": PackMultiplicityRecord(rtp_price_pack_multiple=15),
+    }), ())
+    assert evidence[0].source == "rtp_price"
+    facts = build_operational_supply_facts(
+        products=(SupplyProductIdentity("1832759751", "28202"),),
+        cluster_ids=("Красноярск",), pack_evidence=evidence,
+        source_mode=SourceMode.FILES,
+    )
+    assert (facts[0].pack_multiple, facts[0].pack_source) == (15, "rtp_price")
+    plan = build_shippable_plan(
+        analysis_snapshot_id="analysis-rtp", source_mode=SourceMode.FILES,
+        source_snapshot_id=None, analysis_as_of=date(2026, 9, 23), horizon_days=56,
+        include_inbound=True, objective=AllocationObjective.MAX_MARGIN,
+        calculated_allocations=(result(decision("Красноярск", 15, 1,
+                                                sku="1832759751"),
+                                       sku="1832759751"),),
+        products=(product(sku="1832759751"),), supply_facts=facts,
+    )
+    assert (plan.lines[0].pack_multiple, plan.lines[0].pack_source) == (15, "rtp_price")
+
+
+def test_unknown_calculated_qty_uses_ozon_operational_volume_and_rtp_pack():
+    class Row:
+        sku = "1832759751"
+        destination_cluster_id = "Красноярск"
+        calculated_plan_qty = None
+
+    facts = build_operational_supply_facts(
+        products=(SupplyProductIdentity(Row.sku, "28202"),), cluster_ids=(Row.destination_cluster_id,),
+        pack_evidence=build_effective_pack_evidence(Project(pack_multiplicity={
+            "28202": PackMultiplicityRecord(rtp_price_pack_multiple=20),
+        }), ()), source_mode=SourceMode.API,
+    )
+    plan = build_shippable_plan(
+        analysis_snapshot_id="analysis-manual", source_mode=SourceMode.API,
+        source_snapshot_id="source-1", analysis_as_of=date(2026, 9, 23), horizon_days=56,
+        include_inbound=True, objective=AllocationObjective.MAX_MARGIN,
+        calculated_allocations=(), products=(), supply_facts=facts,
+        operational_product_facts=(ProductApiFacts(Row.sku, "28202", 1,
+                                                   volume_liters=Decimal("1.25")),),
+        blocked_decision_rows=(Row(),),
+    )
+    line = plan.lines[0]
+    assert (line.article, line.analytical_qty, line.pack_multiple, line.pack_source) == (
+        "28202", None, 20, "rtp_price")
+    assert line.unit_volume_l == Decimal("1.25")
 
 
 def test_signed_rounding_contract_and_pack_alignment():
@@ -383,3 +438,16 @@ def test_plan_rejects_duplicate_identity_and_priority():
     )
     with pytest.raises(ValueError, match="duplicate"):
         ShippablePlan(**common, lines=(line, line))
+
+
+def test_unavailable_decision_row_still_has_nullable_operational_line():
+    from types import SimpleNamespace
+    row = SimpleNamespace(sku="SKU-1", destination_cluster_id="A", calculated_plan_qty=None)
+    plan = build(decisions=(), facts=(fact("A", pack=20),), blocked_decision_rows=(row,))
+    line = plan.lines[0]
+    assert line.analytical_qty is None
+    assert line.rounded_target_qty is None
+    assert line.rounding_delta_qty is None
+    assert line.shippable_qty is None
+    assert line.pack_multiple == 20
+    assert "CALCULATED_PLAN_UNAVAILABLE" in line.reason_codes
