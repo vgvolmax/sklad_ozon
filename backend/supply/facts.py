@@ -78,6 +78,9 @@ def build_operational_supply_facts(
     facts = []
     for product in product_rows:
         pack = packs.get(product.article) if product.article else None
+        pack_source = getattr(pack, "source", None)
+        if pack_source not in {"manual", "import", "rtp_price"}:
+            pack_source = "unknown"
         for cluster_id in clusters:
             reasons = []
             if not product.article:
@@ -117,8 +120,6 @@ def build_operational_supply_facts(
                 capacity_qty=capacity.capacity_qty,
                 restriction_report_date=report_date,
                 reason_codes=tuple(dict.fromkeys(reasons)),
-                pack_source=(getattr(pack, "source", None) or
-                             ("unitka" if pack is not None and pack.pack_multiple is not None
-                              else "unknown")),
+                pack_source=pack_source,
             ))
     return tuple(facts)

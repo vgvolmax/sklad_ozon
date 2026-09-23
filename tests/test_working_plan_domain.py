@@ -14,7 +14,7 @@ def line(cluster='Moscow', system=40, pack=40, stock=100, *, sku='SKU', kind=Res
     analytical = system or 0
     return ShippableLine(sku, 'ART', cluster, analytical, system, 0, 1, pack, stock,
         system, Decimal('0.5'), Decimal('0.5') * system,
-        PlacementZoneKind.SINGLE, ('A',), (), 'unitka', kind, cap)
+        PlacementZoneKind.SINGLE, ('A',), (), 'unknown', kind, cap)
 
 
 def plan(*lines):
