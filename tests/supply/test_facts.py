@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 import pytest
 
 from backend.domain.contracts import ReportMeta, SourceMode
@@ -6,9 +7,11 @@ from backend.ingestion.restrictions import RestrictionRecord, RestrictionState, 
 from backend.ingestion.supplier_packaging import PackMultiplicityEvidence
 from backend.ozon.source_contracts import PlacementZoneEvidence
 from backend.supply.contracts import (
+    OperationalSupplyFact,
     PlacementZoneKind,
     RestrictionCapacityKind,
     RestrictionEligibility,
+    ShippableLine,
     SupplyProductIdentity,
 )
 from backend.supply.facts import build_operational_supply_facts, conservative_cluster_capacity
@@ -90,6 +93,64 @@ def test_direct_duplicate_pack_evidence_conflicts_instead_of_last_wins():
     )
     assert facts[0].pack_multiple is None
     assert "CONFLICTING_PACK_MULTIPLICITY" in facts[0].reason_codes
+
+
+@pytest.mark.parametrize(("legacy_source", "expected_source"), [
+    (None, "unknown"),
+    ("legacy_unitka", "unknown"),
+])
+def test_legacy_pack_evidence_keeps_quantity_but_normalizes_source(
+        legacy_source, expected_source):
+    class LegacyPack:
+        article = "28202"
+        pack_multiple = 20
+        reason_codes = ()
+
+    pack = LegacyPack()
+    if legacy_source is not None:
+        pack.source = legacy_source
+
+    fact = build_operational_supply_facts(
+        products=(SupplyProductIdentity("S", "28202"),),
+        cluster_ids=("C",),
+        pack_evidence=(pack,),
+        source_mode=SourceMode.API,
+    )[0]
+
+    assert fact.pack_multiple == 20
+    assert fact.pack_source == expected_source
+    assert fact.pack_source != "unitka"
+
+
+def _operational_fact_with_source(pack_source):
+    return OperationalSupplyFact(
+        "S", "A", "C", 20, PlacementZoneKind.UNKNOWN, (),
+        RestrictionEligibility.UNKNOWN, RestrictionCapacityKind.UNKNOWN,
+        None, None, (), pack_source,
+    )
+
+
+def _shippable_line_with_source(pack_source):
+    return ShippableLine(
+        sku="S", article="A", destination_cluster_id="C", analytical_qty=20,
+        rounded_target_qty=20, rounding_delta_qty=0, allocation_priority_rank=1,
+        pack_multiple=20, resolved_seller_stock=20, shippable_qty=20,
+        unit_volume_l=Decimal("1"), total_volume_l=Decimal("20"),
+        placement_zone_kind=PlacementZoneKind.UNKNOWN, placement_zones=(),
+        reason_codes=(), pack_source=pack_source,
+    )
+
+
+@pytest.mark.parametrize("pack_source", ("manual", "import", "rtp_price", "unknown"))
+def test_supply_contracts_accept_canonical_pack_sources(pack_source):
+    assert _operational_fact_with_source(pack_source).pack_source == pack_source
+    assert _shippable_line_with_source(pack_source).pack_source == pack_source
+
+
+@pytest.mark.parametrize("factory", (_operational_fact_with_source, _shippable_line_with_source))
+def test_supply_contracts_reject_unitka_pack_source(factory):
+    with pytest.raises(ValueError, match="pack_source is invalid"):
+        factory("unitka")
 
 
 def test_operational_quantity_contracts_reject_booleans():
