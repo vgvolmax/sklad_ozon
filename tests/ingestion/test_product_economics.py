@@ -43,3 +43,13 @@ def test_real_unitka_volume_header_and_blank_template_tail():
             result.records[0].commission_rate, result.records[0].volume_liters) == (
                 Decimal("123"), Decimal("999"), Decimal("0.12"), Decimal("2.5"))
     assert not {"MISSING_REQUIRED_HEADER", "MALFORMED_ROW"} & {d.code for d in result.diagnostics}
+
+
+def test_external_unitka_explicit_campaign_price_alias_is_additive():
+    headers = ["Артикул", "Название", "Себестоимость единицы",
+               "Наша цена до СПП OZON с акцией", "Комиссия OZON %",
+               "Объём товара (л)", "Комментарий"]
+    result = import_product_economics(make_xlsx(
+        headers=headers, rows=[["28202", "Товар", 100, 777, "10%", 1, "ignored"]]), META)
+    assert not result.diagnostics
+    assert result.records[0].price == Decimal("777")

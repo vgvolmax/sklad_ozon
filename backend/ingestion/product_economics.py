@@ -7,6 +7,7 @@ from .normalization import normalize_seller_article_identity, normalize_text
 
 _HEADERS = {"sku": "sku", "артикул": "article", "себестоимость": "cost", "доступный остаток": "available", "цена": "price", "комиссия": "commission", "объём, л": "volume", "объем, л": "volume"}
 _HEADERS.update({"себестоимость единицы":"cost", "цена поставщика до скидок ozon":"price",
+                 "наша цена до спп ozon с акцией":"price",
                  "комиссия ozon %":"commission", "объём товара":"volume", "объем товара":"volume",
                  "объём товара (л)":"volume", "объем товара (л)":"volume"})
 _REQUIRED = frozenset({"sku", "article", "cost", "available", "price", "commission", "volume"})
@@ -23,7 +24,7 @@ def _rate(value: object) -> Decimal | None:
 
 
 def import_product_economics(data: bytes, report_context: ReportMeta, *, workbook=None) -> ImportResult[ProductEconomicsInput]:
-    source = (read_xlsx_tables(data, lambda h: _REQUIRED <= {_HEADERS[x] for x in h if x in _HEADERS} or {"артикул","себестоимость единицы","цена поставщика до скидок ozon","комиссия ozon %"} <= set(h), workbook=workbook)
+    source = (read_xlsx_tables(data, lambda h: {"article", "cost", "price", "commission", "volume"} <= {_HEADERS[x] for x in h if x in _HEADERS}, workbook=workbook)
               if data.startswith(b"PK") else read_source_rows(data)); diagnostics = list(source.diagnostics)
     keys = {_HEADERS[key] for key in source.rows[0][1] if key in _HEADERS} if source.rows else set()
     real = "article" in keys and "cost" in keys and "price" in keys and "commission" in keys and "volume" in keys

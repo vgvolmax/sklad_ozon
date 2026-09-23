@@ -21,7 +21,6 @@ from backend.project import PackMultiplicityRecord, Project
 class ResolvedPackMultiplicity:
     pack_multiple: int | None
     source: str
-    unitka_pack_multiple: int | None
     rtp_price_pack_multiple: int | None
     override_pack_multiple: int | None
     updated_at: str | None
@@ -65,12 +64,10 @@ def validate_pack_multiple(value: object, *, excel: bool = False) -> int:
 def resolve_pack_multiplicity(record: PackMultiplicityRecord | None) -> ResolvedPackMultiplicity:
     record = record or PackMultiplicityRecord()
     if record.override_pack_multiple is not None:
-        return ResolvedPackMultiplicity(record.override_pack_multiple, record.override_origin or "unknown", record.unitka_pack_multiple, record.rtp_price_pack_multiple, record.override_pack_multiple, record.override_updated_at)
+        return ResolvedPackMultiplicity(record.override_pack_multiple, record.override_origin or "unknown", record.rtp_price_pack_multiple, record.override_pack_multiple, record.override_updated_at)
     if record.rtp_price_pack_multiple is not None:
-        return ResolvedPackMultiplicity(record.rtp_price_pack_multiple, "rtp_price", record.unitka_pack_multiple, record.rtp_price_pack_multiple, None, record.rtp_price_updated_at)
-    if record.unitka_pack_multiple is not None:
-        return ResolvedPackMultiplicity(record.unitka_pack_multiple, "unitka", record.unitka_pack_multiple, None, None, None)
-    return ResolvedPackMultiplicity(None, "unknown", None, None, None, None)
+        return ResolvedPackMultiplicity(record.rtp_price_pack_multiple, "rtp_price", record.rtp_price_pack_multiple, None, record.rtp_price_updated_at)
+    return ResolvedPackMultiplicity(None, "unknown", None, None, None)
 
 
 def moscow_now() -> str:
@@ -93,20 +90,11 @@ def reset_override(project: Project, article_value: object) -> tuple[Project, st
     return replace(project, pack_multiplicity={**project.pack_multiplicity, article: record}), article
 
 
-def sync_unitka_baseline(project: Project, evidence) -> Project:
-    records = dict(project.pack_multiplicity)
-    for item in evidence:
-        old = records.get(item.article, PackMultiplicityRecord())
-        records[item.article] = replace(old, unitka_pack_multiple=item.pack_multiple)
-    return replace(project, pack_multiplicity=records)
-
-
 def pack_multiplicity_fingerprint(project: Project) -> str:
     """Return a deterministic revision for pack master data only."""
     payload = [
         {
             "article": article,
-            "unitka_pack_multiple": record.unitka_pack_multiple,
             "rtp_price_pack_multiple": record.rtp_price_pack_multiple,
             "override_pack_multiple": record.override_pack_multiple,
             "override_origin": record.override_origin,
@@ -119,33 +107,16 @@ def pack_multiplicity_fingerprint(project: Project) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
-def build_effective_pack_evidence(project: Project, current_unitka_evidence) -> tuple[EffectivePackEvidence, ...]:
-    """Resolve override > RTP price > current valid Unitka > persisted Unitka.
-
-    Current invalid/conflicting Unitka evidence remains causal only when it is
-    not masked by a valid override or RTP-price value.
-    """
-    current = {item.article: item for item in current_unitka_evidence}
-    articles = sorted(set(project.pack_multiplicity) | set(current))
+def build_effective_pack_evidence(project: Project, _legacy_unitka_evidence=()) -> tuple[EffectivePackEvidence, ...]:
+    """Resolve the active override > RTP price > unknown contract."""
+    articles = sorted(project.pack_multiplicity)
     result = []
     for article in articles:
         record = project.pack_multiplicity.get(article)
         resolved = resolve_pack_multiplicity(record)
-        observed = current.get(article)
         if resolved.source in {"manual", "import", "rtp_price"}:
             result.append(EffectivePackEvidence(
                 article, resolved.pack_multiple, resolved.source, ()))
-        elif observed is not None:
-            if observed.pack_multiple is not None:
-                result.append(EffectivePackEvidence(
-                    article, observed.pack_multiple, "unitka", ()))
-            else:
-                result.append(EffectivePackEvidence(
-                    article, None, "unknown",
-                    observed.reason_codes or ("MISSING_PACK_MULTIPLICITY",)))
-        elif resolved.pack_multiple is not None:
-            result.append(EffectivePackEvidence(
-                article, resolved.pack_multiple, "unitka", ()))
         else:
             result.append(EffectivePackEvidence(
                 article, None, "unknown", ("MISSING_PACK_MULTIPLICITY",)))
@@ -245,8 +216,8 @@ def apply_rtp_price_snapshot(project: Project, values: dict[str, int], *,
 
 def export_xlsx(items: list[dict[str, object]]) -> bytes:
     workbook = Workbook(); sheet = workbook.active; sheet.title = "Кратность упаковки"
-    sheet.append(["Артикул", "Кратность", "SKU", "Наименование", "Источник", "Прайс РТП", "Кратность Unitka", "Изменено"])
-    labels = {"manual": "Вручную", "import": "Импорт", "rtp_price": "Прайс РТП", "unitka": "Unitka", "unknown": "Не задано"}
+    sheet.append(["Артикул", "Кратность", "SKU", "Наименование", "Источник", "Прайс РТП", "Ручное переопределение", "Изменено"])
+    labels = {"manual": "Вручную", "import": "Импорт", "rtp_price": "Прайс РТП", "unknown": "Не задано"}
     for item in items:
-        sheet.append([item["article"], item["pack_multiple"], ", ".join(item.get("skus") or []), item.get("product_name"), labels[item["source"]], item.get("rtp_price_pack_multiple"), item["unitka_pack_multiple"], item["updated_at"]])
+        sheet.append([item["article"], item["pack_multiple"], ", ".join(item.get("skus") or []), item.get("product_name"), labels[item["source"]], item.get("rtp_price_pack_multiple"), item.get("override_pack_multiple"), item["updated_at"]])
     stream = BytesIO(); workbook.save(stream); workbook.close(); return stream.getvalue()

@@ -112,17 +112,14 @@ def _allocation(payload, cluster):
     return next(decision["allocation_qty"] for result in payload["allocations"] for decision in result["decisions"] if decision["cluster_id"] == cluster)
 
 
-def test_unitka_import_exposes_pack_evidence_from_single_open_bundle():
-    data = make_real_unitka(pack_rows=[[40750.0, "72/6"]])
+def test_unitka_import_excludes_packaging_from_bundle():
+    data = make_real_unitka(pack_rows=[[40750.0, "garbage"]])
     response = CLIENT.post("/api/import/unitka", files={"file": ("unitka.xlsx", data)})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["pack_multiplicity"] == [{
-        "article": "40750", "pack_multiple": 72, "source_row": 2,
-        "source_value": "72/6", "reason_codes": [],
-    }]
-    assert payload["record_sources"]["pack_multiplicity"] == [2]
-
+    assert payload["source_format"] == "external"
+    assert "pack_multiplicity" not in payload
+    assert "INVALID_PACK_MULTIPLICITY" not in {item["code"] for item in payload["diagnostics"]}
 
 def test_restriction_56_day_reference_cannot_change_demand_need_or_plans():
     def analyzed(reference):
@@ -287,7 +284,7 @@ def test_happy_path_exposes_calculated_and_safe_plan_families():
     assert "MISSING_PACK_MULTIPLICITY" in plan["lines"][0]["reason_codes"]
 
 
-def test_unitka_pack_builds_known_whole_pack_without_changing_calculated_plan():
+def test_unitka_pack_sheet_does_not_supply_whole_pack():
     files = _real_four_files(include_second=False)
     files["unitka_file"] = ("Юнитка OZON.xlsx", make_real_unitka(
         product_rows=[["ART-A", "A", 100, 1000, "10%", 1]],
@@ -295,12 +292,9 @@ def test_unitka_pack_builds_known_whole_pack_without_changing_calculated_plan():
         pack_rows=[["ART-A", "36/6"]], economics_scheme_fbo=True,
     ))
     payload = _post_analysis(files=files).json()
-    calculated = payload["snapshot"]["decision_rows"][0]["calculated_plan_qty"]
     line = payload["snapshot"]["shippable_plan"]["lines"][0]
-    assert line["analytical_qty"] == calculated
-    assert line["rounded_target_qty"] % 6 == 0
-    assert line["shippable_qty"] % 6 == 0
-
+    assert line["pack_multiple"] is None
+    assert "MISSING_PACK_MULTIPLICITY" in line["reason_codes"]
 
 def test_missing_fbo_and_inbound_evidence_blocks_calculated_need():
     files = _analysis_files(recommendations=(3,), available_stock=5)

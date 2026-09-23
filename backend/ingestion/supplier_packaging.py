@@ -1,4 +1,4 @@
-"""Supplier-owned article and pack-multiplicity workbook evidence."""
+"""Legacy packaging parser. Not part of Unitka ingestion."""
 
 from dataclasses import dataclass
 from io import BytesIO
@@ -49,7 +49,7 @@ def parse_outer_pack_multiple(value: object) -> int:
     return int(match.group(1))
 
 
-# Public compatibility name used by Unitka ingestion and existing callers.
+# Public compatibility name retained for historical tests and import helpers.
 parse_pack_multiple = parse_outer_pack_multiple
 
 

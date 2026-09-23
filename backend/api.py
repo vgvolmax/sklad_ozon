@@ -47,8 +47,7 @@ from backend.working_plan import materialize_working_plan, validate_override_qua
 from backend.pack_multiplicity import (apply_rtp_price_snapshot, build_effective_pack_evidence, export_xlsx, parse_import_xlsx,
                                        pack_multiplicity_fingerprint,
                                        reset_override,
-                                       resolve_pack_multiplicity, set_override,
-                                       sync_unitka_baseline)
+                                       resolve_pack_multiplicity, set_override)
 from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
 from backend.ozon.contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import CONNECTION_TEST_PATH
@@ -283,17 +282,6 @@ def commit_analysis_snapshot_if_current(
             expected_credential_context_id,commit_under_project_lock,
             field='source_snapshot_id')
     return commit_under_project_lock()
-
-def _persist_unitka_baseline(project, evidence):
-    """Persist a changed Unitka baseline and invalidate dependent stores."""
-    updated=sync_unitka_baseline(project,evidence)
-    changed=updated.pack_multiplicity!=project.pack_multiplicity
-    if changed:
-        save_project_atomic(PROJECT_PATH,updated)
-        ANALYSIS_STORE.clear()
-        SHIPMENT_PLAN_STORE.clear()
-        return updated,True
-    return project,False
 
 def current_source(source_snapshot_id, *, field='source_snapshot_id'):
     snapshot=OZON_SOURCE_STORE.get(source_snapshot_id)
@@ -958,14 +946,11 @@ async def import_unitka(request:Request):
     if upload is None:return error(400,'MISSING_FIELD','Required multipart field is missing.','file')
     data=await read(upload,'file'); context=meta(upload)
     bundle=import_unitka_bundle(data,context)
-    products, tariffs, packs = bundle.product_economics, bundle.tariffs, bundle.pack_multiplicity
-    with PROJECT_PERSISTENCE_LOCK:
-        project,_=_persist_unitka_baseline(load_project_if_exists(PROJECT_PATH),packs.records)
+    products, tariffs = bundle.product_economics, bundle.tariffs
     return {"api_version":1,"kind":"unitka","product_economics":wire(products.records),"tariffs":wire(tariffs.records),
-            "pack_multiplicity":wire(packs.records),
-            "diagnostics":wire(products.diagnostics+tariffs.diagnostics+packs.diagnostics),"meta":wire(context),
-            "record_sources":{"product_economics":list(products.record_sources),"tariffs":list(tariffs.record_sources),
-                              "pack_multiplicity":list(packs.record_sources)}}
+            "source_format":bundle.source_format,"schema_version":bundle.schema_version,
+            "diagnostics":wire(products.diagnostics+tariffs.diagnostics),"meta":wire(context),
+            "record_sources":{"product_economics":list(products.record_sources),"tariffs":list(tariffs.record_sources)}}
 
 @router.post('/api/import/unitka/validate')
 async def validate_unitka(request:Request):
@@ -979,8 +964,7 @@ async def validate_unitka(request:Request):
         return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.','unitka_file')
     except Exception as exc:
         return error(400,'INVALID_UNITKA_FILE',str(exc) or 'Файл Юнитки не удалось прочитать.','unitka_file')
-    diagnostics=(bundle.product_economics.diagnostics+bundle.tariffs.diagnostics+
-                 bundle.pack_multiplicity.diagnostics)
+    diagnostics=bundle.product_economics.diagnostics+bundle.tariffs.diagnostics
     synthetic=[]
     if not bundle.product_economics.records:
         synthetic.append(ImportDiagnostic('error','UNITKA_PRODUCTS_EMPTY',
@@ -992,9 +976,9 @@ async def validate_unitka(request:Request):
     error_count=sum(item.severity=='error' for item in diagnostics)
     warning_count=sum(item.severity=='warning' for item in diagnostics)
     return {'api_version':1,'valid':error_count==0,
+            'source_format':bundle.source_format,'schema_version':bundle.schema_version,
             'product_count':len(bundle.product_economics.records),
             'tariff_count':len(bundle.tariffs.records),
-            'pack_count':len(bundle.pack_multiplicity.records),
             'warning_count':warning_count,'error_count':error_count,
             'diagnostics':wire(diagnostics),
             'content_sha256':hashlib.sha256(data).hexdigest()}
@@ -1208,17 +1192,16 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
             logger.info("[analysis %s] %s done %.3fs%s",request_id,name,duration,suffix)
         bundle=import_unitka_bundle(raw[economics_offset][1],meta(raw[economics_offset][0]),timing=unitka_timing)
         tariffs,products=bundle.tariffs,bundle.product_economics
-        pack_evidence=bundle.pack_multiplicity.records
         with PROJECT_PERSISTENCE_LOCK:
-            project,_=_persist_unitka_baseline(load_project_if_exists(PROJECT_PATH),pack_evidence)
-            pack_evidence=build_effective_pack_evidence(project,pack_evidence)
+            project=load_project_if_exists(PROJECT_PATH)
+            pack_evidence=build_effective_pack_evidence(project)
             pack_fingerprint_at_start=pack_multiplicity_fingerprint(project)
     else:
         tariffs=timed("tariffs_import",import_tariffs,raw[economics_offset][1],meta(raw[economics_offset][0])); products=timed("product_economics_import",import_product_economics,raw[economics_offset+1][1],meta(raw[economics_offset+1][0]))
         pack_evidence=()
         with PROJECT_PERSISTENCE_LOCK:
             project=load_project_if_exists(PROJECT_PATH)
-            pack_evidence=build_effective_pack_evidence(project,pack_evidence)
+            pack_evidence=build_effective_pack_evidence(project)
             pack_fingerprint_at_start=pack_multiplicity_fingerprint(project)
     resolution = resolve_analysis_clusters(
         availability.records, restrictions.records, orders.records, tariffs.records,
@@ -1488,7 +1471,6 @@ def _pack_items(project):
     for article in articles:
         resolved=resolve_pack_multiplicity(project.pack_multiplicity.get(article))
         items.append({"article":article,"pack_multiple":resolved.pack_multiple,"source":resolved.source,
-                      "unitka_pack_multiple":resolved.unitka_pack_multiple,
                       "rtp_price_pack_multiple":resolved.rtp_price_pack_multiple,
                       "override_pack_multiple":resolved.override_pack_multiple,
                       "updated_at":resolved.updated_at,"product_name":None,"skus":sorted(catalog.get(article,()))})

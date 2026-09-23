@@ -8,6 +8,7 @@ from backend.ozon.adapters.catalog import ClusterCatalogResult
 from backend.ozon.endpoints import FBS_STOCK_PATH
 from backend.ozon.source_contracts import Cluster, PlacementZoneEvidence
 from backend.ozon.sync import sync_ozon_source
+from backend.project import PackMultiplicityRecord, Project, save_project_atomic
 from tests.api.test_analysis import CLIENT, _analysis_data, _api_parity_fixture, _parity_files
 from tests.helpers.xlsx_fixtures import make_real_unitka, make_xlsx
 
@@ -101,7 +102,7 @@ def test_global_seller_stock_wire_corruption_blocks_partial_and_unitka_fallback(
     assert missing == {"SKU-1", "SKU-B"}
 
 
-def test_api_source_reaches_positive_calculated_shippable_and_candidate_before_live_validation():
+def test_api_source_reaches_positive_calculated_shippable_and_candidate_before_live_validation(tmp_path, monkeypatch):
     source = _clean_api_source()
     api_module.OZON_SOURCE_STORE.put(source)
     unitka = make_real_unitka(
@@ -110,6 +111,13 @@ def test_api_source_reaches_positive_calculated_shippable_and_candidate_before_l
         pack_rows=[["ART-1", "6/1"]],
         economics_scheme_fbo=True,
     )
+
+    path = tmp_path / "project.json"
+    monkeypatch.setattr(api_module, "PROJECT_PATH", path)
+    save_project_atomic(path, Project(pack_multiplicity={
+        "ART-1": PackMultiplicityRecord(
+            rtp_price_pack_multiple=6, rtp_price_updated_at="2026-09-23T00:00:00Z"),
+    }))
 
     response = CLIENT.post(
         "/api/analysis",

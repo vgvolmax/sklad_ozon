@@ -110,7 +110,7 @@ def test_plan_validation_identity_mismatch_does_not_store(monkeypatch):
 def test_pack_change_during_live_validation_cannot_resurrect_shipment_plan(tmp_path,monkeypatch):
     path=tmp_path/'project.json'; monkeypatch.setattr(api_module,'PROJECT_PATH',path)
     save_project_atomic(path,Project(pack_multiplicity={
-        'A-1':PackMultiplicityRecord(20)}))
+        'A-1':PackMultiplicityRecord(rtp_price_pack_multiple=20,rtp_price_updated_at='old')}))
     snapshot=_analyze_api_plan(); candidate_id=_candidate(snapshot)
 
     class PackChangingValidation(FakeValidation):
@@ -118,7 +118,7 @@ def test_pack_change_during_live_validation_cannot_resurrect_shipment_plan(tmp_p
             result=super().validate(candidates,scenario,**kwargs)
             with api_module.PROJECT_PERSISTENCE_LOCK:
                 save_project_atomic(path,Project(pack_multiplicity={
-                    'A-1':PackMultiplicityRecord(50)}))
+                    'A-1':PackMultiplicityRecord(rtp_price_pack_multiple=50,rtp_price_updated_at='new')}))
                 api_module.ANALYSIS_STORE.clear()
                 api_module.SHIPMENT_PLAN_STORE.clear()
             return result
