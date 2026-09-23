@@ -89,6 +89,13 @@ def _signal_status_codes(key, stockout_signals, distortion_signals):
     return codes
 
 
+def _calculated_plan_qty(need, calculated_decision):
+    """Preserve the business distinction between a known zero and no plan."""
+    if need.complete is True and need.calculated_need_qty == 0:
+        return 0
+    return None if calculated_decision is None else calculated_decision.allocation_qty
+
+
 def _flow_economics(rows, opportunities):
     """Aggregate calculated per-unit economics with selected evidence quantities."""
     quantity = sum(row.quantity for row in rows)
@@ -361,7 +368,8 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
             codes.add("SAFE_PLAN_HORIZON_MISMATCH")
         if need.comparability is HorizonComparability.OZON_HORIZON_UNKNOWN:
             codes.add("SAFE_PLAN_OZON_HORIZON_UNKNOWN")
-        if c is None: codes.add("CALCULATED_PLAN_UNAVAILABLE")
+        calculated_plan_qty = _calculated_plan_qty(need, c)
+        if calculated_plan_qty is None: codes.add("CALCULATED_PLAN_UNAVAILABLE")
         if route_required and not route_complete: codes.add("ROUTE_ECONOMICS_INCOMPLETE")
         codes.update(_signal_status_codes(key, stockout_signals, distortion_signals))
         status=tuple(sorted(codes))
@@ -380,7 +388,7 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
             analysis_as_of=analysis_as_of, days=scenario.horizon_days,
             demand_window=demand_window, demand_complete=demand_complete)
         row = DecisionRow(need.sku,article,name,need.destination_cluster_id,
-            demand.get(key),need,None if s is None else s.allocation_qty,None if c is None else c.allocation_qty,
+            demand.get(key),need,None if s is None else s.allocation_qty,calculated_plan_qty,
             need.current_fbo_stock,need.inbound_qty,
             ordered_qty_56d,ordered_qty_horizon,
             _external_share(observed_routes,key),

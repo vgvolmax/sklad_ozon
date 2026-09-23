@@ -451,3 +451,37 @@ def test_unavailable_decision_row_still_has_nullable_operational_line():
     assert line.shippable_qty is None
     assert line.pack_multiple == 20
     assert "CALCULATED_PLAN_UNAVAILABLE" in line.reason_codes
+
+
+@pytest.mark.parametrize(("facts", "expected_pack"), [
+    ((), None),
+    ((fact("A", pack=None),), None),
+    ((fact("A", pack=20),), 20),
+])
+def test_known_zero_without_allocation_is_shippable_without_stock_or_pack(
+        facts, expected_pack):
+    from types import SimpleNamespace
+    row = SimpleNamespace(sku="SKU-1", destination_cluster_id="A", calculated_plan_qty=0)
+    plan = build_shippable_plan(
+        analysis_snapshot_id="analysis", source_mode=SourceMode.FILES,
+        source_snapshot_id=None, analysis_as_of=date(2026, 9, 10),
+        horizon_days=56, include_inbound=True,
+        objective=AllocationObjective.MAX_MARGIN,
+        calculated_allocations=(), products=(), supply_facts=facts,
+        blocked_decision_rows=(row,),
+    )
+    line = plan.lines[0]
+    assert (line.analytical_qty, line.rounded_target_qty,
+            line.rounding_delta_qty, line.allocation_priority_rank) == (0, 0, 0, None)
+    assert line.shippable_qty == 0
+    assert line.pack_multiple == expected_pack
+    assert line.resolved_seller_stock is None
+    assert "CALCULATED_PLAN_UNAVAILABLE" not in line.reason_codes
+    assert "MISSING_UNIT_VOLUME" in line.reason_codes
+
+
+def test_positive_decision_without_allocation_remains_unknown():
+    from types import SimpleNamespace
+    row = SimpleNamespace(sku="SKU-1", destination_cluster_id="A", calculated_plan_qty=None)
+    plan = build(decisions=(), facts=(), products=(), blocked_decision_rows=(row,))
+    assert plan.lines[0].shippable_qty is None
