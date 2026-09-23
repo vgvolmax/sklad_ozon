@@ -22,6 +22,7 @@ from backend.main import app
 from backend.ozon.source_contracts import (EndpointEvidence, OzonSourceSnapshot,
                                            OzonRecordQualityEvidence,
                                            PlacementZoneEvidence)
+from backend.ozon.adapters.product_facts import ProductApiFacts
 from tests.helpers.xlsx_fixtures import make_multisheet_xlsx, make_real_unitka, make_xlsx
 
 
@@ -164,12 +165,13 @@ def _api_parity_fixture():
         "parity-api", "2026-08-25T00:00:00+00:00", date(2026, 8, 25), "UTC+03:00",
         date(2026, 6, 1), date(2026, 8, 25), orders, availability, seller,
         (), (), (), (
+            EndpointEvidence("products", "x", 1, True),
             EndpointEvidence("orders_fbo", "x", len(orders), True),
             EndpointEvidence("orders_fbs", "x", 0, True),
             EndpointEvidence("fbo_stock", "x", 2, True),
             EndpointEvidence("inbound", "x", 1, True),
             EndpointEvidence("seller_stock", "x", len(seller), True),
-        ), ())
+        ), (), product_facts=(ProductApiFacts("SKU-1", "ART-1", 1),))
 
 
 def _parity_files():
@@ -725,6 +727,93 @@ def test_api_and_files_typed_sources_are_business_equivalent_without_fabricated_
     assert api_payload["snapshot"]["shippable_plan"]["source_snapshot_id"] == "parity-api"
 
 
+def test_api_current_catalog_excludes_historical_only_sku_from_every_plan_layer():
+    base = _api_parity_fixture()
+    historical_order = replace(
+        base.orders[0], sku="SKU-999", article="OLD-999", quantity=9)
+    historical_availability = replace(
+        base.availability[0], sku="SKU-999", article="OLD-999",
+        recommended_quantity=12)
+    historical_stock = replace(
+        base.operational_seller_stock[0], sku="SKU-999", article="OLD-999")
+    snapshot = replace(
+        base, source_snapshot_id="catalog-authority",
+        orders=base.orders + (historical_order,),
+        availability=base.availability + (historical_availability,),
+        operational_seller_stock=base.operational_seller_stock + (historical_stock,))
+    api_module.OZON_SOURCE_STORE.put(snapshot)
+    files = _parity_files()
+
+    response = CLIENT.post("/api/analysis", files={
+        "tariffs_file": files["tariffs_file"],
+        "product_economics_file": ("products.xlsx", make_xlsx(
+            headers=PRODUCT_HEADERS, rows=[
+                ["SKU-1", "ART-1", 100, 99, 1000, "10%", 1],
+                ["SKU-999", "OLD-999", 100, 99, 1000, "10%", 1],
+            ])),
+    }, data=_analysis_data(source_mode="api", source_snapshot_id=snapshot.source_snapshot_id))
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert {cell["sku"] for cell in payload["demand"]["cells"]} == {"SKU-1"}
+    assert {row["sku"] for row in payload["snapshot"]["decision_rows"]} == {"SKU-1"}
+    assert {row["sku"] for row in payload["snapshot"]["shippable_plan"]["lines"]} <= {"SKU-1"}
+    assert any(order.sku == "SKU-999" for order in snapshot.orders)
+
+
+def test_api_catalog_card_without_cluster_evidence_creates_no_synthetic_rows():
+    base = _api_parity_fixture()
+    facts = (ProductApiFacts("NEW-1", "NEW-ARTICLE", 77),)
+    evidence = tuple(
+        replace(item, record_count=1) if item.name == "products" else item
+        for item in base.endpoint_evidence)
+    snapshot = replace(
+        base, source_snapshot_id="new-card", orders=(), availability=(),
+        operational_seller_stock=(), product_facts=facts,
+        endpoint_evidence=evidence)
+    api_module.OZON_SOURCE_STORE.put(snapshot)
+    files = _parity_files()
+    response = CLIENT.post("/api/analysis", files={
+        "tariffs_file": files["tariffs_file"],
+        "product_economics_file": files["product_economics_file"],
+    }, data=_analysis_data(source_mode="api", source_snapshot_id=snapshot.source_snapshot_id))
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["demand"]["cells"] == []
+    assert payload["snapshot"]["decision_rows"] == []
+    assert payload["snapshot"]["shippable_plan"]["lines"] == []
+
+
+def test_api_catalog_incomplete_blocks_analysis_but_complete_empty_is_valid():
+    base = _api_parity_fixture()
+    files = _parity_files()
+    economics = {name: files[name] for name in ("tariffs_file", "product_economics_file")}
+    incomplete = replace(
+        base, source_snapshot_id="catalog-incomplete",
+        endpoint_evidence=tuple(
+            replace(item, complete=False) if item.name == "products" else item
+            for item in base.endpoint_evidence))
+    api_module.OZON_SOURCE_STORE.put(incomplete)
+    for endpoint in ("/api/analysis", "/api/analysis/stream"):
+        blocked = CLIENT.post(endpoint, files=economics, data=_analysis_data(
+            source_mode="api", source_snapshot_id=incomplete.source_snapshot_id))
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["code"] == "CURRENT_OZON_CATALOG_INCOMPLETE"
+
+    empty = replace(
+        base, source_snapshot_id="catalog-empty", orders=(), availability=(),
+        operational_seller_stock=(), product_facts=(),
+        endpoint_evidence=tuple(
+            replace(item, record_count=0, complete=True) if item.name == "products" else item
+            for item in base.endpoint_evidence))
+    api_module.OZON_SOURCE_STORE.put(empty)
+    accepted = CLIENT.post("/api/analysis", files=economics, data=_analysis_data(
+        source_mode="api", source_snapshot_id=empty.source_snapshot_id))
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["snapshot"]["decision_rows"] == []
+
+
 def test_api_analysis_blocks_only_sku_with_quarantined_order_history():
     base = _api_parity_fixture()
     bad_orders = tuple(replace(order, sku="SKU-BAD", article="ART-BAD")
@@ -742,7 +831,8 @@ def test_api_analysis_blocks_only_sku_with_quarantined_order_history():
     snapshot = replace(
         base, source_snapshot_id="scoped-order-quality", orders=base.orders + bad_orders,
         availability=availability, operational_seller_stock=seller,
-        endpoint_evidence=evidence)
+        endpoint_evidence=evidence,
+        product_facts=base.product_facts + (ProductApiFacts("SKU-BAD", "ART-BAD", 2),))
     api_module.OZON_SOURCE_STORE.put(snapshot)
     files = _parity_files()
     api_files = {
@@ -817,7 +907,9 @@ def test_api_analysis_scopes_disputed_inbound_only_when_inbound_is_included():
         orders=base.orders + disputed_orders,
         availability=base.availability + disputed_availability,
         operational_seller_stock=base.operational_seller_stock + disputed_seller,
-        endpoint_evidence=evidence)
+        endpoint_evidence=evidence,
+        product_facts=base.product_facts + (
+            ProductApiFacts(disputed_sku, "ART-DISPUTED", 2),))
     api_module.OZON_SOURCE_STORE.put(snapshot)
     files = _parity_files()
     api_files = {
@@ -857,6 +949,7 @@ def test_api_prepared_inputs_route_diagnostics_by_analytical_domain():
     inbound_error = ImportDiagnostic("error", "INBOUND_FAILED", "inbound")
     shipment_error = ImportDiagnostic("error", "PLACEMENT_FAILED", "placement")
     snapshot = replace(snapshot, endpoint_evidence=(
+        EndpointEvidence("products", "x", 1, True, ()),
         EndpointEvidence("orders_fbo", "x", 0, False, (order_error,)),
         EndpointEvidence("fbo_stock", "x", 0, True, ()),
         EndpointEvidence("inbound", "x", 0, False, (inbound_error,)),
