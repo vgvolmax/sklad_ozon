@@ -120,7 +120,7 @@ class OperationalSupplyFact:
                 raise ValueError("pack_multiple must be positive")
         RestrictionCapacityEvidence(
             self.restriction_eligibility, self.capacity_kind, self.capacity_qty)
-        if self.pack_source not in {"manual", "import", "rtp_price", "unitka", "unknown"}:
+        if self.pack_source not in {"manual", "import", "rtp_price", "unknown"}:
             raise ValueError("pack_source is invalid")
 
 
@@ -370,7 +370,7 @@ class ShippableLine:
         if not isinstance(self.reason_codes, tuple) or any(
                 not isinstance(code, str) or not code.strip() for code in self.reason_codes):
             raise TypeError("reason_codes must contain nonblank strings")
-        if self.pack_source not in {"manual", "import", "rtp_price", "unitka", "unknown"}:
+        if self.pack_source not in {"manual", "import", "rtp_price", "unknown"}:
             raise ValueError("pack_source is invalid")
         if not isinstance(self.capacity_kind, RestrictionCapacityKind):
             raise TypeError("capacity_kind must be RestrictionCapacityKind")

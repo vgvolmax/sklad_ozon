@@ -30,7 +30,9 @@ def test_valid_unitka_preflight_uses_full_bundle_without_mutation(monkeypatch):
     assert payload["valid"] is True
     assert payload["product_count"] > 0
     assert payload["tariff_count"] > 0
-    assert payload["pack_count"] == 1
+    assert payload["source_format"] == "external"
+    assert payload["schema_version"] is None
+    assert "pack_count" not in payload
     assert payload["error_count"] == 0
     assert payload["content_sha256"] == hashlib.sha256(data).hexdigest()
 
@@ -62,4 +64,4 @@ def test_unitka_without_packs_is_still_suitable():
     assert payload["valid"] is True
     assert payload["product_count"] > 0
     assert payload["tariff_count"] > 0
-    assert payload["pack_count"] == 0
+    assert "pack_count" not in payload

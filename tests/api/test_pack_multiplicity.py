@@ -52,14 +52,15 @@ def rtp_xlsx(rows):
 def test_crud_import_export_and_persistence(tmp_path,monkeypatch):
     path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
     save_project_atomic(path,Project(pack_multiplicity={'17261':PackMultiplicityRecord(20)}))
-    assert client.get('/api/project/pack-multiplicity').json()['items'][0]['source']=='unitka'
+    item=client.get('/api/project/pack-multiplicity').json()['items'][0]
+    assert (item['pack_multiple'],item['source'])==(None,'unknown')
     response=client.put('/api/project/pack-multiplicity/17261',json={'pack_multiple':50})
     assert response.status_code==200 and response.json()['item']['source']=='manual'
     assert load_project(path).pack_multiplicity['17261'].override_pack_multiple==50
     response=client.post('/api/project/pack-multiplicity/import',files={'file':('packs.xlsx',xlsx([['Артикул','Кратность'],['39439',8],['bad',0]]),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')})
     assert response.json()['accepted']==1 and response.json()['rejected']==1
     assert load_project(path).pack_multiplicity['17261'].override_pack_multiple==50
-    assert client.delete('/api/project/pack-multiplicity/17261').json()['item']['pack_multiple']==20
+    assert client.delete('/api/project/pack-multiplicity/17261').json()['item']['pack_multiple'] is None
     exported=client.get('/api/project/pack-multiplicity/export')
     assert exported.status_code==200 and exported.content.startswith(b'PK')
 
@@ -167,63 +168,28 @@ def test_rtp_mixed_duplicate_clears_stale_value_and_reimport_is_noop(
     assert (second['accepted'], second['rejected'], second['changed']) == (1, 1, False)
 
 
-def test_unitka_change_invalidates_but_noop_preserves_derived_stores(tmp_path,monkeypatch):
+def test_unitka_import_never_mutates_pack_master_or_invalidates_stores(tmp_path,monkeypatch):
     path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
-    project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(20)})
+    project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(
+        rtp_price_pack_multiple=20,rtp_price_updated_at='now')})
     save_project_atomic(path,project)
-    cleared=[]
+    before=pack_multiplicity_fingerprint(project); cleared=[]
     monkeypatch.setattr(api.ANALYSIS_STORE,'clear',lambda:cleared.append('analysis'))
     monkeypatch.setattr(api.SHIPMENT_PLAN_STORE,'clear',lambda:cleared.append('shipment'))
-
-    with api.PROJECT_PERSISTENCE_LOCK:
-        unchanged,changed=api._persist_unitka_baseline(project,(
-            PackMultiplicityEvidence('17261',20,2,'x / 20',()),))
-    assert changed is False and unchanged is project and cleared==[]
-
-    with api.PROJECT_PERSISTENCE_LOCK:
-        updated,changed=api._persist_unitka_baseline(project,(
-            PackMultiplicityEvidence('17261',50,2,'x / 50',()),))
-    assert changed is True and updated.pack_multiplicity['17261'].unitka_pack_multiple==50
-    assert cleared==['analysis','shipment']
-
-
-def test_unitka_import_endpoint_invalidates_only_for_baseline_change(tmp_path,monkeypatch):
-    path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
-    save_project_atomic(path,Project(pack_multiplicity={
-        '17261':PackMultiplicityRecord(20)}))
-    cleared=[]
-    monkeypatch.setattr(api.ANALYSIS_STORE,'clear',lambda:cleared.append('analysis'))
-    monkeypatch.setattr(api.SHIPMENT_PLAN_STORE,'clear',lambda:cleared.append('shipment'))
-
-    same=make_real_unitka(pack_rows=[['17261','20/1']])
-    assert client.post('/api/import/unitka',files={'file':('unitka.xlsx',same)}).status_code==200
+    response=client.post('/api/import/unitka',files={'file':('unitka.xlsx',make_real_unitka(pack_rows=[['17261','garbage']]))})
+    assert response.status_code==200
+    after=load_project(path)
+    assert pack_multiplicity_fingerprint(after)==before
+    assert after.pack_multiplicity==project.pack_multiplicity
     assert cleared==[]
-
-    changed=make_real_unitka(pack_rows=[['17261','50/1']])
-    assert client.post('/api/import/unitka',files={'file':('unitka.xlsx',changed)}).status_code==200
-    assert cleared==['analysis','shipment']
-
-
-def test_failed_unitka_persistence_does_not_invalidate_stores(tmp_path,monkeypatch):
-    monkeypatch.setattr(api,'PROJECT_PATH',tmp_path/'project.json')
-    project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(20)})
-    cleared=[]
-    monkeypatch.setattr(api,'save_project_atomic',lambda *_: (_ for _ in ()).throw(OSError('disk')))
-    monkeypatch.setattr(api.ANALYSIS_STORE,'clear',lambda:cleared.append('analysis'))
-    monkeypatch.setattr(api.SHIPMENT_PLAN_STORE,'clear',lambda:cleared.append('shipment'))
-    with pytest.raises(OSError,match='disk'):
-        api._persist_unitka_baseline(project,(
-            PackMultiplicityEvidence('17261',50,2,'x / 50',()),))
-    assert cleared==[]
-
 
 def test_stale_analysis_commit_is_rejected_without_store_write(tmp_path,monkeypatch):
     path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
-    old=Project(pack_multiplicity={'17261':PackMultiplicityRecord(20)})
+    old=Project(pack_multiplicity={'17261':PackMultiplicityRecord(rtp_price_pack_multiple=20,rtp_price_updated_at='old')})
     save_project_atomic(path,old)
     expected=pack_multiplicity_fingerprint(old)
     save_project_atomic(path,Project(pack_multiplicity={
-        '17261':PackMultiplicityRecord(50)}))
+        '17261':PackMultiplicityRecord(rtp_price_pack_multiple=50,rtp_price_updated_at='new')}))
     writes=[]
     monkeypatch.setattr(api.ANALYSIS_STORE,'put',lambda snapshot:writes.append(snapshot))
 
@@ -255,12 +221,12 @@ def _configure_shipment_commit(monkeypatch, snapshot):
 
 def test_stale_shipment_commit_rejects_changed_pack_before_store_write(tmp_path,monkeypatch):
     path=tmp_path/'project.json'; monkeypatch.setattr(api,'PROJECT_PATH',path)
-    old=Project(pack_multiplicity={'17261':PackMultiplicityRecord(20)})
+    old=Project(pack_multiplicity={'17261':PackMultiplicityRecord(rtp_price_pack_multiple=20,rtp_price_updated_at='old')})
     save_project_atomic(path,old)
     expected=pack_multiplicity_fingerprint(old)
     snapshot=SimpleNamespace(shippable_plan=SimpleNamespace(shippable_plan_id='P1'))
     _configure_shipment_commit(monkeypatch,snapshot)
-    save_project_atomic(path,Project(pack_multiplicity={'17261':PackMultiplicityRecord(50)}))
+    save_project_atomic(path,Project(pack_multiplicity={'17261':PackMultiplicityRecord(rtp_price_pack_multiple=50,rtp_price_updated_at='new')}))
     writes=[]; monkeypatch.setattr(api.SHIPMENT_PLAN_STORE,'put',writes.append)
 
     with pytest.raises(ShipmentPreparationError) as caught:
