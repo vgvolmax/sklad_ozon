@@ -51,3 +51,27 @@ def render_export(option,shipment_plan_id):
             safe=safe[:80]; suffix=hashlib.sha256(cluster.encode()).hexdigest()[:8]
             archive.writestr(f"{index:02d}_{safe}_{suffix}.xlsx",_workbook(cluster_rows(cluster)))
     return ExportArtifact(stream.getvalue(),"application/zip",outer+".zip")
+
+
+def render_source_statement(option, working_plan, shipment_plan_id):
+    """Manager-only provenance worksheet; never an Ozon import template."""
+    if working_plan is None or not option.outcome.validation.accepted_assignments:
+        raise ShipmentExportError("EXPORT_EMPTY")
+    indexed={(row.sku,row.destination_cluster_id):row for row in working_plan.lines}
+    assignments=option.outcome.validation.accepted_assignments
+    workbook=Workbook()
+    sheet=workbook.active
+    sheet.title="Источники количеств"
+    sheet.append(("SKU","Кластер","Источник","Запрошено, шт.",
+                  "Принято Ozon, шт.","Рабочий план","Проверенный план"))
+    for row in sorted(assignments,key=lambda item:(item.sku,item.destination_cluster_id)):
+        line=indexed.get((row.sku,row.destination_cluster_id))
+        if line is None or line.working_qty is None or row.quantity>line.working_qty:
+            raise ShipmentExportError("EXPORT_IDENTITY_CONFLICT")
+        sheet.append((row.sku,row.destination_cluster_id,line.selected_source,
+                      line.requested_qty,row.quantity,working_plan.working_plan_id,
+                      shipment_plan_id))
+    stream=BytesIO()
+    workbook.save(stream)
+    return ExportArtifact(stream.getvalue(),XLSX_MEDIA,
+                          f"ozon_source_statement_{shipment_plan_id[:12]}.xlsx")

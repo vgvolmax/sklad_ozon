@@ -10,6 +10,8 @@ import backend.api as api_module
 from backend.ozon.draft_contracts import ValidationState
 from backend.shipment.contracts import ShipmentPlan
 from backend.shipment.ranking import rank_outcomes
+from backend.shipment.export import render_source_statement
+from types import SimpleNamespace
 from tests.api.test_analysis import CLIENT
 from tests.shipment.test_ranking import assignment, outcome, scenario
 
@@ -43,6 +45,35 @@ def test_export_single_cluster_returns_valid_exact_xlsx():
     assert response.headers["content-disposition"].endswith('.xlsx"')
     sheet=load_workbook(BytesIO(response.content)).active
     assert tuple(sheet.cell(1,index).value for index in range(1,4))==("артикул","имя (необязательно)","количество")
+
+
+def test_separate_manager_statement_keeps_exact_accepted_quantity_and_source():
+    plan=_stored_plan()
+    option=plan.ranked_options[0]
+    item=option.outcome.validation.accepted_assignments[0]
+    working=SimpleNamespace(working_plan_id=plan.working_plan_id,lines=(
+        SimpleNamespace(sku=item.sku,destination_cluster_id=item.destination_cluster_id,
+                        selected_source='OZON',requested_qty=16,working_qty=item.quantity),))
+    artifact=render_source_statement(option,working,plan.shipment_plan_id)
+    sheet=load_workbook(BytesIO(artifact.content)).active
+    assert [sheet.cell(2,index).value for index in range(1,6)]==[
+        item.sku,item.destination_cluster_id,'OZON',16,item.quantity]
+    assert len(load_workbook(BytesIO(artifact.content)).sheetnames)==1
+
+
+def test_manager_statement_route_checks_current_working_plan(monkeypatch):
+    plan=_stored_plan()
+    item=plan.ranked_options[0].outcome.validation.accepted_assignments[0]
+    working=SimpleNamespace(working_plan_id=plan.working_plan_id,lines=(
+        SimpleNamespace(sku=item.sku,destination_cluster_id=item.destination_cluster_id,
+                        selected_source='OZON',requested_qty=item.quantity,
+                        working_qty=item.quantity),))
+    monkeypatch.setattr(api_module,'require_current_working_plan',
+                        lambda **kwargs:(None,None,working))
+    response=CLIENT.post('/api/shipment/export/statement',json={
+        'shipment_plan_id':plan.shipment_plan_id,'option_id':plan.ranked_options[0].option_id})
+    assert response.status_code==200,response.text
+    assert load_workbook(BytesIO(response.content)).active.cell(2,3).value=='OZON'
 
 
 def test_export_multiple_clusters_returns_only_one_xlsx_per_cluster():

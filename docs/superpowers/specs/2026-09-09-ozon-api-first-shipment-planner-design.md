@@ -87,6 +87,35 @@ Missing evidence remains unknown; it is never coerced to zero for convenience.
 - API mode must not substitute turnover or another metric for the exact Ozon recommendation merely to make Safe Plan complete.
 - If that signal is absent, the comparison is explicitly incomplete; Calculated Plan remains usable.
 
+**Decision 2026-09-24 — manager-selected working source.** API analysis requests
+`metrics.recommended_supply` from `POST /v1/analytics/local-sale/items-clusters/info`
+for current Ozon SKUs and exact macrolocal destination IDs. It preserves the
+analytics `period.from/to` separately from the shipment frequency selected by
+scenario days: 7/14/28/56 map to `ONE_WEEK`/`TWO_WEEKS`/`FOUR_WEEKS`/`EIGHT_WEEKS`.
+Other horizons keep the Calculated Plan, with Ozon selection unavailable.
+This recommendation is a source quantity before seller stock, capacity and pack
+rules. It must not be discounted a second time for FBO stock or inbound.
+
+Calculated Need, Calculated Plan and the comparable Safe Plan remain untouched.
+The Working Plan starts with the existing shippable Calculated quantities. For
+low-confidence rows with fresh exact Ozon evidence and complete operational and
+economic prerequisites, the manager may select Ozon as the Working Plan source.
+Allocation then recomputes all destination lines of that SKU under its common
+seller stock, capacity and whole-pack limits. Manual quantity editing remains a
+distinct action and returns that line to the Calculated source. The selected
+source, exact upstream quantity, and effective shippable quantity are distinct
+fields. Existing shipment candidate, validation and export APIs require the
+current `working_plan_id`; switching source invalidates prior results.
+
+Ozon advice is optional. Failure to obtain it never blocks the own-model
+analysis and cannot reuse an older horizon's advice. `0` is known advice;
+missing advice is unknown, and totals require full row coverage. Advice is
+an immutable per-analysis signal kept in process memory; source selections
+are scoped to that analysis and are never carried to another snapshot.
+The separate manager provenance worksheet is distinct from the strict Ozon
+three-column import template. Before rollout to real sellers, verify beta
+access and compare actual SKU × cluster values with Ozon's own reports.
+
 ### 3.4 Seller stock
 
 The existing runtime resolution is authoritative. Operational/FBS evidence wins when present; conflicting positive evidence remains blocking; explicit zero remains known zero; `ProductEconomicsInput.available_qty` is only the already-permitted fallback.

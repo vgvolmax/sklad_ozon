@@ -126,7 +126,7 @@ class InputStatusView:
 class DecisionSummary:
     sku_count: int
     decision_row_count: int
-    total_ozon_recommended_qty: int
+    total_ozon_recommended_qty: int | None
     total_calculated_need_qty: int
     total_safe_plan_qty: int | None
     total_calculated_plan_qty: int
@@ -346,3 +346,5 @@ class AnalysisSnapshot:
     source_snapshot_id: str | None = None
     shippable_plan: ShippablePlan | None = None
     demand_window: AnalyticsWindow | None = None
+    ozon_recommendation: object | None = None
+    ozon_recommendation_error: str | None = None

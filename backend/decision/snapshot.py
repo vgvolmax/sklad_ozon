@@ -79,6 +79,13 @@ def _total_safe_plan_qty(rows):
     return sum(row.safe_plan_qty for row in scope)
 
 
+def _total_ozon_recommendation(rows):
+    """An unknown recommendation is not a known zero in the total."""
+    if not rows or any(row.need.ozon_recommended_qty is None for row in rows):
+        return None
+    return sum(row.need.ozon_recommended_qty for row in rows)
+
+
 def _signal_status_codes(key, stockout_signals, distortion_signals):
     """Project already-computed signal identities into a decision-row status."""
     codes = set()
@@ -404,7 +411,7 @@ def assemble_snapshot(*, scenario, report_meta, input_statuses, demand_estimates
     with localcontext(_CTX): profit=sum((x.objective_profit for x in calculated_allocations),Decimal("0"))
     total_safe_plan_qty = _total_safe_plan_qty(rows)
     summary=DecisionSummary(len({r.sku for r in rows}),len(rows),
-        sum(r.need.ozon_recommended_qty for r in rows if r.need.ozon_recommended_qty is not None),
+        _total_ozon_recommendation(rows),
         sum(r.need.calculated_need_qty for r in rows if r.need.calculated_need_qty is not None),
         total_safe_plan_qty,
         sum(r.calculated_plan_qty for r in rows if r.calculated_plan_qty is not None),profit,

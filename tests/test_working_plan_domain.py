@@ -8,6 +8,11 @@ from backend.domain.contracts import RestrictionCapacityKind, SourceMode
 from backend.project import WorkingQuantityOverride
 from backend.supply import AllocationObjective, PlacementZoneKind, ShippableLine, ShippablePlan
 from backend.working_plan import materialize_working_plan, validate_override_quantity
+from backend.ozon.adapters.local_sale import LocalSaleResult, RecommendedSupply
+from backend.domain.signals import SignalConfidence
+from backend.supply.contracts import PlacementZoneKind
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 
 def line(cluster='Moscow', system=40, pack=40, stock=100, *, sku='SKU', kind=RestrictionCapacityKind.UNKNOWN, cap=None):
@@ -33,6 +38,14 @@ def test_default_follows_system_and_id_is_content_addressed():
     assert first.working_plan_id.startswith('wp_')
     assert first.lines[0].working_qty == first.lines[0].system_qty == 40
     assert first.ready_count == 1
+
+
+def test_calculated_requested_quantity_precedes_whole_pack_and_stock():
+    raw=replace(line(system=40,pack=40,stock=40),analytical_qty=64,
+                rounded_target_qty=80,rounding_delta_qty=16)
+    current=materialize_working_plan(plan(raw),{})
+    assert current.lines[0].requested_qty==64
+    assert current.lines[0].working_qty==40
 
 
 def test_override_is_separate_and_changed_recommendation_survives():
@@ -165,3 +178,81 @@ def test_unknown_seller_stock_is_attention_not_zero_or_blocked():
     assert row.resolved_seller_stock is None
     assert row.status == 'ATTENTION'
     assert 'SELLER_STOCK_UNCONFIRMED' in row.reason_codes
+
+
+def test_ozon_choice_rounds_and_allocates_across_all_clusters_without_changing_system():
+    base = replace(plan(replace(line('A', system=0, pack=52, stock=52),
+                        allocation_priority_rank=None, placement_zone_kind=PlacementZoneKind.SINGLE),
+                replace(line('B', system=52, pack=52, stock=52),
+                        placement_zone_kind=PlacementZoneKind.SINGLE)),
+                   source_mode=SourceMode.API, source_snapshot_id='source')
+    signal = LocalSaleResult((RecommendedSupply('SKU', 'A', 16),),
+        datetime.now(timezone.utc).isoformat(), date(2026, 7, 1), date(2026, 9, 21),
+        56, 'EIGHT_WEEKS')
+    rows = (SimpleNamespace(sku='SKU',destination_cluster_id='A',
+             confidence=SignalConfidence.LOW,status_codes=(),
+             need=SimpleNamespace(ozon_recommended_qty=16)),)
+    economic = (SimpleNamespace(sku='SKU',placement_cluster_id='A',complete=True,
+                 profit_per_unit=Decimal('1')),)
+    current = materialize_working_plan(base, {}, recommendation=signal,
+        decision_rows=rows, unit_economics=economic, selected_sources={('SKU', 'A')})
+    a, b = current.lines
+    assert (a.system_qty, a.requested_qty, a.working_qty, a.selected_source) == (0, 16, 0, 'OZON')
+    assert b.working_qty == 52  # original higher-priority allocation is preserved
+    assert sum(x.working_qty for x in current.lines) <= 52
+
+
+def test_ozon_choice_16_with_pack_52_and_stock_52_produces_one_box():
+    base = replace(plan(line('A', system=0, pack=52, stock=52)),
+                   source_mode=SourceMode.API, source_snapshot_id='source')
+    signal = LocalSaleResult((RecommendedSupply('SKU', 'A', 16),),
+        datetime.now(timezone.utc).isoformat(), date(2026, 7, 1), date(2026, 9, 21),
+        56, 'EIGHT_WEEKS')
+    rows = (SimpleNamespace(sku='SKU',destination_cluster_id='A',
+             confidence=SignalConfidence.LOW,status_codes=(),
+             need=SimpleNamespace(ozon_recommended_qty=16)),)
+    economic = (SimpleNamespace(sku='SKU',placement_cluster_id='A',complete=True,
+                 profit_per_unit=Decimal('1')),)
+    result = materialize_working_plan(base, {}, recommendation=signal,
+        decision_rows=rows, unit_economics=economic, selected_sources={('SKU', 'A')})
+    assert result.lines[0].working_qty == 52
+    assert result.lines[0].requested_qty == 16
+    assert result.lines[0].system_qty == 0
+    assert result.working_plan_id != materialize_working_plan(base, {}).working_plan_id
+
+
+def test_expired_ozon_choice_stops_affecting_shipment_and_can_be_reset():
+    base = replace(plan(line('A', system=0, pack=52, stock=52)),
+                   source_mode=SourceMode.API, source_snapshot_id='source')
+    signal = LocalSaleResult((RecommendedSupply('SKU', 'A', 16),),
+        '2020-01-01T00:00:00+00:00', date(2026, 7, 1), date(2026, 9, 21),
+        56, 'EIGHT_WEEKS')
+    row = SimpleNamespace(sku='SKU',destination_cluster_id='A',
+        confidence=SignalConfidence.LOW,status_codes=(),
+        need=SimpleNamespace(ozon_recommended_qty=16))
+    current = materialize_working_plan(base, {}, recommendation=signal,
+        decision_rows=(row,), selected_sources={('SKU', 'A')})
+    assert current.lines[0].selected_source == 'CALCULATED'
+    assert current.lines[0].working_qty == 0
+    assert any(x.code == 'STALE_OZON_SELECTION' for x in current.diagnostics)
+
+
+def test_ozon_choice_preserves_other_manual_quantity_even_when_stock_is_short():
+    base = replace(plan(replace(line('A', system=0, pack=40, stock=80),
+                                allocation_priority_rank=None),
+                        line('B', system=40, pack=40, stock=80)),
+                   source_mode=SourceMode.API, source_snapshot_id='source')
+    signal = LocalSaleResult((RecommendedSupply('SKU', 'A', 80),),
+        datetime.now(timezone.utc).isoformat(), date(2026, 7, 1), date(2026, 9, 21),
+        56, 'EIGHT_WEEKS')
+    decision = SimpleNamespace(sku='SKU',destination_cluster_id='A',
+        confidence=SignalConfidence.LOW,status_codes=(),
+        need=SimpleNamespace(ozon_recommended_qty=80))
+    economics = (SimpleNamespace(sku='SKU',placement_cluster_id='A',
+                 complete=True,profit_per_unit=Decimal('1')),)
+    current = materialize_working_plan(base, {'SKU': {'B': override(120)}},
+        recommendation=signal, decision_rows=(decision,), unit_economics=economics,
+        selected_sources={('SKU', 'A')})
+    assert current.lines[1].working_qty == 120
+    assert current.lines[1].status == 'BLOCKED'
+    assert current.lines[0].working_qty == 0
