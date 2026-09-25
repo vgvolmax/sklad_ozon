@@ -55,7 +55,8 @@ from backend.ozon.adapters.local_sale import (LocalSaleIdentityError,
     fetch_recommended_supply, supply_period_for_days)
 from backend.ozon.contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import CONNECTION_TEST_PATH, LOCAL_SALE_ITEMS_CLUSTERS_PATH
-from backend.ozon.source_contracts import EndpointEvidence, OzonApiErrorEvidence
+from backend.ozon.source_contracts import (EndpointEvidence, OzonApiErrorEvidence,
+    OzonRecordQualityEvidence)
 from backend.ozon.diagnostics import diagnose_connection
 from backend.ozon.transport_compare import compare_transports
 from backend.ozon.vault import CredentialVault, OzonVaultError
@@ -221,15 +222,25 @@ def _attach_default_recommendation(snapshot, client, progress_callback=None):
         except OzonVaultError:
             diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_VAULT_UNAVAILABLE',
                                           'Подключение Ozon недоступно во время получения рекомендации.')
+    quality = None
+    if recommendation is not None and recommendation.excluded_record_count:
+        example = recommendation.unknown_cluster_ids[0]
+        diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_UNKNOWN_CLUSTER',
+            f'Кластер {example} отсутствует в текущем каталоге Ozon. '
+            f'Исключено {recommendation.excluded_record_count} записей; рекомендации '
+            f'для {len(recommendation.incomplete_skus)} затронутых SKU не используются.')
+        quality = OzonRecordQualityEvidence(recommendation.excluded_record_count,
+                                            recommendation.incomplete_skus)
     evidence = EndpointEvidence(name, started,
         len(recommendation.items) if recommendation is not None else 0,
-        recommendation is not None, (() if diagnostic is None else (diagnostic,)),
-        api_error)
+        recommendation is not None and quality is None,
+        (() if diagnostic is None else (diagnostic,)), api_error, quality)
     if progress_callback:
         progress_callback({'type':'progress','stage':name,
             'stage_index':len(SYNC_STAGES),'stage_count':len(SYNC_STAGES),
             'label':'Рекомендации Ozon · 56 дней',
-            'detail':'Получено' if recommendation is not None else 'Не удалось получить',
+            'detail':('Частично' if quality is not None else
+                      'Получено' if recommendation is not None else 'Не удалось получить'),
             'completed':True})
     return replace(snapshot, recommended_supply=recommendation,
         endpoint_evidence=tuple(x for x in snapshot.endpoint_evidence if x.name != name) +
@@ -1597,6 +1608,11 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     if source_inputs is not None:
         if source_inputs.ozon_recommendation_error:
             warnings.append(f"Рекомендация Ozon (локальность) недоступна: {source_inputs.ozon_recommendation_error}.")
+        if recommendation is not None and recommendation.excluded_record_count:
+            warnings.append(
+                f"Рекомендации Ozon частичны: кластер {recommendation.unknown_cluster_ids[0]} "
+                f"отсутствует в каталоге Ozon. Для {len(recommendation.incomplete_skus)} "
+                "затронутых SKU количество Ozon неизвестно.")
     elif availability.meta.recommendation_horizon_days is None and explicit_horizon is None:
         warnings.append("Горизонт рекомендации Ozon неизвестен; для сценария по умолчанию использовано 56 дней.")
     elif availability.meta.recommendation_horizon_days is None:

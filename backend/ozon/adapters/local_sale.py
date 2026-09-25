@@ -70,6 +70,9 @@ class LocalSaleResult:
     horizon_days: int
     supply_period: str
     endpoint: str = LOCAL_SALE_ITEMS_CLUSTERS_PATH
+    excluded_record_count: int = 0
+    incomplete_skus: tuple[str, ...] = ()
+    unknown_cluster_ids: tuple[int, ...] = ()
 
 
 def fetch_recommended_supply(client, skus, clusters, period_from: date,
@@ -89,6 +92,9 @@ def fetch_recommended_supply(client, skus, clusters, period_from: date,
         by_id[cluster_id] = cluster.name
     known = set(catalog_skus)
     values = {}
+    affected_skus = set()
+    unknown_cluster_ids = set()
+    record_count_by_sku = {}
     for start in range(0, len(catalog_skus), batch_size):
         batch = catalog_skus[start:start + batch_size]
         offset = 0
@@ -116,9 +122,14 @@ def fetch_recommended_supply(client, skus, clusters, period_from: date,
                     raise ValueError("invalid local-sale item")
                 sku = parse_sku(raw.get("sku"))
                 cluster_id = positive_int(raw.get("macrolocal_cluster_to_id"), "destination cluster")
-                if sku not in known or sku not in batch or cluster_id not in by_id:
+                if sku not in known or sku not in batch:
                     raise LocalSaleIdentityError(
                         _identity_disagreement(sku, cluster_id, known, batch, by_id))
+                record_count_by_sku[sku] = record_count_by_sku.get(sku, 0) + 1
+                if cluster_id not in by_id:
+                    affected_skus.add(sku)
+                    unknown_cluster_ids.add(cluster_id)
+                    continue
                 metrics = raw.get("metrics")
                 if not isinstance(metrics, dict):
                     raise ValueError("invalid local-sale metrics")
@@ -134,6 +145,11 @@ def fetch_recommended_supply(client, skus, clusters, period_from: date,
             if offset == total:
                 break
     return LocalSaleResult(tuple(RecommendedSupply(sku, cluster, qty)
-                                 for (sku, cluster), qty in sorted(values.items())),
+                                 for (sku, cluster), qty in sorted(values.items())
+                                 if sku not in affected_skus),
                            datetime.now(timezone.utc).isoformat(), period_from,
-                           period_to, horizon_days, period)
+                           period_to, horizon_days, period,
+                           excluded_record_count=sum(record_count_by_sku[sku]
+                                                     for sku in affected_skus),
+                           incomplete_skus=tuple(sorted(affected_skus)),
+                           unknown_cluster_ids=tuple(sorted(unknown_cluster_ids)[:20]))

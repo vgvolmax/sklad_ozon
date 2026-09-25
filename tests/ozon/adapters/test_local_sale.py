@@ -68,7 +68,6 @@ def test_missing_page_is_not_a_zero_recommendation():
 @pytest.mark.parametrize('sku,cluster_id,expected', [
     ('3', 9, 'SKU 3 отсутствует в текущем каталоге Ozon'),
     ('2', 9, 'SKU 2 есть в каталоге, но отсутствует в запрошенной партии'),
-    ('1', 11, 'Кластер 11 отсутствует в текущем каталоге Ozon'),
 ])
 def test_unexpected_identity_identifies_source_of_disagreement(sku, cluster_id, expected):
     class Client:
@@ -95,3 +94,42 @@ def test_unexpected_identity_never_exposes_non_numeric_sku_from_ozon():
     assert 'SKU нестандартного формата' in str(error.value)
     assert 'Кластер 11 отсутствует' in str(error.value)
     assert 'NEVER_SHOW' not in str(error.value)
+
+
+def test_unknown_destination_cluster_quarantines_its_sku_but_keeps_other_exact_values():
+    class Client:
+        def post_json(self, path, body, **kwargs):
+            if body['offset'] == 0:
+                return {'items': [
+                    {'sku': '1', 'macrolocal_cluster_to_id': 9,
+                     'metrics': {'recommended_supply': 5}},
+                    {'sku': '1', 'macrolocal_cluster_to_id': 4042,
+                     'metrics': {'recommended_supply': 16}},
+                ], 'total': 4}
+            return {'items': [
+                {'sku': '2', 'macrolocal_cluster_to_id': 10,
+                 'metrics': {'recommended_supply': 0}},
+                {'sku': '1', 'macrolocal_cluster_to_id': 10,
+                 'metrics': {'recommended_supply': 7}},
+            ], 'total': 4}
+
+    result = fetch_recommended_supply(Client(), ('1', '2'),
+        (Cluster(9, 'Москва'), Cluster(10, 'Казань')),
+        date(2026, 7, 1), date(2026, 9, 1), 56, limit=2)
+    assert [(x.sku, x.cluster_id, x.quantity) for x in result.items] == [('2', 'Казань', 0)]
+    assert result.excluded_record_count == 3
+    assert result.incomplete_skus == ('1',)
+    assert result.unknown_cluster_ids == (4042,)
+
+
+def test_only_unknown_cluster_is_partial_evidence_not_a_known_zero():
+    class Client:
+        def post_json(self, path, body, **kwargs):
+            return {'items': [{'sku': '1', 'macrolocal_cluster_to_id': 4042,
+                               'metrics': {'recommended_supply': 6}}], 'total': 1}
+
+    result = fetch_recommended_supply(Client(), ('1',), (Cluster(9, 'Москва'),),
+        date(2026, 7, 1), date(2026, 9, 1), 56)
+    assert result.items == ()
+    assert result.excluded_record_count == 1
+    assert result.incomplete_skus == ('1',)

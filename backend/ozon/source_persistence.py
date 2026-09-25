@@ -176,9 +176,21 @@ def _recommended_supply(value):
     period = _required(item, "supply_period", str)
     if horizon != 56 or period != "EIGHT_WEEKS" or start > end:
         raise ValueError("invalid recommendation frequency")
+    excluded = item.get("excluded_record_count", 0)
+    affected = item.get("incomplete_skus", [])
+    unknown_ids = item.get("unknown_cluster_ids", [])
+    if (type(excluded) is not int or excluded < 0 or not isinstance(affected, list)
+            or not all(isinstance(sku, str) and sku for sku in affected)
+            or not isinstance(unknown_ids, list)
+            or not all(type(cluster_id) is int and cluster_id > 0 for cluster_id in unknown_ids)
+            or (excluded == 0 and (affected or unknown_ids))
+            or (excluded > 0 and (not affected or not unknown_ids))
+            or any(row.sku in affected for row in items)):
+        raise ValueError("invalid recommendation coverage")
     return LocalSaleResult(items, _required(item, "fetched_at_utc", str),
                            start, end, horizon, period,
-                           _required(item, "endpoint", str))
+                           _required(item, "endpoint", str), excluded,
+                           tuple(affected), tuple(unknown_ids))
 
 
 def _encode(value):

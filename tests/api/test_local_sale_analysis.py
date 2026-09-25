@@ -49,6 +49,26 @@ def test_api_analysis_reuses_56_day_recommendation_from_the_same_source_snapshot
     assert response.json()['snapshot']['decision_rows'][0]['need']['ozon_recommended_qty'] == 0
 
 
+def test_partial_cached_ozon_recommendation_keeps_affected_sku_unknown(monkeypatch):
+    source = _api_parity_fixture()
+    cached = LocalSaleResult((), datetime.now(timezone.utc).isoformat(),
+        source.history_from, source.history_to, 56, 'EIGHT_WEEKS',
+        excluded_record_count=1, incomplete_skus=('SKU-1',), unknown_cluster_ids=(4042,))
+    source = replace(source, recommended_supply=cached)
+    api.OZON_SOURCE_STORE.put(source)
+    monkeypatch.setattr(api, '_fetch_ozon_recommendation', lambda *_:
+                        (_ for _ in ()).throw(AssertionError('duplicate request')))
+    files = _parity_files()
+    response = CLIENT.post('/api/analysis', files={k: files[k] for k in
+        ('tariffs_file', 'product_economics_file')}, data=_analysis_data(
+        source_mode='api', source_snapshot_id=source.source_snapshot_id))
+    assert response.status_code == 200, response.text
+    snapshot = response.json()['snapshot']
+    assert snapshot['decision_rows'][0]['need']['ozon_recommended_qty'] is None
+    assert any('4042' in warning and 'частич' in warning.lower()
+               for warning in snapshot['freshness_warnings'])
+
+
 def test_unsupported_horizon_never_reuses_another_period(monkeypatch):
     source = _api_parity_fixture()
     api.OZON_SOURCE_STORE.put(source)

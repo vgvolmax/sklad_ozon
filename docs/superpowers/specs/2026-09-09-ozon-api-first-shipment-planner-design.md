@@ -95,6 +95,13 @@ scenario days: 7/14/28/56 map to `ONE_WEEK`/`TWO_WEEKS`/`FOUR_WEEKS`/`EIGHT_WEEK
 Other horizons keep the Calculated Plan, with Ozon selection unavailable.
 This recommendation is a source quantity before seller stock, capacity and pack
 rules. It must not be discounted a second time for FBO stock or inbound.
+When Ozon returns an exact current SKU with a destination cluster ID absent
+from the current `/v2/cluster/list` catalog, quarantine every recommendation
+row for that SKU. Count all its rows as excluded and leave its Ozon quantity
+unknown; do not infer a cluster from its numeric ID or map it by display name.
+Keep exact recommendations (including zero) for unaffected SKUs and report
+the source as partial with the excluded count and affected SKU identities.
+If no unaffected values remain, the source still has no usable recommendation.
 
 Calculated Need, Calculated Plan and the comparable Safe Plan remain untouched.
 The Working Plan starts with the existing shippable Calculated quantities. For

@@ -140,7 +140,7 @@ def test_incomplete_cluster_catalog_never_claims_complete_recommendations():
     assert api.capability_matrix(enriched)['ozon_comparison']['complete'] is False
 
 
-def test_unexpected_cluster_id_is_visible_in_source_status_without_accepting_recommendation():
+def test_unexpected_cluster_id_is_visible_in_source_status_without_inventing_recommendation():
     base = _api_parity_fixture()
     source = replace(base, clusters=(Cluster(9, 'Москва'),),
         endpoint_evidence=base.endpoint_evidence +
@@ -153,6 +153,31 @@ def test_unexpected_cluster_id_is_visible_in_source_status_without_accepting_rec
 
     enriched = api._attach_default_recommendation(source, Client())
     evidence = enriched.endpoint_evidence[-1]
-    assert enriched.recommended_supply is None
+    assert enriched.recommended_supply.items == ()
+    assert enriched.recommended_supply.incomplete_skus == ('SKU-1',)
     assert evidence.complete is False
+    assert evidence.record_quality.rejected_record_count == 1
     assert 'Кластер 11 отсутствует' in evidence.diagnostics[0].message
+
+
+def test_unknown_cluster_marks_source_partial_and_keeps_unaffected_exact_sku(monkeypatch):
+    base = _api_parity_fixture()
+    source = replace(base, clusters=(Cluster(9, 'Москва'),),
+        endpoint_evidence=base.endpoint_evidence +
+        (EndpointEvidence('clusters', base.synced_at_utc, 1, True),))
+    monkeypatch.setattr(api, 'fetch_recommended_supply', lambda *_args:
+        LocalSaleResult((RecommendedSupply('SKU-1', 'Москва', 0),),
+            datetime.now(timezone.utc).isoformat(), source.history_from,
+            source.history_to, 56, 'EIGHT_WEEKS',
+            excluded_record_count=2, incomplete_skus=('SKU-2',),
+            unknown_cluster_ids=(4042,)))
+
+    enriched = api._attach_default_recommendation(source, object())
+    evidence = enriched.endpoint_evidence[-1]
+    assert enriched.recommended_supply.items[0].quantity == 0
+    assert not evidence.complete and evidence.record_count == 1
+    assert evidence.record_quality.rejected_record_count == 2
+    assert evidence.record_quality.incomplete_skus == ('SKU-2',)
+    assert '4042' in evidence.diagnostics[0].message
+    assert api.capability_matrix(enriched)['ozon_comparison']['complete'] is False
+    assert api._current_default_recommendation(enriched, 56).items[0].quantity == 0
