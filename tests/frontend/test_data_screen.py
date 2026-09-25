@@ -38,6 +38,26 @@ def test_permission_denied_exposes_safe_causal_evidence():
     assert technical["httpStatus"] == 403 and technical["requestId"] == "trace-123"
 
 
+def test_recommended_supply_56_days_is_visible_with_count_or_api_failure():
+    obtained = view(
+        {"ozon_comparison": {"complete": True}},
+        [{"name": "recommended_supply", "complete": True, "record_count": 12}],
+        "ozon_comparison",
+    )
+    assert obtained["label"] == "Рекомендации Ozon · 56 дней"
+    assert obtained["status"] == "available"
+    assert obtained["endpoints"][0]["accepted"] == 12
+    failed = view(
+        {"ozon_comparison": {"complete": False}},
+        [{"name": "recommended_supply", "complete": False, "api_error": {
+            "code": "OZON_PERMISSION_DENIED", "http_status": 403,
+            "request_id": "request-7"}}],
+        "ozon_comparison",
+    )
+    assert "Недостаточно прав" in failed["cause"]
+    assert failed["endpoints"][0]["technical"]["requestId"] == "request-7"
+
+
 def test_rejected_request_and_unavailable_have_distinct_causes():
     rejected = view(
         {"operational_allocation": {"complete": False}},

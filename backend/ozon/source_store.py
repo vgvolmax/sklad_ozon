@@ -9,6 +9,7 @@ def is_healthy_source_snapshot(snapshot: OzonSourceSnapshot) -> bool:
     """Classify a snapshot only for retention of a clean fallback."""
     return bool(snapshot.endpoint_evidence) and all(
         evidence.complete for evidence in snapshot.endpoint_evidence
+        if evidence.name != "recommended_supply"
     )
 
 

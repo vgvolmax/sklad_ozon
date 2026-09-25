@@ -52,7 +52,8 @@ from backend.pack_multiplicity import (apply_rtp_price_snapshot, build_effective
 from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
 from backend.ozon.adapters.local_sale import fetch_recommended_supply, supply_period_for_days
 from backend.ozon.contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
-from backend.ozon.endpoints import CONNECTION_TEST_PATH
+from backend.ozon.endpoints import CONNECTION_TEST_PATH, LOCAL_SALE_ITEMS_CLUSTERS_PATH
+from backend.ozon.source_contracts import EndpointEvidence, OzonApiErrorEvidence
 from backend.ozon.diagnostics import diagnose_connection
 from backend.ozon.transport_compare import compare_transports
 from backend.ozon.vault import CredentialVault, OzonVaultError
@@ -60,7 +61,7 @@ from backend.ozon.handoff import HandoffPointStore, handoff_supply_types, search
 from backend.ozon.source_store import OzonSourceSnapshotStore
 from backend.ozon.source_persistence import (delete_source_snapshot,
     load_source_snapshot_if_exists, save_source_snapshot_atomic)
-from backend.ozon.sync import (OzonRefreshReport, capability_matrix,
+from backend.ozon.sync import (OzonRefreshReport, SYNC_STAGES, capability_matrix,
                                refresh_ozon_source, source_refresh_regresses,
                                sync_ozon_source)
 _ORIGINAL_SYNC_OZON_SOURCE=sync_ozon_source
@@ -157,6 +158,54 @@ def source_status_view(snapshot):
         'endpoint_evidence':wire(snapshot.endpoint_evidence),
         'diagnostics':wire(snapshot.diagnostics),
     }
+
+
+def _attach_default_recommendation(snapshot, client, progress_callback=None):
+    """Capture optional 56-day advice with the exact SKU and cluster source identity."""
+    name = 'recommended_supply'
+    if progress_callback:
+        progress_callback({'type':'progress','stage':name,
+            'stage_index':len(SYNC_STAGES),'stage_count':len(SYNC_STAGES),
+            'label':'Рекомендации Ozon · 56 дней',
+            'detail':'Получаем точные значения по SKU и кластерам','completed':False})
+    started = datetime.now(timezone.utc).isoformat()
+    catalog = _complete_current_catalog(snapshot)
+    recommendation = None
+    api_error = None
+    diagnostic = None
+    if catalog is None or not snapshot.clusters:
+        diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_INPUTS_MISSING',
+                                      'Нет полного каталога SKU или кластеров для рекомендации Ozon.')
+    else:
+        try:
+            recommendation = fetch_recommended_supply(client, tuple(sorted(catalog)),
+                snapshot.clusters, snapshot.history_from, snapshot.history_to, 56)
+        except OzonClientError as exc:
+            diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_FAILED',
+                                          f'Ozon recommendation unavailable: {exc.code.value}.')
+            api_error = OzonApiErrorEvidence(exc.code.value, exc.endpoint, exc.status,
+                exc.vendor_code, exc.vendor_message, exc.request_id,
+                exc.transport_kind, exc.attempts, exc.elapsed_ms)
+        except (ValueError, TypeError):
+            diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_INVALID_RESPONSE',
+                                          'Формат рекомендации Ozon не соответствует ожидаемому.')
+        except OzonVaultError:
+            diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_VAULT_UNAVAILABLE',
+                                          'Подключение Ozon недоступно во время получения рекомендации.')
+    evidence = EndpointEvidence(name, started,
+        len(recommendation.items) if recommendation is not None else 0,
+        recommendation is not None, (() if diagnostic is None else (diagnostic,)),
+        api_error)
+    if progress_callback:
+        progress_callback({'type':'progress','stage':name,
+            'stage_index':len(SYNC_STAGES),'stage_count':len(SYNC_STAGES),
+            'label':'Рекомендации Ozon · 56 дней',
+            'detail':'Получено' if recommendation is not None else 'Не удалось получить',
+            'completed':True})
+    return replace(snapshot, recommended_supply=recommendation,
+        endpoint_evidence=tuple(x for x in snapshot.endpoint_evidence if x.name != name) +
+                          (evidence,),
+        diagnostics=snapshot.diagnostics + (() if diagnostic is None else (diagnostic,)))
 
 def _restore_persisted_source():
     try:
@@ -686,6 +735,16 @@ def _refresh_response(context, mode, progress_callback=None):
             OZON_CLIENT.bind_context(context),mode=mode,base_snapshot=base,
             credential_context_id=context.context_id,progress_callback=progress_callback)
 
+    if {item.name for item in candidate.endpoint_evidence}.issuperset({'products','clusters'}):
+        candidate=_attach_default_recommendation(
+            candidate,OZON_CLIENT.bind_context(context),progress_callback)
+        recommendation_state=next(x for x in candidate.endpoint_evidence
+                                  if x.name=='recommended_supply')
+        report=replace(report,
+            refreshed_endpoints=report.refreshed_endpoints+('recommended_supply',),
+            failed_endpoints=report.failed_endpoints+
+                (() if recommendation_state.complete else ('recommended_supply',)))
+
     def commit():
         active=base
         activated=base is None or not source_refresh_regresses(base,candidate)
@@ -1091,6 +1150,24 @@ def _fetch_ozon_recommendation(snapshot, horizon_days):
     except (OzonClientError, OzonVaultError, ValueError, TypeError) as exc:
         return None, f'OZON_LOCAL_SALE_{type(exc).__name__.upper()}'
 
+
+def _current_default_recommendation(snapshot, horizon_days):
+    """Reuse a recent exact default from the same source; older advice is refreshed."""
+    cached = snapshot.recommended_supply
+    if (cached is None or horizon_days != cached.horizon_days or
+            cached.horizon_days != 56 or cached.supply_period != 'EIGHT_WEEKS' or
+            cached.analytics_from != snapshot.history_from or
+            cached.analytics_to != snapshot.history_to):
+        return None
+    try:
+        fetched = datetime.fromisoformat(cached.fetched_at_utc)
+        if fetched.tzinfo is None:
+            return None
+        age = datetime.now(timezone.utc) - fetched.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    return cached if timedelta(0) <= age <= timedelta(hours=1) else None
+
 _IMPORTERS={"availability":import_availability,"restrictions":import_restrictions,"orders":import_orders,"tariffs":import_tariffs,"product-economics":import_product_economics}
 for _kind,_importer in _IMPORTERS.items():
     async def endpoint(request:Request, kind=_kind, importer=_importer):
@@ -1246,8 +1323,13 @@ async def prepare_analysis(request:Request, request_id="http"):
         for field in economic_files:
             try: raw.append((form[field],await read(form[field],field,request_id)))
             except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.',field)
-        recommendation, recommendation_error = await asyncio.to_thread(
-            _fetch_ozon_recommendation, snapshot, explicit_horizon or 56)
+        horizon = explicit_horizon or 56
+        cached = _current_default_recommendation(snapshot, horizon)
+        if cached is not None:
+            recommendation, recommendation_error = cached, None
+        else:
+            recommendation, recommendation_error = await asyncio.to_thread(
+                _fetch_ozon_recommendation, snapshot, horizon)
         source_inputs=replace(source_inputs,ozon_recommendation=recommendation,
                               ozon_recommendation_error=recommendation_error)
     else:

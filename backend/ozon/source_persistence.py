@@ -11,6 +11,7 @@ import tempfile
 from backend.domain.contracts import ImportDiagnostic, OrderLifecycle, OrderRecord
 from backend.ingestion.availability import AvailabilityRecord
 from backend.ozon.adapters.product_facts import ProductApiFacts
+from backend.ozon.adapters.local_sale import LocalSaleResult, RecommendedSupply
 from backend.ozon.source_contracts import (
     Cluster, EndpointEvidence, OzonApiErrorEvidence, OzonRecordQualityEvidence,
     OzonSourceSnapshot, PlacementZoneEvidence, SellerWarehouse,
@@ -159,6 +160,27 @@ def _facts(value):
     )
 
 
+def _recommended_supply(value):
+    item = _object(value)
+    items = _tuple(_required(item, "items", list), lambda raw: RecommendedSupply(
+        _required(raw, "sku", str), _required(raw, "cluster_id", str),
+        _required(raw, "quantity", int)))
+    if any(row.quantity < 0 for row in items):
+        raise ValueError("invalid recommended supply")
+    try:
+        start = date.fromisoformat(_required(item, "analytics_from", str))
+        end = date.fromisoformat(_required(item, "analytics_to", str))
+    except ValueError as exc:
+        raise ValueError("invalid recommendation period") from exc
+    horizon = _required(item, "horizon_days", int)
+    period = _required(item, "supply_period", str)
+    if horizon != 56 or period != "EIGHT_WEEKS" or start > end:
+        raise ValueError("invalid recommendation frequency")
+    return LocalSaleResult(items, _required(item, "fetched_at_utc", str),
+                           start, end, horizon, period,
+                           _required(item, "endpoint", str))
+
+
 def _encode(value):
     if isinstance(value, Decimal):
         return format(value, "f")
@@ -207,6 +229,8 @@ def source_snapshot_from_document(document: object) -> OzonSourceSnapshot:
         _optional(item, "credential_context_id", str),
         _tuple(_required(item, "product_facts", list), _facts),
         _warehouse_mapping(_required(item, "warehouse_to_macrolocal", list)),
+        (_recommended_supply(item["recommended_supply"])
+         if item.get("recommended_supply") is not None else None),
     )
 
 
