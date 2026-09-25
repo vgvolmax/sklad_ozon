@@ -43,12 +43,14 @@ from backend.ingestion.api_product_economics import merge_api_product_economics
 from backend.project import (EconomicsSettings, OptimizerThresholds, Project,
                              ProjectValidationError, WorkingQuantityOverride, load_project_if_exists,
                              save_project_atomic)
-from backend.working_plan import materialize_working_plan, validate_override_quantity
+from backend.working_plan import (materialize_working_plan, validate_override_quantity,
+                                  ozon_choice_reason)
 from backend.pack_multiplicity import (apply_rtp_price_snapshot, build_effective_pack_evidence, export_xlsx, parse_import_xlsx,
                                        pack_multiplicity_fingerprint,
                                        reset_override,
                                        resolve_pack_multiplicity, set_override)
 from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
+from backend.ozon.adapters.local_sale import fetch_recommended_supply, supply_period_for_days
 from backend.ozon.contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import CONNECTION_TEST_PATH
 from backend.ozon.diagnostics import diagnose_connection
@@ -68,7 +70,7 @@ from backend.shipment import (DEFAULT_MAX_CANDIDATES, build_candidate_result,
 from backend.shipment.store import AnalysisSnapshotStore, ShipmentPlanStore
 from backend.shipment.contracts import ShipmentPlan
 from backend.shipment.orchestration import build_shipment_plan, ShipmentOrchestrationError
-from backend.shipment.export import render_export, ShipmentExportError
+from backend.shipment.export import render_export, render_source_statement, ShipmentExportError
 from backend.shipment.wire import parse_shipment_scenario
 from backend.shipment.api_context import (ShipmentPreparationError,
                                           CREDENTIAL_CONTEXT_MESSAGE,
@@ -86,6 +88,7 @@ OZON_SOURCE_STORE=OzonSourceSnapshotStore()
 ANALYSIS_STORE=AnalysisSnapshotStore()
 DRAFT_VALIDATION_SERVICE=DraftValidationService(OZON_CLIENT)
 SHIPMENT_PLAN_STORE=ShipmentPlanStore()
+OZON_SOURCE_SELECTIONS: dict[str, set[tuple[str, str]]] = {}
 OZON_CONTEXT_COMMIT_LOCK=RLock()
 PROJECT_PERSISTENCE_LOCK=RLock()
 DECIMAL_NAMES=['acquiring_rate','advertising_rate','buyout_rate','fixed_fbo_fee','income_tax_rate','vat_rate','co_invest_rate','min_profit_per_unit','min_margin_rate','min_roi']
@@ -138,6 +141,7 @@ def invalidate_ozon_account_context_state():
     HANDOFF_STORE.clear()
     ANALYSIS_STORE.clear_api()
     SHIPMENT_PLAN_STORE.clear()
+    OZON_SOURCE_SELECTIONS.clear()
 
 def source_status_view(snapshot):
     """Small browser view; normalized row collections remain backend-owned."""
@@ -228,8 +232,7 @@ def require_current_working_plan(*, analysis_snapshot_id, shippable_plan_id,
         snapshot=_require_current_shippable_plan(
             analysis_snapshot_id,shippable_plan_id)
         project=load_project_if_exists(PROJECT_PATH)
-        working=materialize_working_plan(
-            snapshot.shippable_plan,project.working_quantity_overrides)
+        working=_materialize_working(snapshot, project)
         if working.working_plan_id!=working_plan_id:
             raise ShipmentPreparationError(
                 'WORKING_PLAN_CHANGED',WORKING_PLAN_CHANGED_MESSAGE,
@@ -275,6 +278,15 @@ def commit_analysis_snapshot_if_current(
                 raise ShipmentPreparationError(
                     'PACK_MULTIPLICITY_CHANGED_DURING_ANALYSIS',
                     PACK_MULTIPLICITY_CHANGED_MESSAGE,None,409)
+            if snapshot.source_mode is SourceMode.API:
+                latest_source=OZON_SOURCE_STORE.latest()
+                if (latest_source is None or
+                        latest_source.source_snapshot_id!=snapshot.source_snapshot_id):
+                    raise ShipmentPreparationError(
+                        'OZON_SOURCE_SNAPSHOT_STALE',
+                        'Источник Ozon обновился. Повторите расчёт на новых данных.',
+                        'source_snapshot_id',409)
+            OZON_SOURCE_SELECTIONS.clear()
             return ANALYSIS_STORE.put(snapshot)
 
     if require_credential_context:
@@ -323,9 +335,19 @@ def require_working_base_current(analysis_id, plan_id):
             'analysis_snapshot_id',409)
     return snapshot.shippable_plan
 
+def _materialize_working(snapshot, project):
+    return materialize_working_plan(
+        snapshot.shippable_plan, project.working_quantity_overrides,
+        recommendation=snapshot.ozon_recommendation,
+        decision_rows=snapshot.decision_rows,
+        unit_economics=snapshot.unit_economics,
+        selected_sources=OZON_SOURCE_SELECTIONS.get(snapshot.snapshot_id, set()),
+        thresholds=snapshot.optimizer_thresholds)
+
+
 def _working_response(plan, project):
-    return {'api_version':1,'working_plan':wire(materialize_working_plan(
-        plan,project.working_quantity_overrides))}
+    snapshot=ANALYSIS_STORE.get(plan.analysis_snapshot_id)
+    return {'api_version':1,'working_plan':wire(_materialize_working(snapshot,project))}
 
 def _working_base_error():
     return error(409,'WORKING_PLAN_BASE_CHANGED',
@@ -349,6 +371,84 @@ async def working_plan_get(request:Request):
     if plan is None:return _working_base_error()
     with PROJECT_PERSISTENCE_LOCK: project=load_project_if_exists(PROJECT_PATH)
     return _working_response(plan,project)
+
+
+def _select_ozon_source(body, *, bulk=False):
+    source=body.get('source')
+    if source not in {'OZON','CALCULATED'}:
+        return error(400,'INVALID_WORKING_SOURCE','Выберите нашу модель или Ozon.','source')
+    raw=(body.get('lines') if bulk else [{key:body.get(key) for key in
+          ('sku','destination_cluster_id')}])
+    if (not isinstance(raw,list) or len(raw)>1000 or
+            any(not isinstance(x,dict) or set(x)!={'sku','destination_cluster_id'} or
+                any(not isinstance(x[key],str) or not x[key] for key in x)
+                for x in raw)):
+        return error(400,'INVALID_WORKING_PLAN_LINES','Некорректный набор строк.','lines')
+    identities=[(x['sku'],x['destination_cluster_id']) for x in raw]
+    if len(identities)!=len(set(identities)):
+        return error(400,'DUPLICATE_WORKING_PLAN_LINES','Строки повторяются.','lines')
+    with PROJECT_PERSISTENCE_LOCK:
+        try:plan=require_working_base_current(body.get('analysis_snapshot_id'),body.get('shippable_plan_id'))
+        except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
+        snapshot=ANALYSIS_STORE.get(plan.analysis_snapshot_id)
+        decision_rows={(row.sku,row.destination_cluster_id):row for row in snapshot.decision_rows}
+        project=load_project_if_exists(PROJECT_PATH)
+        rejected={}; accepted=[]
+        for identity in identities:
+            line=_find_working_line(plan,identity)
+            if line is None:
+                rejected[identity]='WORKING_PLAN_LINE_NOT_FOUND'
+                continue
+            if source=='OZON':
+                reason=ozon_choice_reason(plan,line,decision_rows.get(identity),
+                    snapshot.ozon_recommendation,snapshot.unit_economics,snapshot.optimizer_thresholds)
+                if reason is not None:
+                    rejected[identity]=reason
+                    continue
+            accepted.append(identity)
+        if rejected and not bulk:
+            reason=next(iter(rejected.values()))
+            return error(400,reason,'Рекомендацию Ozon нельзя выбрать для этой строки: '+reason+'.','source')
+        selections=set(OZON_SOURCE_SELECTIONS.get(snapshot.snapshot_id,set()))
+        if source=='OZON': selections.update(accepted)
+        else: selections.difference_update(accepted)
+        overrides={sku:dict(rows) for sku,rows in project.working_quantity_overrides.items()}
+        for sku,cluster in accepted:
+            if source=='OZON':overrides.get(sku,{}).pop(cluster,None)
+        overrides={sku:rows for sku,rows in overrides.items() if rows}
+        project=replace(project,working_quantity_overrides=overrides)
+        # Validate all affected SKU in memory before committing the selection.
+        materialize_working_plan(plan,project.working_quantity_overrides,
+            recommendation=snapshot.ozon_recommendation,
+            decision_rows=snapshot.decision_rows,unit_economics=snapshot.unit_economics,
+            selected_sources=selections,thresholds=snapshot.optimizer_thresholds)
+        if source=='OZON' and accepted:
+            save_project_atomic(PROJECT_PATH,project)
+        OZON_SOURCE_SELECTIONS[snapshot.snapshot_id]=selections
+        SHIPMENT_PLAN_STORE.clear()
+        response=_working_response(plan,project)
+        response['selection_result']={'changed':len(accepted),'skipped':len(rejected),
+            'reasons': [{'sku':sku,'destination_cluster_id':cluster,'code':code}
+                        for (sku,cluster),code in rejected.items()]}
+        return response
+
+
+@router.post('/api/working-plan/source')
+async def working_plan_source(request:Request):
+    body=await json_object(request)
+    if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
+    if set(body)-{'analysis_snapshot_id','shippable_plan_id','sku','destination_cluster_id','source'}:
+        return error(400,'UNSUPPORTED_FIELD','Request field is not supported.',None)
+    return _select_ozon_source(body)
+
+
+@router.post('/api/working-plan/source/bulk')
+async def working_plan_source_bulk(request:Request):
+    body=await json_object(request)
+    if body is None:return error(400,'INVALID_REQUEST','Expected a JSON object.',None)
+    if set(body)-{'analysis_snapshot_id','shippable_plan_id','lines','source'}:
+        return error(400,'UNSUPPORTED_FIELD','Request field is not supported.',None)
+    return _select_ozon_source(body,bulk=True)
 
 @router.put('/api/working-plan/override')
 async def working_plan_override(request:Request):
@@ -380,6 +480,7 @@ async def working_plan_override(request:Request):
         overrides={sku:rows for sku,rows in overrides.items() if rows}
         project=replace(project,working_quantity_overrides=overrides)
         save_project_atomic(PROJECT_PATH,project)
+        OZON_SOURCE_SELECTIONS.get(plan.analysis_snapshot_id,set()).discard(identity)
         SHIPMENT_PLAN_STORE.clear()
     return _working_response(plan,project)
 
@@ -400,6 +501,7 @@ async def working_plan_reset(request:Request):
         overrides.get(identity[0],{}).pop(identity[1],None)
         overrides={sku:rows for sku,rows in overrides.items() if rows}
         project=replace(project,working_quantity_overrides=overrides);save_project_atomic(PROJECT_PATH,project)
+        OZON_SOURCE_SELECTIONS.get(plan.analysis_snapshot_id,set()).discard(identity)
         SHIPMENT_PLAN_STORE.clear()
     return _working_response(plan,project)
 
@@ -430,6 +532,7 @@ async def working_plan_bulk(request:Request):
             else:overrides.setdefault(identity[0],{})[identity[1]]=WorkingQuantityOverride(0,plan.shippable_plan_id,line.shippable_qty,line.pack_multiple,datetime.now(timezone(timedelta(hours=3))).isoformat())
         overrides={sku:rows for sku,rows in overrides.items() if rows}
         project=replace(project,working_quantity_overrides=overrides);save_project_atomic(PROJECT_PATH,project)
+        OZON_SOURCE_SELECTIONS.get(plan.analysis_snapshot_id,set()).difference_update(identities)
         SHIPMENT_PLAN_STORE.clear()
     return _working_response(plan,project)
 
@@ -444,6 +547,7 @@ async def working_plan_reset_all(request:Request):
         except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
         project=replace(load_project_if_exists(PROJECT_PATH),working_quantity_overrides={})
         save_project_atomic(PROJECT_PATH,project);SHIPMENT_PLAN_STORE.clear()
+        OZON_SOURCE_SELECTIONS.get(plan.analysis_snapshot_id,set()).clear()
     return _working_response(plan,project)
 
 @router.get('/api/ozon/credentials/status')
@@ -588,6 +692,10 @@ def _refresh_response(context, mode, progress_callback=None):
         if activated:
             save_source_snapshot_atomic(OZON_SOURCE_PATH,candidate)
             OZON_SOURCE_STORE.put(candidate)
+            if base is None or base.source_snapshot_id!=candidate.source_snapshot_id:
+                ANALYSIS_STORE.clear_api()
+                OZON_SOURCE_SELECTIONS.clear()
+                SHIPMENT_PLAN_STORE.clear()
             active=candidate
         authoritative_report=replace(report,activated=activated)
         result={'api_version':1,'source':source_status_view(active),
@@ -816,6 +924,7 @@ async def shipment_plan(request:Request):
     except ShipmentPreparationError as exc:return error(exc.http_status,exc.code,exc.message,exc.field)
     return {'api_version':1,'shipment_plan':wire(shipment)}
 
+@router.post('/api/shipment/export/statement')
 @router.post('/api/shipment/export')
 async def shipment_export(request:Request):
     body=await json_object(request)
@@ -828,7 +937,7 @@ async def shipment_export(request:Request):
     plan=SHIPMENT_PLAN_STORE.get(plan_id)
     if plan is None:return error(404,'SHIPMENT_PLAN_NOT_FOUND','Shipment plan was not found.','shipment_plan_id')
     with PROJECT_PERSISTENCE_LOCK:
-        try:require_current_working_plan(
+        try:_,_,working=require_current_working_plan(
             analysis_snapshot_id=plan.analysis_snapshot_id,
             shippable_plan_id=plan.shippable_plan_id,
             working_plan_id=plan.working_plan_id)
@@ -840,7 +949,8 @@ async def shipment_export(request:Request):
         if option is None:
             if any(x.candidate.candidate_id==option_id for x in plan.unavailable_options):return error(409,'EXPORT_OPTION_NOT_EXPORTABLE','Shipment option is not exportable.','option_id')
             return error(404,'SHIPMENT_OPTION_NOT_FOUND','Shipment option was not found.','option_id')
-        try:artifact=render_export(option,plan_id)
+        try:artifact=(render_source_statement(option,working,plan_id)
+                      if request.url.path.endswith('/statement') else render_export(option,plan_id))
         except ShipmentExportError as exc:return error(409,exc.code,'Shipment option cannot be exported.',None)
     return Response(artifact.content,media_type=artifact.media_type,headers={'Content-Disposition':f'attachment; filename="{artifact.filename}"'})
 
@@ -870,6 +980,8 @@ class PreparedAnalysisInputs:
     source_coverage: AnalysisSourceCoverage | None = None
     product_facts: tuple = ()
     current_catalog_skus: frozenset[str] | None = None
+    ozon_recommendation: object | None = None
+    ozon_recommendation_error: str | None = None
 
 
 def _complete_current_catalog(snapshot) -> frozenset[str] | None:
@@ -960,6 +1072,25 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
         current_catalog_skus,
     )
 
+
+def _fetch_ozon_recommendation(snapshot, horizon_days):
+    """Capture fresh horizon-specific evidence; API failures leave our plan intact."""
+    if supply_period_for_days(horizon_days) is None:
+        return None, 'UNSUPPORTED_OZON_PERIOD'
+    if not snapshot.clusters:
+        return None, 'OZON_CLUSTER_CATALOG_UNAVAILABLE'
+    try:
+        context = OZON_VAULT.capture_context()
+        result = fetch_recommended_supply(
+            OZON_CLIENT.bind_context(context),
+            tuple(sorted(_complete_current_catalog(snapshot) or ())),
+            snapshot.clusters, snapshot.history_from, snapshot.history_to, horizon_days)
+        if not OZON_VAULT.is_context_active(context):
+            return None, 'OZON_CREDENTIAL_CONTEXT_CHANGED'
+        return result, None
+    except (OzonClientError, OzonVaultError, ValueError, TypeError) as exc:
+        return None, f'OZON_LOCAL_SALE_{type(exc).__name__.upper()}'
+
 _IMPORTERS={"availability":import_availability,"restrictions":import_restrictions,"orders":import_orders,"tariffs":import_tariffs,"product-economics":import_product_economics}
 for _kind,_importer in _IMPORTERS.items():
     async def endpoint(request:Request, kind=_kind, importer=_importer):
@@ -1038,6 +1169,11 @@ async def prepare_analysis(request:Request, request_id="http"):
         if not source_snapshot_id:return error(400,'MISSING_SOURCE_SNAPSHOT_ID','API source snapshot identity is required.','source_snapshot_id')
         snapshot=OZON_SOURCE_STORE.get(source_snapshot_id)
         if snapshot is None:return error(400,'OZON_SOURCE_SNAPSHOT_NOT_FOUND','Ozon source snapshot was not found.','source_snapshot_id')
+        latest_source=OZON_SOURCE_STORE.latest()
+        if latest_source is None or latest_source.source_snapshot_id!=source_snapshot_id:
+            return error(409,'OZON_SOURCE_SNAPSHOT_STALE',
+                         'Источник Ozon обновился. Пересчитайте план по последнему снимку.',
+                         'source_snapshot_id')
         if _complete_current_catalog(snapshot) is None:
             return error(409,'CURRENT_OZON_CATALOG_INCOMPLETE',
                          'Не удалось подтвердить текущий ассортимент Ozon. Обновите данные Ozon и повторите расчёт.',
@@ -1110,6 +1246,10 @@ async def prepare_analysis(request:Request, request_id="http"):
         for field in economic_files:
             try: raw.append((form[field],await read(form[field],field,request_id)))
             except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.',field)
+        recommendation, recommendation_error = await asyncio.to_thread(
+            _fetch_ozon_recommendation, snapshot, explicit_horizon or 56)
+        source_inputs=replace(source_inputs,ozon_recommendation=recommendation,
+                              ozon_recommendation_error=recommendation_error)
     else:
         for field in files:
             try: raw.append((form[field],await read(form[field],field,request_id)))
@@ -1317,7 +1457,10 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         and diagnostic.severity == "error"
         for diagnostic in orders.diagnostics
     )
-    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=operational_availability,ozon_horizon_days=availability.meta.recommendation_horizon_days,source_mode=provenance[0],current_catalog_skus=current_catalog_skus,source_coverage=(source_inputs.source_coverage if source_inputs is not None else None),order_coverage=order_coverage,order_coverage_valid=order_coverage_valid,progress_callback=progress_callback,scenario_settings=scenario)
+    recommendation = source_inputs.ozon_recommendation if source_inputs is not None else None
+    ozon_horizon = (recommendation.horizon_days if recommendation is not None else
+                    None if source_inputs is not None else availability.meta.recommendation_horizon_days)
+    result=analyze(analysis_availability,analysis_restrictions,analysis_orders,analysis_tariffs,products.records,as_of=as_of,economics_settings=settings,optimizer_thresholds=thresholds,availability_fbs_authoritative=unitka is not None,operational_availability=operational_availability,ozon_horizon_days=ozon_horizon,source_mode=provenance[0],current_catalog_skus=current_catalog_skus,source_coverage=(source_inputs.source_coverage if source_inputs is not None else None),order_coverage=order_coverage,order_coverage_valid=order_coverage_valid,progress_callback=progress_callback,scenario_settings=scenario,ozon_recommendations=(() if recommendation is None else recommendation.items))
     progress("serialization")
     coverage={key:0 for key in ('complete','partial','none','no_profile')}
     for item in result.logistics:coverage[item.coverage_status.value]+=1
@@ -1340,7 +1483,10 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
             "Более поздние недели не считаются нулевыми. "
             "Расчёт потребности заблокирован до актуального покрытия."
         )
-    if availability.meta.recommendation_horizon_days is None and explicit_horizon is None:
+    if source_inputs is not None:
+        if source_inputs.ozon_recommendation_error:
+            warnings.append(f"Рекомендация Ozon (локальность) недоступна: {source_inputs.ozon_recommendation_error}.")
+    elif availability.meta.recommendation_horizon_days is None and explicit_horizon is None:
         warnings.append("Горизонт рекомендации Ozon неизвестен; для сценария по умолчанию использовано 56 дней.")
     elif availability.meta.recommendation_horizon_days is None:
         warnings.append("Горизонт рекомендации Ozon неизвестен; прямое сравнение горизонтов невозможно.")
@@ -1470,7 +1616,11 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         supply_facts=supply_facts,
         blocked_decision_rows=snapshot.decision_rows,
     )
-    snapshot=replace(snapshot,shippable_plan=shippable_plan)
+    snapshot=replace(snapshot,shippable_plan=shippable_plan,
+        ozon_recommendation=recommendation,
+        optimizer_thresholds=thresholds,
+        ozon_recommendation_error=(None if source_inputs is None else
+                                   source_inputs.ozon_recommendation_error))
     expected_context=provenance[2] if len(provenance)>2 else None
     commit_analysis_snapshot_if_current(
         snapshot,expected_pack_fingerprint=pack_fingerprint_at_start,

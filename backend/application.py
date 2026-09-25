@@ -104,7 +104,8 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
             order_coverage: ObservationCoverage | None = None,
             order_coverage_valid: bool = True,
             progress_callback=None,
-            scenario_settings: ScenarioSettings = _DEFAULT_SCENARIO) -> AnalysisResult:
+            scenario_settings: ScenarioSettings = _DEFAULT_SCENARIO,
+            ozon_recommendations=()) -> AnalysisResult:
     if not isinstance(scenario_settings, ScenarioSettings):
         raise TypeError("scenario_settings must be ScenarioSettings")
     if source_mode is SourceMode.API and current_catalog_skus is None:
@@ -151,10 +152,23 @@ def analyze(availability, restrictions, orders, tariffs, products, *, as_of: dat
         if key in rec_values and rec_values[key] != record.recommended_quantity:
             conflicts.add(key); rec_values.pop(key, None)
         elif key not in conflicts: rec_values[key] = record.recommended_quantity
+    if source_mode is SourceMode.API:
+        # API recommendations belong to this analysis horizon, never to a
+        # historic FBO snapshot or a report from another source mode.
+        rec_values.clear()
+        conflicts.clear()
+        for item in ozon_recommendations:
+            key = (item.sku, item.cluster_id)
+            if key in rec_values and rec_values[key] != item.quantity:
+                conflicts.add(key); rec_values.pop(key, None)
+            elif key not in conflicts:
+                rec_values[key] = item.quantity
     for sku, cluster in sorted(conflicts):
         diagnostics.append(AnalysisDiagnostic("error", "CONFLICTING_OZON_RECOMMENDATION", "Conflicting cluster-level recommendations.", sku, cluster))
     if not rec_values:
-        diagnostics.append(AnalysisDiagnostic("error", "MISSING_OZON_RECOMMENDATIONS", "Availability report contains no Ozon recommendations."))
+        diagnostics.append(AnalysisDiagnostic(
+            "warning" if source_mode is SourceMode.API else "error",
+            "MISSING_OZON_RECOMMENDATIONS", "Ozon recommendation evidence is unavailable."))
     mappings = {}
     for record in availability:
         mappings.setdefault(record.warehouse, set()).add(record.cluster)

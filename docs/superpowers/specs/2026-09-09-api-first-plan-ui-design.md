@@ -141,6 +141,17 @@ Ozon: нет сопоставимого API-сигнала
 
 Never substitute another metric.
 
+For API analysis with a supported horizon, display the provenance
+`Ozon: локальность`, analytics date interval, horizon and the corresponding
+shipment frequency together. Unknown advice shows a reason; known zero shows
+`0 шт.`. Alongside each row, show a manager action to select Ozon when the
+backend marks that row eligible, and a return action for an Ozon-selected row.
+Bulk choice operates on visible eligible rows and exposes changed/skipped counts.
+The calculated result stays available for comparison and the quantity passed
+to shipment comes only from the current Working Plan. A source change marks
+existing shipment checks and exports stale. Download manager provenance in a
+separate worksheet alongside the unchanged Ozon import template.
+
 ### 4.4 Selected-SKU cluster table
 
 Default target columns:

@@ -44,4 +44,14 @@
 .button-link,.button-like{display:inline-flex;align-items:center;min-height:2.5rem;padding:var(--space-sm);border:1px solid var(--color-border);color:inherit;text-decoration:none;background:var(--color-surface);cursor:pointer}.pack-table{min-width:50rem}.pack-table small{display:block;color:var(--color-text-muted)}.pack-source{font-weight:700}.pack-source-manual{color:var(--color-model)}.pack-source-import{color:var(--color-warning)}.pack-source-unitka{color:var(--color-success)}
 .working-summary{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;padding:.6rem .75rem;border:1px solid var(--color-border);border-radius:var(--radius);background:var(--color-surface-muted)}
 /* Working quantity editor */
+.plan-table .col-ozon{width:180px;text-align:left;white-space:normal;vertical-align:top}
+.ozon-source-control{display:grid;gap:.25rem;min-width:0}
+.ozon-source-control strong{font-variant-numeric:tabular-nums}
+.ozon-source-caption,.ozon-source-control small{font-size:.72rem;color:var(--color-text-muted);line-height:1.3}
+.ozon-source-control button{width:100%;height:auto;min-height:2.4rem;padding:.3rem .45rem;white-space:normal;text-align:left;font-size:.78rem;border-color:var(--color-ozon);color:var(--color-ozon)}
+.ozon-source-control button[aria-pressed=true]{background:var(--color-surface-muted);font-weight:700}
+.ozon-source-control button:disabled{border-color:var(--color-border);color:var(--color-text-muted)}
+.source-bulk-actions{display:flex;align-items:center;gap:var(--space-xs);flex-wrap:wrap;color:var(--color-text-muted);font-size:.85rem}
+.source-bulk-actions button{min-height:2.4rem}
+.source-action-result{margin:var(--space-sm) 0;color:var(--color-model)}
 .working-editor{display:grid;gap:.2rem;min-width:0;width:100%}.working-editor>div{display:flex;align-items:center;gap:.25rem;white-space:nowrap}.working-editor input{width:58px;min-width:0;text-align:center;padding:.3rem}.working-editor button{min-width:30px;padding:.3rem}.working-editor small{color:var(--color-text-muted);white-space:normal}.working-reset{font-size:.72rem;width:auto;white-space:normal}

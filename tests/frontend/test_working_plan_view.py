@@ -16,7 +16,7 @@ globalThis.fetch=(path,options)=>path==='/api/local-session'
   ? Promise.resolve({{ok:true,json:async()=>({{session_token:'test-session'}})}})
   : new Promise((resolve,reject)=>requests.push({{path,options,resolve,reject}}));
 let source=fs.readFileSync({json.dumps(str(app))},'utf8');
-source=source.replace("if(root.document)document.addEventListener('DOMContentLoaded',S.boot);", "S.__workingPlanTest={{mutateWorking,loadWorkingPlan,workingEditor,setState(value){{state=value;S.AppState=value;}},getState(){{return state;}}}};");
+source=source.replace("if(root.document)document.addEventListener('DOMContentLoaded',S.boot);", "S.__workingPlanTest={{mutateWorking,loadWorkingPlan,workingEditor,workingSourceControl,sourceBulkMarkup,ozonCoverageLabel,setState(value){{state=value;S.AppState=value;}},getState(){{return state;}}}};");
 vm.runInThisContext(source);
 globalThis.document={{querySelector:()=>null,querySelectorAll:()=>[]}};
 const base=SkladOzon.createInitialState();
@@ -38,6 +38,59 @@ def test_working_plan_ui_uses_one_server_authoritative_state():
     assert "workingPlan:{plan:null,busy:false,mutationBusy:false,error:null" in core
     assert 'workingPlan.plan?.lines' in app
     assert 'localStorage' not in app[app.index('async function loadWorkingPlan'):app.index('function sellerWarehouses')]
+
+
+def test_ozon_source_control_reflects_server_eligibility_and_choice():
+    result = run_working_plan_lifecycle("""
+const test=SkladOzon.__workingPlanTest;
+SkladOzon.escapeHtml=value=>String(value);
+const row={sku:'SKU',destination_cluster_id:'Москва',need:{ozon_recommended_qty:0}};
+let current=test.getState();
+test.setState({...current,snapshot:{source_mode:'api',scenario:{horizon_days:56}},
+  workingPlan:{...current.workingPlan,plan:{lines:[{sku:'SKU',destination_cluster_id:'Москва',
+    selected_source:'CALCULATED',ozon_eligible:true,ozon_unavailable_reason:null}]}}});
+const enabled=test.workingSourceControl(row);
+current=test.getState();
+test.setState({...current,workingPlan:{...current.workingPlan,plan:{lines:[{sku:'SKU',destination_cluster_id:'Москва',
+  selected_source:'OZON',ozon_eligible:false,ozon_unavailable_reason:'NO_STOCK'}]}}});
+const selected=test.workingSourceControl(row);
+console.log(JSON.stringify({enabled,selected}));
+""")
+    assert '0' in result['enabled']
+    assert 'data-working-source="OZON"' in result['enabled']
+    assert 'disabled' not in result['enabled']
+    assert 'data-working-source="CALCULATED"' in result['selected']
+
+
+def test_source_bulk_count_reflects_only_visible_rows():
+    result = run_working_plan_lifecycle("""
+const test=SkladOzon.__workingPlanTest;
+const rows=[{sku:'A',destination_cluster_id:'C'}, {sku:'B',destination_cluster_id:'C'}];
+const lines=[{sku:'A',destination_cluster_id:'C',status:'READY',ozon_eligible:true,selected_source:'OZON'},
+  {sku:'B',destination_cluster_id:'C',status:'NEEDS_ATTENTION',ozon_eligible:false,selected_source:'CALCULATED'}];
+const current=test.getState();
+test.setState({...current,snapshot:{source_mode:'api'},workingPlan:{...current.workingPlan,
+  statusFilter:'attention',plan:{lines}}});
+console.log(JSON.stringify({html:test.sourceBulkMarkup(rows)}));
+""")
+    assert 'Ozon доступен: 0/1; пропущено: 1' in result['html']
+    assert 'Вернуть нашу модель (0)' in result['html']
+
+
+def test_validated_option_offers_separate_manager_source_statement():
+    app=(ROOT / 'frontend/assets/js/app.js').read_text()
+    assert 'data-export-statement=' in app
+    assert "'/api/shipment/export/statement'" in app
+
+
+def test_incomplete_ozon_sum_does_not_look_like_known_zero():
+    result=run_working_plan_lifecycle("""
+const label=SkladOzon.__workingPlanTest.ozonCoverageLabel;
+console.log(JSON.stringify({partial:label([{need:{ozon_recommended_qty:0}},{need:{ozon_recommended_qty:null}}]),
+ complete:label([{need:{ozon_recommended_qty:0}},{need:{ozon_recommended_qty:0}}])}));
+""")
+    assert 'Неполные данные: 1/2' in result['partial']
+    assert '0 шт.' in result['complete']
 
 
 def test_working_plan_failure_and_legacy_shipment_guard_are_explicit():

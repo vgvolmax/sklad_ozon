@@ -134,6 +134,60 @@ def test_old_success_response_rejected_for_same_plan_id_new_generation():
     assert result == {"old": False, "current": True}
 
 
+def test_browser_preserves_server_zip_and_statement_filenames():
+    app = ROOT / 'frontend/assets/js/app.js'
+    core = ROOT / 'frontend/assets/js/core.js'
+    script = f"""
+const fs=require('fs'),vm=require('vm');
+require({json.dumps(str(core))});
+const S=SkladOzon,downloads=[];
+S.createLocalApiClient=f=>f;
+S.isShipmentPlanCurrent=()=>true;
+S.canAcceptShipmentExportResponse=()=>true;
+globalThis.fetch=async path=>({{ok:true,headers:{{get:()=>path.endsWith('/statement')
+  ? 'attachment; filename="sources.xlsx"' : 'attachment; filename="multi-cluster.zip"'}},
+  blob:async()=>({{type:path.endsWith('/statement')?'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'application/zip'}})}});
+globalThis.document={{querySelector:()=>null,createElement:()=>({{click(){{downloads.push(this.download);}},remove(){{}}}}),body:{{append(){{}}}}}};
+globalThis.URL={{createObjectURL:()=> 'blob:test',revokeObjectURL(){{}}}};
+let source=fs.readFileSync({json.dumps(str(app))},'utf8');
+source=source.replace("if(root.document)document.addEventListener('DOMContentLoaded',S.boot);",
+  "S.__exportTest={{exportShipmentOption,setState(value){{state=value;S.AppState=value;}}}};");
+vm.runInThisContext(source);
+S.__exportTest.setState({{...S.createInitialState(),shipmentView:{{...S.createInitialState().shipmentView,
+  planGeneration:1,plan:{{shipment_plan_id:'SHIP1'}},exportErrors:{{}}}}}});
+(async()=>{{await S.__exportTest.exportShipmentOption('OPTION1');
+  await S.__exportTest.exportShipmentOption('OPTION1','statement');
+  console.log(JSON.stringify(downloads));}})().catch(e=>{{console.error(e);process.exit(1);}});
+"""
+    result=json.loads(subprocess.check_output(['node','-e',script],text=True))
+    assert result == ['multi-cluster.zip', 'sources.xlsx']
+
+
+def test_statement_export_failure_is_visible_in_manifest():
+    app = ROOT / 'frontend/assets/js/app.js'
+    core = ROOT / 'frontend/assets/js/core.js'
+    components = ROOT / 'frontend/assets/js/components.js'
+    script = f"""
+const fs=require('fs'),vm=require('vm');
+require({json.dumps(str(core))});
+require({json.dumps(str(components))});
+const S=SkladOzon;
+S.isShipmentPlanCurrent=()=>true;
+S.OzonValidationStatus={{markup:()=>''}};
+let source=fs.readFileSync({json.dumps(str(app))},'utf8');
+source=source.replace("if(root.document)document.addEventListener('DOMContentLoaded',S.boot);",
+  "S.__exportTest={{manifestMarkup,setState(value){{state=value;S.AppState=value;}}}};");
+vm.runInThisContext(source);
+const initial=S.createInitialState();
+S.__exportTest.setState({{...initial,snapshot:{{analysis_as_of:'2026-09-24'}},
+  shipmentView:{{...initial.shipmentView,exportErrors:{{'OPTION1-source':'Ошибка ведомости'}}}}}});
+const html=S.__exportTest.manifestMarkup({{option_id:'OPTION1',outcome:{{validation:{{state:'accepted',accepted_assignments:[]}}}}}},0);
+console.log(JSON.stringify({{visible:html.includes('Ошибка ведомости')}}));
+"""
+    result=json.loads(subprocess.check_output(['node','-e',script],text=True))
+    assert result == {'visible':True}
+
+
 def test_plan_generation_starts_at_zero_and_survives_connection_reset():
     result = node(
         "(()=>{let s=SkladOzon.createInitialState();const initial=s.shipmentView.planGeneration;s={...s,snapshot:{source_mode:'api'},workingPlan:{...s.workingPlan,plan:{working_plan_id:'WP1',analysis_snapshot_id:'A1',shippable_plan_id:'SP1',working_plan_id:'WP1'}},ozonConnection:{...s.ozonConnection,credentialContextId:'old'},shipmentView:{...s.shipmentView,planGeneration:8,plan:{shipment_plan_id:'SHIP1'}}};s=SkladOzon.applyConnectionStatus(s,{credential_context_id:'new'});return {initial,plan:s.shipmentView.plan,generation:s.shipmentView.planGeneration};})()"
