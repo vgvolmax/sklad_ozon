@@ -154,6 +154,17 @@ API `source_as_of` is backend-owned and read-only in UI. API history depth is ba
 
 Source failures expose a correction-oriented cause when safe structured evidence exists. Scoped SKU incompleteness is distinguishable from global endpoint failure: globally available evidence with affected SKU identities is shown as partial, not fully available or globally failed.
 
+The `Данные` source-status list includes optional `Рекомендации Ozon · 56 дней`.
+It shows the count of exact SKU × cluster values (including known zero), an
+explicit successful-but-empty response, or the safe API/response failure cause.
+If Ozon returns an unknown cluster ID for a current SKU, the status identifies
+that ID, counts all rows of affected SKUs as excluded, and reports accepted
+values for unaffected SKUs as partial. Affected SKU recommendations stay
+unknown, including when no usable values remain.
+An error here does not label otherwise complete Ozon order and stock data as
+failed. The selected scenario's recommendation remains separately bound to
+the current analysis and may require a fresh request.
+
 A failed refresh keeps the previous successful source evidence separate from diagnostics for the failed attempt. The project cluster-mapping editor remains reachable from `Данные` in both API and FILES modes.
 
 ## Ozon connection/vault UX

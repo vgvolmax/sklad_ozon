@@ -95,6 +95,13 @@ scenario days: 7/14/28/56 map to `ONE_WEEK`/`TWO_WEEKS`/`FOUR_WEEKS`/`EIGHT_WEEK
 Other horizons keep the Calculated Plan, with Ozon selection unavailable.
 This recommendation is a source quantity before seller stock, capacity and pack
 rules. It must not be discounted a second time for FBO stock or inbound.
+When Ozon returns an exact current SKU with a destination cluster ID absent
+from the current `/v2/cluster/list` catalog, quarantine every recommendation
+row for that SKU. Count all its rows as excluded and leave its Ozon quantity
+unknown; do not infer a cluster from its numeric ID or map it by display name.
+Keep exact recommendations (including zero) for unaffected SKUs and report
+the source as partial with the excluded count and affected SKU identities.
+If no unaffected values remain, the source still has no usable recommendation.
 
 Calculated Need, Calculated Plan and the comparable Safe Plan remain untouched.
 The Working Plan starts with the existing shippable Calculated quantities. For
@@ -118,8 +125,15 @@ quantity and the limiting reason, including when the result is zero.
 Ozon advice is optional. Failure to obtain it never blocks the own-model
 analysis and cannot reuse an older horizon's advice. `0` is known advice;
 missing advice is unknown, and totals require full row coverage. Advice is
-an immutable per-analysis signal kept in process memory; source selections
-are scoped to that analysis and are never carried to another snapshot.
+fetched for the default 56-day horizon during source refresh and retained with
+that source snapshot. Data shows the number of exact SKU × cluster values and
+the endpoint failure category, HTTP status and safe request ID when available.
+This optional endpoint never makes otherwise complete stock and order evidence
+unhealthy, and its failure cannot veto a fresh source snapshot. An analysis
+may reuse its own source's exact 56-day signal for up to one hour, provided
+the analytics dates match; otherwise it refetches. Other supported horizons
+always fetch their own advice. Source selections remain scoped to an immutable
+analysis and are never carried to another snapshot.
 The separate manager provenance worksheet is distinct from the strict Ozon
 three-column import template. Before rollout to real sellers, verify beta
 access and compare actual SKU × cluster values with Ozon's own reports.

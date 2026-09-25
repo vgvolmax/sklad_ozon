@@ -8,6 +8,7 @@ import pytest
 from backend.domain.contracts import ImportDiagnostic, OrderLifecycle, OrderRecord
 from backend.ingestion.availability import AvailabilityRecord
 from backend.ozon.adapters.product_facts import ProductApiFacts
+from backend.ozon.adapters.local_sale import LocalSaleResult, RecommendedSupply
 from backend.ozon.source_contracts import (
     Cluster, EndpointEvidence, OzonApiErrorEvidence, OzonRecordQualityEvidence,
     OzonSourceSnapshot, PlacementZoneEvidence, SellerWarehouse,
@@ -47,6 +48,44 @@ def test_source_snapshot_round_trip_restores_domain_types(tmp_path):
     original = snapshot()
     save_source_snapshot_atomic(path, original)
     assert load_source_snapshot_if_exists(path) == original
+
+
+def test_source_snapshot_round_trip_preserves_exact_56_day_recommendations(tmp_path):
+    path = tmp_path / "source.json"
+    original = replace(snapshot(), recommended_supply=LocalSaleResult(
+        (RecommendedSupply("sku-1", "cluster", 0),),
+        "2026-09-22T08:00:00+00:00", date(2026, 6, 1), date(2026, 9, 22),
+        56, "EIGHT_WEEKS"))
+    save_source_snapshot_atomic(path, original)
+    assert load_source_snapshot_if_exists(path).recommended_supply == original.recommended_supply
+
+
+def test_partial_recommendation_quality_survives_restart(tmp_path):
+    path = tmp_path / 'source.json'
+    original = replace(snapshot(), recommended_supply=LocalSaleResult(
+        (RecommendedSupply('sku-2', 'cluster', 0),),
+        '2026-09-22T08:00:00+00:00', date(2026, 6, 1), date(2026, 9, 22),
+        56, 'EIGHT_WEEKS', excluded_record_count=1,
+        incomplete_skus=('sku-1',), unknown_cluster_ids=(4042,)))
+    save_source_snapshot_atomic(path, original)
+    assert load_source_snapshot_if_exists(path).recommended_supply == original.recommended_supply
+
+
+def test_partial_recommendation_cannot_restore_value_for_affected_sku():
+    document = source_snapshot_to_document(replace(snapshot(),
+        recommended_supply=LocalSaleResult(
+            (RecommendedSupply('sku-1', 'cluster', 2),),
+            '2026-09-22T08:00:00+00:00', date(2026, 6, 1), date(2026, 9, 22),
+            56, 'EIGHT_WEEKS', excluded_record_count=1,
+            incomplete_skus=('sku-1',), unknown_cluster_ids=(4042,))))
+    with pytest.raises(ValueError, match='invalid recommendation coverage'):
+        source_snapshot_from_document(document)
+
+
+def test_previous_source_snapshot_without_recommendation_still_loads():
+    document = source_snapshot_to_document(snapshot())
+    document["snapshot"].pop("recommended_supply", None)
+    assert source_snapshot_from_document(document).recommended_supply is None
 
 
 @pytest.mark.parametrize("mutation", [
