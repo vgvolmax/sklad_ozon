@@ -342,7 +342,7 @@ def _materialize_working(snapshot, project):
         decision_rows=snapshot.decision_rows,
         unit_economics=snapshot.unit_economics,
         selected_sources=OZON_SOURCE_SELECTIONS.get(snapshot.snapshot_id, set()),
-        thresholds=project.optimizer_thresholds)
+        thresholds=snapshot.optimizer_thresholds)
 
 
 def _working_response(plan, project):
@@ -401,7 +401,7 @@ def _select_ozon_source(body, *, bulk=False):
                 continue
             if source=='OZON':
                 reason=ozon_choice_reason(plan,line,decision_rows.get(identity),
-                    snapshot.ozon_recommendation,snapshot.unit_economics,project.optimizer_thresholds)
+                    snapshot.ozon_recommendation,snapshot.unit_economics,snapshot.optimizer_thresholds)
                 if reason is not None:
                     rejected[identity]=reason
                     continue
@@ -421,7 +421,7 @@ def _select_ozon_source(body, *, bulk=False):
         materialize_working_plan(plan,project.working_quantity_overrides,
             recommendation=snapshot.ozon_recommendation,
             decision_rows=snapshot.decision_rows,unit_economics=snapshot.unit_economics,
-            selected_sources=selections,thresholds=project.optimizer_thresholds)
+            selected_sources=selections,thresholds=snapshot.optimizer_thresholds)
         if source=='OZON' and accepted:
             save_project_atomic(PROJECT_PATH,project)
         OZON_SOURCE_SELECTIONS[snapshot.snapshot_id]=selections
@@ -1618,6 +1618,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     )
     snapshot=replace(snapshot,shippable_plan=shippable_plan,
         ozon_recommendation=recommendation,
+        optimizer_thresholds=thresholds,
         ozon_recommendation_error=(None if source_inputs is None else
                                    source_inputs.ozon_recommendation_error))
     expected_context=provenance[2] if len(provenance)>2 else None

@@ -197,8 +197,8 @@ def test_ozon_choice_rounds_and_allocates_across_all_clusters_without_changing_s
     current = materialize_working_plan(base, {}, recommendation=signal,
         decision_rows=rows, unit_economics=economic, selected_sources={('SKU', 'A')})
     a, b = current.lines
-    assert (a.system_qty, a.requested_qty, a.working_qty, a.selected_source) == (0, 16, 0, 'OZON')
-    assert b.working_qty == 52  # original higher-priority allocation is preserved
+    assert (a.system_qty, a.requested_qty, a.working_qty, a.selected_source) == (0, 16, 52, 'OZON')
+    assert b.working_qty == 0  # the manager's selected cluster receives the available box
     assert sum(x.working_qty for x in current.lines) <= 52
 
 

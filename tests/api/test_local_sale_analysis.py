@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import backend.api as api
 from backend.ozon.adapters.local_sale import LocalSaleResult, RecommendedSupply
@@ -46,3 +47,18 @@ def test_unsupported_horizon_never_reuses_another_period(monkeypatch):
     assert snapshot['ozon_recommendation_error'] == 'UNSUPPORTED_OZON_PERIOD'
     assert not any(item['code'] == 'MISSING_OZON_RECOMMENDATIONS' and
                    item['severity'] == 'error' for item in snapshot['diagnostics'])
+
+
+def test_analysis_stores_request_economic_thresholds_for_later_source_choice():
+    source = _api_parity_fixture()
+    api.OZON_SOURCE_STORE.put(source)
+    files = _parity_files()
+    response = CLIENT.post('/api/analysis', files={k: files[k] for k in
+        ('tariffs_file', 'product_economics_file')},
+        data=_analysis_data(source_mode='api', source_snapshot_id=source.source_snapshot_id,
+                            min_profit_per_unit='123', min_margin_rate='0.15', min_roi='0.30'))
+    assert response.status_code == 200, response.text
+    stored = api.ANALYSIS_STORE.get(response.json()['snapshot']['snapshot_id'])
+    assert stored.optimizer_thresholds.min_profit_per_unit == Decimal('123')
+    assert stored.optimizer_thresholds.min_margin_rate == Decimal('0.15')
+    assert stored.optimizer_thresholds.min_roi == Decimal('0.30')

@@ -182,13 +182,14 @@ def materialize_working_plan(
     selected_sources=set(selected_sources)-stale_selections
     requested = {key: (values[key] if key in selected_sources else line.shippable_qty)
                  for key, line in indexed.items()}
-    # Recompute all lines for each affected SKU, preserving original allocation
-    # priority and leaving unrelated SKUs and the calculated plan unchanged.
+    # Reserve manual quantities, then give the manager-selected destinations
+    # priority over the model's original rank for this SKU.
     allocated = {}
     selected_skus = {sku for sku, _ in selected_sources}
     for sku in selected_skus:
         lines = sorted(((key, line) for key, line in indexed.items() if key[0] == sku),
-                       key=lambda pair: (pair[1].allocation_priority_rank or 10**9, pair[0][1]))
+                       key=lambda pair: (pair[0] not in selected_sources,
+                                         pair[1].allocation_priority_rank or 10**9, pair[0][1]))
         committed = sum(flat[key].quantity for key, _ in lines if key in flat)
         remaining = max(0, (lines[0][1].resolved_seller_stock or 0)-committed)
         for key, line in lines:

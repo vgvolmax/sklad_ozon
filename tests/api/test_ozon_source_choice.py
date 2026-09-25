@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import backend.api as api
 import pytest
 from backend.project import load_project_if_exists
+from backend.project import OptimizerThresholds
 from backend.pack_multiplicity import pack_multiplicity_fingerprint
 from backend.shipment.api_context import ShipmentPreparationError
 from backend.domain.signals import SignalConfidence
@@ -68,6 +69,16 @@ def test_no_api_evidence_cannot_be_selected(tmp_path, monkeypatch):
     response = CLIENT.post('/api/working-plan/source', json={**identity, 'source':'OZON'})
     assert response.status_code == 400
     assert response.json()['error']['code'] == 'OZON_RECOMMENDATION_MISSING'
+
+
+def test_manager_choice_respects_thresholds_from_current_analysis(tmp_path, monkeypatch):
+    identity = _ready_choice(tmp_path, monkeypatch)
+    stored = api.ANALYSIS_STORE.get(identity['analysis_snapshot_id'])
+    api.ANALYSIS_STORE.put(replace(stored, optimizer_thresholds=OptimizerThresholds(
+        Decimal('101'), Decimal('0'), Decimal('0'))))
+    response = CLIENT.post('/api/working-plan/source', json={**identity, 'source':'OZON'})
+    assert response.status_code == 400, response.text
+    assert response.json()['error']['code'] == 'PRODUCT_ECONOMICS_BLOCKED'
 
 
 def test_bulk_selection_counts_skipped_rows_without_changing_them(tmp_path, monkeypatch):

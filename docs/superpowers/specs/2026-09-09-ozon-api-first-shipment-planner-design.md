@@ -107,6 +107,14 @@ source, exact upstream quantity, and effective shippable quantity are distinct
 fields. Existing shipment candidate, validation and export APIs require the
 current `working_plan_id`; switching source invalidates prior results.
 
+Existing manual quantities reserve seller stock first. Among automatic
+quantities, manager-selected Ozon destinations receive available whole packs
+before the remaining Calculated Plan destinations; ties within each group use
+the existing allocation rank. The choice is checked against the immutable
+economic thresholds from that analysis run, rather than mutable Project defaults.
+If stock or capacity limits the requested Ozon quantity, show the effective
+quantity and the limiting reason, including when the result is zero.
+
 Ozon advice is optional. Failure to obtain it never blocks the own-model
 analysis and cannot reuse an older horizon's advice. `0` is known advice;
 missing advice is unknown, and totals require full row coverage. Advice is
