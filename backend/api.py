@@ -50,7 +50,8 @@ from backend.pack_multiplicity import (apply_rtp_price_snapshot, build_effective
                                        reset_override,
                                        resolve_pack_multiplicity, set_override)
 from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
-from backend.ozon.adapters.local_sale import (LocalSaleResponseShapeError,
+from backend.ozon.adapters.local_sale import (LocalSaleIdentityError,
+    LocalSaleResponseShapeError,
     fetch_recommended_supply, supply_period_for_days)
 from backend.ozon.contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import CONNECTION_TEST_PATH, LOCAL_SALE_ITEMS_CLUSTERS_PATH
@@ -178,6 +179,8 @@ _SAFE_RECOMMENDATION_VALIDATION_ERRORS = {
 
 
 def _recommendation_validation_message(exc):
+    if isinstance(exc, LocalSaleIdentityError):
+        return str(exc)
     if isinstance(exc, LocalSaleResponseShapeError):
         return f'Структура ответа Ozon не совпала с ожидаемой. Типы полей: {exc}.'
     return _SAFE_RECOMMENDATION_VALIDATION_ERRORS.get(

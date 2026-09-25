@@ -16,6 +16,24 @@ class LocalSaleResponseShapeError(ValueError):
     """A response mismatch described only by JSON types, never by seller values."""
 
 
+class LocalSaleIdentityError(ValueError):
+    """A source identity mismatch with only bounded, safe identifiers."""
+
+
+def _identity_disagreement(sku: str, cluster_id: int, known: set[str],
+                           batch: tuple[str, ...], by_id: dict[int, str]) -> str:
+    sku_label = (f"SKU {sku}" if sku.isascii() and sku.isdecimal() and len(sku) <= 20
+                 else "SKU нестандартного формата")
+    details = []
+    if sku not in known:
+        details.append(f"{sku_label} отсутствует в текущем каталоге Ozon")
+    elif sku not in batch:
+        details.append(f"{sku_label} есть в каталоге, но отсутствует в запрошенной партии")
+    if cluster_id not in by_id:
+        details.append(f"Кластер {cluster_id} отсутствует в текущем каталоге Ozon")
+    return "; ".join(details) + "."
+
+
 def _json_kind(value) -> str:
     if value is _MISSING:
         return "отсутствует"
@@ -99,7 +117,8 @@ def fetch_recommended_supply(client, skus, clusters, period_from: date,
                 sku = parse_sku(raw.get("sku"))
                 cluster_id = positive_int(raw.get("macrolocal_cluster_to_id"), "destination cluster")
                 if sku not in known or sku not in batch or cluster_id not in by_id:
-                    raise ValueError("unexpected local-sale identity")
+                    raise LocalSaleIdentityError(
+                        _identity_disagreement(sku, cluster_id, known, batch, by_id))
                 metrics = raw.get("metrics")
                 if not isinstance(metrics, dict):
                     raise ValueError("invalid local-sale metrics")

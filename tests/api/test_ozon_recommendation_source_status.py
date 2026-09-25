@@ -138,3 +138,21 @@ def test_incomplete_cluster_catalog_never_claims_complete_recommendations():
     assert enriched.recommended_supply is None
     assert enriched.endpoint_evidence[-1].complete is False
     assert api.capability_matrix(enriched)['ozon_comparison']['complete'] is False
+
+
+def test_unexpected_cluster_id_is_visible_in_source_status_without_accepting_recommendation():
+    base = _api_parity_fixture()
+    source = replace(base, clusters=(Cluster(9, 'Москва'),),
+        endpoint_evidence=base.endpoint_evidence +
+        (EndpointEvidence('clusters', base.synced_at_utc, 1, True),))
+
+    class Client:
+        def post_json(self, path, body, **kwargs):
+            return {'items': [{'sku': 'SKU-1', 'macrolocal_cluster_to_id': 11,
+                               'metrics': {'recommended_supply': 8}}], 'total': 1}
+
+    enriched = api._attach_default_recommendation(source, Client())
+    evidence = enriched.endpoint_evidence[-1]
+    assert enriched.recommended_supply is None
+    assert evidence.complete is False
+    assert 'Кластер 11 отсутствует' in evidence.diagnostics[0].message
