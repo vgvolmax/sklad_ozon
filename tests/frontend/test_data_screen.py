@@ -58,6 +58,20 @@ def test_recommended_supply_56_days_is_visible_with_count_or_api_failure():
     assert failed["endpoints"][0]["technical"]["requestId"] == "request-7"
 
 
+def test_recommendation_response_shape_is_visible_without_raw_ozon_values():
+    row = view(
+        {"ozon_comparison": {"complete": False}},
+        [{"name": "recommended_supply", "complete": False, "record_count": 0,
+          "diagnostics": [{"severity": "warning",
+                           "code": "OZON_RECOMMENDED_SUPPLY_INVALID_RESPONSE",
+                           "message": "Структура ответа Ozon не совпала с ожидаемой. "
+                                      "Типы полей: items: отсутствует; total: целое число; data: список."}]}],
+        "ozon_comparison",
+    )
+    assert "items: отсутствует" in row["cause"]
+    assert "data: список" in row["endpoints"][0]["cause"]
+
+
 def test_rejected_request_and_unavailable_have_distinct_causes():
     rejected = view(
         {"operational_allocation": {"complete": False}},

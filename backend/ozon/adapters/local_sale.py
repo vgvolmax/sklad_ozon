@@ -9,6 +9,27 @@ from backend.ozon.endpoints import LOCAL_SALE_ITEMS_CLUSTERS_PATH
 
 READ = OzonRequestPolicy(retry_safe=True)
 SUPPLY_PERIODS = {7: "ONE_WEEK", 14: "TWO_WEEKS", 28: "FOUR_WEEKS", 56: "EIGHT_WEEKS"}
+_MISSING = object()
+
+
+class LocalSaleResponseShapeError(ValueError):
+    """A response mismatch described only by JSON types, never by seller values."""
+
+
+def _json_kind(value) -> str:
+    if value is _MISSING:
+        return "отсутствует"
+    if isinstance(value, list):
+        return "список"
+    if isinstance(value, dict):
+        return "объект"
+    if type(value) is int:
+        return "целое число"
+    if isinstance(value, str):
+        return "строка"
+    if value is None:
+        return "null"
+    return "другой тип"
 
 
 def supply_period_for_days(days: int) -> str | None:
@@ -62,10 +83,14 @@ def fetch_recommended_supply(client, skus, clusters, period_from: date,
             }, policy=READ)
             payload = response.get("result", response)
             if not isinstance(payload, dict):
-                raise ValueError("invalid local-sale response")
+                raise LocalSaleResponseShapeError(
+                    f"result: {_json_kind(payload)}")
             items, total = payload.get("items"), payload.get("total")
             if not isinstance(items, list) or type(total) is not int or total < 0:
-                raise ValueError("invalid local-sale pagination")
+                raise LocalSaleResponseShapeError(
+                    f"items: {_json_kind(payload.get('items', _MISSING))}; "
+                    f"total: {_json_kind(payload.get('total', _MISSING))}; "
+                    f"data: {_json_kind(payload.get('data', _MISSING))}")
             if offset + len(items) > total or len(items) > limit or not items and offset < total:
                 raise ValueError("incomplete local-sale page")
             for raw in items:

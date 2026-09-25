@@ -50,7 +50,8 @@ from backend.pack_multiplicity import (apply_rtp_price_snapshot, build_effective
                                        reset_override,
                                        resolve_pack_multiplicity, set_override)
 from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
-from backend.ozon.adapters.local_sale import fetch_recommended_supply, supply_period_for_days
+from backend.ozon.adapters.local_sale import (LocalSaleResponseShapeError,
+    fetch_recommended_supply, supply_period_for_days)
 from backend.ozon.contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import CONNECTION_TEST_PATH, LOCAL_SALE_ITEMS_CLUSTERS_PATH
 from backend.ozon.source_contracts import EndpointEvidence, OzonApiErrorEvidence
@@ -160,6 +161,29 @@ def source_status_view(snapshot):
     }
 
 
+_SAFE_RECOMMENDATION_VALIDATION_ERRORS = {
+    'invalid local-sale response': 'Ozon вернул результат в неожиданной форме.',
+    'invalid local-sale pagination': 'В ответе Ozon нет ожидаемых полей items и total.',
+    'incomplete local-sale page': 'Ozon вернул неполную страницу рекомендаций.',
+    'invalid local-sale item': 'Запись рекомендации Ozon имеет неожиданную структуру.',
+    'invalid SKU evidence': 'В ответе Ozon отсутствует корректный SKU.',
+    'invalid destination cluster': 'В ответе Ozon нет корректного ID кластера назначения.',
+    'unexpected local-sale identity': 'Ozon вернул SKU или кластер вне запроса.',
+    'invalid local-sale metrics': 'У записи Ozon нет корректного блока metrics.',
+    'invalid recommended_supply': 'Ozon вернул некорректное количество recommended_supply.',
+    'conflicting local-sale recommendations': 'Ozon вернул разные рекомендации для одной пары SKU и кластер.',
+    'ambiguous macrolocal cluster': 'В каталоге Ozon повторяются ID или названия кластеров.',
+    'invalid macrolocal cluster': 'В каталоге Ozon некорректный ID кластера.',
+}
+
+
+def _recommendation_validation_message(exc):
+    if isinstance(exc, LocalSaleResponseShapeError):
+        return f'Структура ответа Ozon не совпала с ожидаемой. Типы полей: {exc}.'
+    return _SAFE_RECOMMENDATION_VALIDATION_ERRORS.get(
+        str(exc), 'Формат рекомендации Ozon не соответствует ожидаемому.')
+
+
 def _attach_default_recommendation(snapshot, client, progress_callback=None):
     """Capture optional 56-day advice with the exact SKU and cluster source identity."""
     name = 'recommended_supply'
@@ -173,7 +197,9 @@ def _attach_default_recommendation(snapshot, client, progress_callback=None):
     recommendation = None
     api_error = None
     diagnostic = None
-    if catalog is None or not snapshot.clusters:
+    clusters_complete = any(item.name == 'clusters' and item.complete
+                            for item in snapshot.endpoint_evidence)
+    if catalog is None or not snapshot.clusters or not clusters_complete:
         diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_INPUTS_MISSING',
                                       'Нет полного каталога SKU или кластеров для рекомендации Ozon.')
     else:
@@ -186,9 +212,9 @@ def _attach_default_recommendation(snapshot, client, progress_callback=None):
             api_error = OzonApiErrorEvidence(exc.code.value, exc.endpoint, exc.status,
                 exc.vendor_code, exc.vendor_message, exc.request_id,
                 exc.transport_kind, exc.attempts, exc.elapsed_ms)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as exc:
             diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_INVALID_RESPONSE',
-                                          'Формат рекомендации Ozon не соответствует ожидаемому.')
+                                          _recommendation_validation_message(exc))
         except OzonVaultError:
             diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_VAULT_UNAVAILABLE',
                                           'Подключение Ozon недоступно во время получения рекомендации.')

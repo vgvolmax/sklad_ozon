@@ -93,10 +93,48 @@ def test_old_default_recommendation_is_refetched_for_new_analysis():
 
 def test_invalid_recommendation_response_has_distinct_status(monkeypatch):
     base = _api_parity_fixture()
-    source = replace(base, clusters=(Cluster(9, 'Москва'),))
+    source = replace(base, clusters=(Cluster(9, 'Москва'),),
+        endpoint_evidence=base.endpoint_evidence +
+        (EndpointEvidence('clusters', base.synced_at_utc, 1, True),))
     monkeypatch.setattr(api, 'fetch_recommended_supply', lambda *_args:
                         (_ for _ in ()).throw(ValueError('invalid local-sale response')))
     enriched = api._attach_default_recommendation(source, object())
     evidence = enriched.endpoint_evidence[-1]
     assert evidence.diagnostics[0].code == 'OZON_RECOMMENDED_SUPPLY_INVALID_RESPONSE'
     assert enriched.recommended_supply is None
+
+
+def test_unexpected_ozon_response_reports_safe_shape_without_values():
+    base = _api_parity_fixture()
+    source = replace(base, clusters=(Cluster(9, 'Москва'),),
+        endpoint_evidence=base.endpoint_evidence +
+        (EndpointEvidence('clusters', base.synced_at_utc, 1, True),))
+
+    class Client:
+        def post_json(self, path, body, **kwargs):
+            return {'result': {'data': [{'api_key': 'NEVER_SHOW_THIS'}], 'total': 1}}
+
+    enriched = api._attach_default_recommendation(source, Client())
+    evidence = enriched.endpoint_evidence[-1]
+    message = evidence.diagnostics[0].message
+    assert evidence.complete is False and enriched.recommended_supply is None
+    assert 'items: отсутствует' in message
+    assert 'total: целое число' in message
+    assert 'data: список' in message
+    assert 'NEVER_SHOW_THIS' not in repr(enriched)
+
+
+def test_incomplete_cluster_catalog_never_claims_complete_recommendations():
+    base = _api_parity_fixture()
+    source = replace(base, clusters=(Cluster(9, 'Москва'),),
+        endpoint_evidence=base.endpoint_evidence +
+        (EndpointEvidence('clusters', base.synced_at_utc, 1, False),))
+
+    class Client:
+        def post_json(self, path, body, **kwargs):
+            raise AssertionError('Do not request recommendation from an incomplete cluster catalog')
+
+    enriched = api._attach_default_recommendation(source, Client())
+    assert enriched.recommended_supply is None
+    assert enriched.endpoint_evidence[-1].complete is False
+    assert api.capability_matrix(enriched)['ozon_comparison']['complete'] is False
