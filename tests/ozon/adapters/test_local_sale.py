@@ -120,6 +120,8 @@ def test_unknown_destination_cluster_quarantines_its_sku_but_keeps_other_exact_v
     assert result.excluded_record_count == 3
     assert result.incomplete_skus == ('1',)
     assert result.unknown_cluster_ids == (4042,)
+    assert [(x.cluster_id, x.record_count, x.skus) for x in result.unknown_cluster_evidence] == [
+        (4042, 1, ('1',))]
 
 
 def test_only_unknown_cluster_is_partial_evidence_not_a_known_zero():
@@ -133,3 +135,19 @@ def test_only_unknown_cluster_is_partial_evidence_not_a_known_zero():
     assert result.items == ()
     assert result.excluded_record_count == 1
     assert result.incomplete_skus == ('1',)
+
+
+def test_unknown_cluster_summary_counts_each_id_and_its_affected_skus():
+    class Client:
+        def post_json(self, _path, _body, **_kwargs):
+            return {'items': [
+                {'sku': '1', 'macrolocal_cluster_to_id': 4042},
+                {'sku': '2', 'macrolocal_cluster_to_id': 4042},
+                {'sku': '2', 'macrolocal_cluster_to_id': 5001},
+            ], 'total': 3}
+
+    result = fetch_recommended_supply(Client(), ('1', '2'), (Cluster(9, 'Москва'),),
+        date(2026, 7, 1), date(2026, 9, 1), 56)
+    assert [(x.cluster_id, x.record_count, x.skus) for x in result.unknown_cluster_evidence] == [
+        (4042, 2, ('1', '2')), (5001, 1, ('2',))]
+    assert result.excluded_record_count == 3

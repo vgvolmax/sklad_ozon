@@ -53,6 +53,7 @@ from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
 from backend.ozon.adapters.local_sale import (LocalSaleIdentityError,
     LocalSaleResponseShapeError,
     fetch_recommended_supply, supply_period_for_days)
+from backend.ozon.adapters.catalog import fetch_macrolocal_clusters
 from backend.ozon.contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
 from backend.ozon.endpoints import CONNECTION_TEST_PATH, LOCAL_SALE_ITEMS_CLUSTERS_PATH
 from backend.ozon.source_contracts import (EndpointEvidence, OzonApiErrorEvidence,
@@ -188,6 +189,65 @@ def _recommendation_validation_message(exc):
         str(exc), 'Формат рекомендации Ozon не соответствует ожидаемому.')
 
 
+def _unknown_recommendation_cluster_diagnostic(snapshot, client, recommendation):
+    def sku_label(sku):
+        visible = ''.join(char if char.isprintable() else '?' for char in sku[:48])
+        return visible + ('…' if len(sku) > 48 else '')
+
+    def cluster_name_label(name):
+        visible = ''.join(char if char.isprintable() else '?' for char in name[:80])
+        return visible + ('… [сокращено]' if len(name) > 80 else '')
+
+    catalog = next(item for item in snapshot.endpoint_evidence if item.name == 'clusters')
+    ids = recommendation.unknown_cluster_ids
+    details = '; '.join(
+        f'Кластер {row.cluster_id}: строк {row.record_count}, SKU {len(row.skus)} '
+        f'({", ".join(sku_label(sku) for sku in row.skus[:3])}'
+        f'{"…" if len(row.skus) > 3 else ""})'
+        for row in recommendation.unknown_cluster_evidence[:3])
+    if not details:
+        details = f'Кластер {ids[0]}: затронуто {len(recommendation.incomplete_skus)} SKU'
+    if len(ids) > 3:
+        details += f'; ещё ID: {len(ids) - 3}'
+    base = (f'{details}. Исходный каталог /v2/cluster/list от {catalog.fetched_at_utc}, '
+            f'кластеров: {len(snapshot.clusters)}. '
+            f'Запрос рекомендаций: FBO, {recommendation.analytics_from.isoformat()}–'
+            f'{recommendation.analytics_to.isoformat()}, {recommendation.supply_period}. '
+            f'Исключено {recommendation.excluded_record_count} записей всех затронутых SKU. ')
+    try:
+        fresh = fetch_macrolocal_clusters(client)
+        names = tuple(cluster.name for cluster in fresh.clusters)
+        if (not fresh.clusters or len(set(names)) != len(names)
+                or any(item.severity == 'error' for item in fresh.diagnostics)):
+            raise ValueError('incomplete fresh cluster catalog')
+        checked_at = datetime.now(timezone.utc).isoformat()
+        fresh_by_id = {cluster.cluster_id: cluster.name for cluster in fresh.clusters}
+        found = tuple(cluster_id for cluster_id in ids if cluster_id in fresh_by_id)
+        absent = tuple(cluster_id for cluster_id in ids if cluster_id not in fresh_by_id)
+        if found:
+            code = 'OZON_RECOMMENDED_SUPPLY_STALE_CLUSTER_CATALOG'
+            found_names = ', '.join(f'{cluster_id} ({cluster_name_label(fresh_by_id[cluster_id])})'
+                                    for cluster_id in found)
+            conclusion = (f'При повторной проверке /v2/cluster/list от {checked_at} '
+                          f'(кластеров: {len(fresh.clusters)}) найдено: {found_names}. '
+                          'Обновите всё для согласованного снимка. ')
+            if absent:
+                conclusion += f'ID {", ".join(map(str, absent))} по-прежнему отсутствуют. '
+        else:
+            code = 'OZON_RECOMMENDED_SUPPLY_UNKNOWN_CLUSTER'
+            conclusion = (f'При повторной проверке /v2/cluster/list от {checked_at} '
+                          f'(кластеров: {len(fresh.clusters)}) ID '
+                          f'{", ".join(map(str, absent))} по-прежнему отсутствуют. ')
+    except (OzonClientError, OzonVaultError, ValueError, TypeError) as exc:
+        code = 'OZON_RECOMMENDED_SUPPLY_CLUSTER_RECHECK_FAILED'
+        conclusion = ('Повторная проверка /v2/cluster/list не удалась; '
+                      'отсутствие ID в свежем каталоге не подтверждено. ')
+        if isinstance(exc, OzonClientError):
+            conclusion += f'Код: {exc.code.value}. '
+    return ImportDiagnostic('warning', code, base + conclusion +
+                            'Рекомендации этих SKU не используются.')
+
+
 def _attach_default_recommendation(snapshot, client, progress_callback=None):
     """Capture optional 56-day advice with the exact SKU and cluster source identity."""
     name = 'recommended_supply'
@@ -224,11 +284,8 @@ def _attach_default_recommendation(snapshot, client, progress_callback=None):
                                           'Подключение Ozon недоступно во время получения рекомендации.')
     quality = None
     if recommendation is not None and recommendation.excluded_record_count:
-        example = recommendation.unknown_cluster_ids[0]
-        diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_UNKNOWN_CLUSTER',
-            f'Кластер {example} отсутствует в текущем каталоге Ozon. '
-            f'Исключено {recommendation.excluded_record_count} записей; рекомендации '
-            f'для {len(recommendation.incomplete_skus)} затронутых SKU не используются.')
+        diagnostic = _unknown_recommendation_cluster_diagnostic(snapshot, client,
+                                                                 recommendation)
         quality = OzonRecordQualityEvidence(recommendation.excluded_record_count,
                                             recommendation.incomplete_skus)
     evidence = EndpointEvidence(name, started,
@@ -1610,8 +1667,8 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
             warnings.append(f"Рекомендация Ozon (локальность) недоступна: {source_inputs.ozon_recommendation_error}.")
         if recommendation is not None and recommendation.excluded_record_count:
             warnings.append(
-                f"Рекомендации Ozon частичны: кластер {recommendation.unknown_cluster_ids[0]} "
-                f"отсутствует в каталоге Ozon. Для {len(recommendation.incomplete_skus)} "
+                f"Рекомендации Ozon частичны: ID кластера {recommendation.unknown_cluster_ids[0]} "
+                f"не сопоставлен с каталогом, использованным в расчёте. Для {len(recommendation.incomplete_skus)} "
                 "затронутых SKU количество Ozon неизвестно.")
     elif availability.meta.recommendation_horizon_days is None and explicit_horizon is None:
         warnings.append("Горизонт рекомендации Ozon неизвестен; для сценария по умолчанию использовано 56 дней.")

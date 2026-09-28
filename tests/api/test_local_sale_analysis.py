@@ -67,6 +67,8 @@ def test_partial_cached_ozon_recommendation_keeps_affected_sku_unknown(monkeypat
     assert snapshot['decision_rows'][0]['need']['ozon_recommended_qty'] is None
     assert any('4042' in warning and 'частич' in warning.lower()
                for warning in snapshot['freshness_warnings'])
+    assert not any('отсутствует в каталоге Ozon' in warning
+                   for warning in snapshot['freshness_warnings'])
 
 
 def test_unsupported_horizon_never_reuses_another_period(monkeypatch):

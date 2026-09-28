@@ -62,6 +62,13 @@ class RecommendedSupply:
 
 
 @dataclass(frozen=True, slots=True)
+class UnknownClusterEvidence:
+    cluster_id: int
+    record_count: int
+    skus: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class LocalSaleResult:
     items: tuple[RecommendedSupply, ...]
     fetched_at_utc: str
@@ -73,6 +80,7 @@ class LocalSaleResult:
     excluded_record_count: int = 0
     incomplete_skus: tuple[str, ...] = ()
     unknown_cluster_ids: tuple[int, ...] = ()
+    unknown_cluster_evidence: tuple[UnknownClusterEvidence, ...] = ()
 
 
 def fetch_recommended_supply(client, skus, clusters, period_from: date,
@@ -94,6 +102,8 @@ def fetch_recommended_supply(client, skus, clusters, period_from: date,
     values = {}
     affected_skus = set()
     unknown_cluster_ids = set()
+    unknown_cluster_counts = {}
+    unknown_cluster_skus = {}
     record_count_by_sku = {}
     for start in range(0, len(catalog_skus), batch_size):
         batch = catalog_skus[start:start + batch_size]
@@ -129,6 +139,8 @@ def fetch_recommended_supply(client, skus, clusters, period_from: date,
                 if cluster_id not in by_id:
                     affected_skus.add(sku)
                     unknown_cluster_ids.add(cluster_id)
+                    unknown_cluster_counts[cluster_id] = unknown_cluster_counts.get(cluster_id, 0) + 1
+                    unknown_cluster_skus.setdefault(cluster_id, set()).add(sku)
                     continue
                 metrics = raw.get("metrics")
                 if not isinstance(metrics, dict):
@@ -152,4 +164,9 @@ def fetch_recommended_supply(client, skus, clusters, period_from: date,
                            excluded_record_count=sum(record_count_by_sku[sku]
                                                      for sku in affected_skus),
                            incomplete_skus=tuple(sorted(affected_skus)),
-                           unknown_cluster_ids=tuple(sorted(unknown_cluster_ids)[:20]))
+                           unknown_cluster_ids=tuple(sorted(unknown_cluster_ids)[:20]),
+                           unknown_cluster_evidence=tuple(
+                               UnknownClusterEvidence(cluster_id,
+                                   unknown_cluster_counts[cluster_id],
+                                   tuple(sorted(unknown_cluster_skus[cluster_id])))
+                               for cluster_id in sorted(unknown_cluster_ids)[:20]))

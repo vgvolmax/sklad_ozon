@@ -102,6 +102,16 @@ unknown; do not infer a cluster from its numeric ID or map it by display name.
 Keep exact recommendations (including zero) for unaffected SKUs and report
 the source as partial with the excluded count and affected SKU identities.
 If no unaffected values remain, the source still has no usable recommendation.
+For an unknown ID, perform one fresh `/v2/cluster/list` lookup under the same
+credential context. Distinguish an ID newly present in the fresh catalog from
+one still absent; show the exact name only when returned by the fresh canonical
+catalog, with explicitly shortened display for unusually long names. If the
+lookup fails or the catalog is ambiguous (including duplicate names), state that
+the comparison is unconfirmed. Preserve the original source snapshot and
+quarantine until a consistent full refresh. The diagnostic includes the
+original catalog timestamp, both catalog counts when available, the local-sale
+request window/frequency, and bounded ID × affected SKU counts. It never
+assigns a name by guessing or promotes `/v1` warehouse mapping to canonical.
 
 Calculated Need, Calculated Plan and the comparable Safe Plan remain untouched.
 The Working Plan starts with the existing shippable Calculated quantities. For

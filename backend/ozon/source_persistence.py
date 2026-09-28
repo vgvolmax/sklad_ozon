@@ -11,7 +11,8 @@ import tempfile
 from backend.domain.contracts import ImportDiagnostic, OrderLifecycle, OrderRecord
 from backend.ingestion.availability import AvailabilityRecord
 from backend.ozon.adapters.product_facts import ProductApiFacts
-from backend.ozon.adapters.local_sale import LocalSaleResult, RecommendedSupply
+from backend.ozon.adapters.local_sale import (LocalSaleResult, RecommendedSupply,
+    UnknownClusterEvidence)
 from backend.ozon.source_contracts import (
     Cluster, EndpointEvidence, OzonApiErrorEvidence, OzonRecordQualityEvidence,
     OzonSourceSnapshot, PlacementZoneEvidence, SellerWarehouse,
@@ -160,6 +161,14 @@ def _facts(value):
     )
 
 
+def _unknown_cluster_evidence(value):
+    skus = _required(value, "skus", list)
+    if not skus or any(not isinstance(sku, str) or not sku for sku in skus):
+        raise ValueError("invalid recommendation coverage")
+    return UnknownClusterEvidence(_required(value, "cluster_id", int),
+                                  _required(value, "record_count", int), tuple(skus))
+
+
 def _recommended_supply(value):
     item = _object(value)
     items = _tuple(_required(item, "items", list), lambda raw: RecommendedSupply(
@@ -179,18 +188,25 @@ def _recommended_supply(value):
     excluded = item.get("excluded_record_count", 0)
     affected = item.get("incomplete_skus", [])
     unknown_ids = item.get("unknown_cluster_ids", [])
+    summary = _tuple(item.get("unknown_cluster_evidence", []), _unknown_cluster_evidence)
     if (type(excluded) is not int or excluded < 0 or not isinstance(affected, list)
             or not all(isinstance(sku, str) and sku for sku in affected)
             or not isinstance(unknown_ids, list)
             or not all(type(cluster_id) is int and cluster_id > 0 for cluster_id in unknown_ids)
             or (excluded == 0 and (affected or unknown_ids))
             or (excluded > 0 and (not affected or not unknown_ids))
-            or any(row.sku in affected for row in items)):
+            or any(row.sku in affected for row in items)
+            or (summary and (tuple(row.cluster_id for row in summary) != tuple(unknown_ids)
+                             or sum(row.record_count for row in summary) > excluded
+                             or any(row.cluster_id <= 0 or row.record_count < len(row.skus)
+                                    or not row.skus or len(row.skus) != len(set(row.skus))
+                                    or not set(row.skus).issubset(affected)
+                                    for row in summary)))):
         raise ValueError("invalid recommendation coverage")
     return LocalSaleResult(items, _required(item, "fetched_at_utc", str),
                            start, end, horizon, period,
                            _required(item, "endpoint", str), excluded,
-                           tuple(affected), tuple(unknown_ids))
+                           tuple(affected), tuple(unknown_ids), summary)
 
 
 def _encode(value):

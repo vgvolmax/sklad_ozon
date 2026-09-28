@@ -161,6 +161,9 @@ If Ozon returns an unknown cluster ID for a current SKU, the status identifies
 that ID, counts all rows of affected SKUs as excluded, and reports accepted
 values for unaffected SKUs as partial. Affected SKU recommendations stay
 unknown, including when no usable values remain.
+The detail distinguishes a cluster newly present in a fresh `/v2/cluster/list`
+check, still absent in that check, or unconfirmed because rechecking failed.
+The source remains partial in all three cases until a consistent refresh.
 An error here does not label otherwise complete Ozon order and stock data as
 failed. The selected scenario's recommendation remains separately bound to
 the current analysis and may require a fresh request.

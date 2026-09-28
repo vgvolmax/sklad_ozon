@@ -104,5 +104,10 @@ def fetch_clusters(client):
                               client.post_json(CLUSTERS_V1_PATH, V1_CLUSTER_REQUEST, policy=READ))
 
 
+def fetch_macrolocal_clusters(client):
+    """Recheck canonical IDs without making the legacy warehouse catalog a dependency."""
+    return normalize_clusters(client.post_json(CLUSTERS_V2_PATH, {}, policy=READ))
+
+
 def fetch_seller_warehouses(client):
     return normalize_seller_warehouses(client.post_json(SELLER_WAREHOUSES_PATH, {}, policy=READ))
