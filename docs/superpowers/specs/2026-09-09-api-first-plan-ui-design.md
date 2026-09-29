@@ -136,13 +136,13 @@ Ozon → Наша потребность → План
 If API mode lacks an exact comparable Ozon recommendation, show e.g.:
 
 ```text
-Ozon: нет сопоставимого API-сигнала
+Ozon: загрузите XLSX «Доступность товаров»
 ```
 
 Never substitute another metric.
 
 For API analysis with a supported horizon, display the provenance
-`Ozon: локальность`, analytics date interval, horizon and the corresponding
+`Ozon: XLSX`, report date interval, horizon and the corresponding
 shipment frequency together. Unknown advice shows a reason; known zero shows
 `0 шт.`. Alongside each row, show a manager action to select Ozon when the
 backend marks that row eligible, and a return action for an Ozon-selected row.

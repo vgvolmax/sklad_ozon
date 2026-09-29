@@ -87,7 +87,7 @@ or
 FILES
 ```
 
-Never silently mix sources by domain/SKU/cluster/missing-row fallback. API error never switches to FILES automatically.
+Never silently mix sources by domain/SKU/cluster/missing-row fallback. API error never switches to FILES automatically. The explicit 2026-09-29 exception is the recommendation-only `Доступность товаров` XLSX in API analysis; all operational and demand inputs remain API evidence, and the XLSX never fills missing stock/orders.
 
 API adapters normalize into existing PII-safe domain contracts; do not fork analytics by source mode.
 
