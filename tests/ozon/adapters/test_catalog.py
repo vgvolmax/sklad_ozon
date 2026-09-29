@@ -1,6 +1,7 @@
 import pytest
 
-from backend.ozon.adapters.catalog import V1_CLUSTER_REQUEST, fetch_clusters, normalize_clusters, normalize_seller_warehouses
+from backend.ozon.adapters.catalog import (V1_CLUSTER_REQUEST, fetch_clusters,
+    fetch_macrolocal_clusters, normalize_clusters, normalize_seller_warehouses)
 
 
 def v2(): return {"clusters":[{"macrolocal_cluster_id":10,"data":{"macrolocal_cluster":{"name":"Москва"}}}]}
@@ -19,6 +20,16 @@ def test_v1_request_has_required_cluster_type():
         def post_json(self,path,payload,**kwargs): self.calls.append((path,payload)); return v2() if "/v2/" in path else v1()
     client=Client(); result=fetch_clusters(client)
     assert result.warehouse_to_macrolocal=={501:10} and client.calls[1][1]==V1_CLUSTER_REQUEST
+
+
+def test_fresh_macro_catalog_recheck_uses_v2_only():
+    calls = []
+    class Client:
+        def post_json(self, path, payload, **kwargs):
+            calls.append((path, payload))
+            return v2()
+    assert fetch_macrolocal_clusters(Client()).clusters == normalize_clusters(v2()).clusters
+    assert calls == [('/v2/cluster/list', {})]
 
 
 def test_generic_local_id_is_not_canonical_macro_identity():

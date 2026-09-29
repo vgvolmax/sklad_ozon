@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from backend.ozon.adapters.local_sale import LocalSaleResult
+
 MOSCOW_BUSINESS_TZ = timezone(timedelta(hours=3))
 SOURCE_TIMEZONE = "UTC+03:00"
 
@@ -87,3 +89,4 @@ class OzonSourceSnapshot:
     credential_context_id: str | None = None
     product_facts: tuple[Any, ...] = ()
     warehouse_to_macrolocal: tuple[tuple[int, int], ...] = ()
+    recommended_supply: LocalSaleResult | None = None

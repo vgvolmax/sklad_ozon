@@ -39,6 +39,7 @@ SYNC_STAGES = (
     ("seller_stock", "Остаток продавца", "Получение остатков продавца"),
     ("inbound", "Поставки в пути", "Поиск заявок"),
     ("placement_zones", "Зоны размещения", "Получение зон размещения"),
+    ("recommended_supply", "Рекомендации Ozon · 56 дней", "Получение рекомендаций"),
 )
 CLUSTERS_TTL = timedelta(hours=24)
 SELLER_WAREHOUSES_TTL = timedelta(hours=24)
@@ -80,7 +81,7 @@ def capability_matrix(snapshot: OzonSourceSnapshot, *, include_inbound: bool = T
         "need_inbound": cap("inbound", "need", include_inbound),
         "operational_allocation": cap("seller_stock", "operational_allocation"),
         "product_parameters": cap(("products", "product_prices", "product_attributes"), "product_economics"),
-        "ozon_comparison": {"complete": False, "required": False, "affects": "safe_comparison"},
+        "ozon_comparison": cap("recommended_supply", "safe_comparison", False),
         "shipment_compatibility": cap("placement_zones", "shipment_compatibility", False),
     }
 
@@ -102,6 +103,7 @@ def source_refresh_regresses(base: OzonSourceSnapshot,
     return any(
         endpoint_quality(candidate_evidence.get(name)) < endpoint_quality(old)
         for name, old in _evidence_map(base).items()
+        if name != "recommended_supply"
     )
 
 

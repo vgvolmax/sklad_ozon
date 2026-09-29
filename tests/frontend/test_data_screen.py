@@ -38,6 +38,57 @@ def test_permission_denied_exposes_safe_causal_evidence():
     assert technical["httpStatus"] == 403 and technical["requestId"] == "trace-123"
 
 
+def test_recommended_supply_56_days_is_visible_with_count_or_api_failure():
+    obtained = view(
+        {"ozon_comparison": {"complete": True}},
+        [{"name": "recommended_supply", "complete": True, "record_count": 12}],
+        "ozon_comparison",
+    )
+    assert obtained["label"] == "Рекомендации Ozon · 56 дней"
+    assert obtained["status"] == "available"
+    assert obtained["endpoints"][0]["accepted"] == 12
+    failed = view(
+        {"ozon_comparison": {"complete": False}},
+        [{"name": "recommended_supply", "complete": False, "api_error": {
+            "code": "OZON_PERMISSION_DENIED", "http_status": 403,
+            "request_id": "request-7"}}],
+        "ozon_comparison",
+    )
+    assert "Недостаточно прав" in failed["cause"]
+    assert failed["endpoints"][0]["technical"]["requestId"] == "request-7"
+
+
+def test_recommendation_response_shape_is_visible_without_raw_ozon_values():
+    row = view(
+        {"ozon_comparison": {"complete": False}},
+        [{"name": "recommended_supply", "complete": False, "record_count": 0,
+          "diagnostics": [{"severity": "warning",
+                           "code": "OZON_RECOMMENDED_SUPPLY_INVALID_RESPONSE",
+                           "message": "Структура ответа Ozon не совпала с ожидаемой. "
+                                      "Типы полей: items: отсутствует; total: целое число; data: список."}]}],
+        "ozon_comparison",
+    )
+    assert "items: отсутствует" in row["cause"]
+    assert "data: список" in row["endpoints"][0]["cause"]
+
+
+def test_partial_recommendation_shows_accepted_and_excluded_records():
+    row = view(
+        {"ozon_comparison": {"complete": False}},
+        [{"name": "recommended_supply", "complete": False, "record_count": 12,
+          "record_quality": {"rejected_record_count": 2, "incomplete_skus": ["SKU-1"]},
+          "diagnostics": [{"severity": "warning",
+                           "code": "OZON_RECOMMENDED_SUPPLY_UNKNOWN_CLUSTER",
+                           "message": "Пропущены 2 записи с кластером 4042. "
+                                      "Рекомендации для затронутого SKU не используются."}]}],
+        "ozon_comparison",
+    )
+    assert row["status"] == "partial"
+    assert row["endpoints"][0]["accepted"] == 12
+    assert row["endpoints"][0]["rejected"] == 2
+    assert "4042" in row["cause"]
+
+
 def test_rejected_request_and_unavailable_have_distinct_causes():
     rejected = view(
         {"operational_allocation": {"complete": False}},
