@@ -154,19 +154,18 @@ API `source_as_of` is backend-owned and read-only in UI. API history depth is ba
 
 Source failures expose a correction-oriented cause when safe structured evidence exists. Scoped SKU incompleteness is distinguishable from global endpoint failure: globally available evidence with affected SKU identities is shown as partial, not fully available or globally failed.
 
-The `Данные` source-status list includes optional `Рекомендации Ozon · 56 дней`.
-It shows the count of exact SKU × cluster values (including known zero), an
-explicit successful-but-empty response, or the safe API/response failure cause.
-If Ozon returns an unknown cluster ID for a current SKU, the status identifies
-that ID, counts all rows of affected SKUs as excluded, and reports accepted
-values for unaffected SKUs as partial. Affected SKU recommendations stay
-unknown, including when no usable values remain.
-The detail distinguishes a cluster newly present in a fresh `/v2/cluster/list`
-check, still absent in that check, or unconfirmed because rechecking failed.
-The source remains partial in all three cases until a consistent refresh.
-An error here does not label otherwise complete Ozon order and stock data as
-failed. The selected scenario's recommendation remains separately bound to
-the current analysis and may require a fresh request.
+The API source-status list covers API data only. Recommendation is uploaded in
+`Данные` alongside Unitka as `Доступность товаров · рекомендации Ozon` for an
+API-backed calculation. This is the sole allowed recommendation-channel XLSX
+exception; the separate FILES mode remains the reserve analytical workflow.
+The form preserves both selected files during unrelated renders and identifies
+the current API snapshot date. The recommendation file is optional: without it,
+the calculated plan remains available and Ozon comparison is unknown. Invalid
+XLSX has field-level correction feedback; row exclusions and file provenance
+appear in the resulting analysis.
+A horizon or business-date mismatch keeps the own-model plan available and
+explains why the Ozon comparison is unavailable. No stale API recommendation
+status or remote recommendation request is shown during source refresh.
 
 A failed refresh keeps the previous successful source evidence separate from diagnostics for the failed attempt. The project cluster-mapping editor remains reachable from `Данные` in both API and FILES modes.
 
@@ -398,6 +397,6 @@ The user remains the final actor and completes the real supply manually in Ozon.
 - `−` and `+` move by exactly one known pack. Direct input commits on Enter and cancels on Escape; invalid input is never rounded or saved. Zero is an explicit valid decision.
 - Manual lines say `вручную`, automatic lines say `авто`, and a manual line offers `К рекомендации`, which deletes the override rather than copying the recommendation.
 - The compact summary exposes ready, attention, manual, and orphan counts. Product and cluster perspectives share one authoritative server response.
-- In API mode, the Ozon column identifies `recommended_supply` from local-sales analytics with source frequency and analytics dates. Its exact quantity, the manager-selected source, and the final working quantity remain distinct. Ozon may be selected only when backend evidence and quality gates allow it; return to the own model is always available on a selected line. The per-view bulk action names suitable and skipped rows and reports server results.
+- In API mode, the Ozon column identifies the exact `Рекомендуемая поставка` value from the uploaded Ozon XLSX with source horizon and report dates. Its exact quantity, the manager-selected source, and the final working quantity remain distinct. Ozon may be selected only when backend evidence and quality gates allow it; return to the own model is always available on a selected line. The per-view bulk action names suitable and skipped rows and reports server results.
 - After source selection, the backend changes `working_plan_id` and invalidates candidate, validation and export results. The manager can download a separate provenance worksheet; the Ozon import template keeps its existing three columns.
 - A changed recommendation preserves the manual decision and calls out the change. Stock/capacity conflicts preserve individually valid entries but block execution. Working Plan load failure never falls back to browser-calculated quantities.

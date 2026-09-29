@@ -32,6 +32,28 @@ def test_request_body_captures_all_controls_and_appends_only_supported_scenario(
     assert "optimization_objective" not in result
 
 
+def test_api_request_keeps_recommendation_xlsx_and_discards_manual_stock_reports():
+    result = node("""(()=>{class FakeFormData{constructor(form){this.entries={...form.snapshot};}set(key,value){this.entries[key]=value;}delete(key){delete this.entries[key];}}const form={snapshot:{availability_file:'stock.xlsx',orders_file:'orders.csv',recommendation_file:'advice.xlsx',unitka_file:'unitka.xlsx'}};return SkladOzon.buildAnalysisRequestBody(form,{horizonDays:56,includeInbound:true},{mode:'api',snapshotId:'source-1'},FakeFormData).entries;})()""")
+    assert result['recommendation_file'] == 'advice.xlsx'
+    assert result['source_snapshot_id'] == 'source-1'
+    assert 'availability_file' not in result and 'orders_file' not in result
+
+
+def test_api_form_requests_exact_xlsx_recommendations():
+    source = APP_JS.read_text()
+    assert 'name="recommendation_file" accept=".xlsx"' in source
+    assert 'name="recommendation_file" accept=".xlsx" required' not in source
+    assert "state.source.mode==='api'?['unitka_file']" in source
+    assert "filter(row=>row.key!=='ozon_comparison')" in source
+    assert 'function recommendationImportMarkup(snap)' in source
+    assert 'Строка ${S.escapeHtml(d.row)}' in source
+
+
+def test_empty_optional_upload_is_removed_from_browser_request_body():
+    result = node("""(()=>{class FakeFormData{constructor(){this.entries={recommendation_file:'empty-file',unitka_file:'unitka.xlsx'};}set(key,value){this.entries[key]=value;}delete(key){delete this.entries[key];}}const form={elements:{recommendation_file:{files:[]}}};return SkladOzon.buildAnalysisRequestBody(form,{horizonDays:56,includeInbound:true},{mode:'api',snapshotId:'source-1'},FakeFormData).entries;})()""")
+    assert 'recommendation_file' not in result
+
+
 def test_submit_captures_body_then_enters_busy_state_renders_and_fetches():
     source = APP_JS.read_text()
     start = source.index("async function runAnalysis")

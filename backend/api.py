@@ -31,6 +31,7 @@ from backend.ingestion.cluster_resolution import resolve_analysis_clusters
 from backend.domain.contracts import (AnalysisSourceCoverage, ImportResult,
                                       ReportMeta, ImportDiagnostic, SourceMode)
 from backend.ingestion.availability import import_availability
+from backend.ingestion.recommendations import import_recommendation_xlsx
 from backend.ingestion.restrictions import import_restrictions
 from backend.ingestion.orders import import_orders, scope_orders_to_coverage
 from backend.analytics._weeks import (ObservationCoverage,
@@ -50,14 +51,9 @@ from backend.pack_multiplicity import (apply_rtp_price_snapshot, build_effective
                                        reset_override,
                                        resolve_pack_multiplicity, set_override)
 from backend.ozon.client import OzonClient, OzonClientError, OzonRequestPolicy
-from backend.ozon.adapters.local_sale import (LocalSaleIdentityError,
-    LocalSaleResponseShapeError,
-    fetch_recommended_supply, supply_period_for_days)
-from backend.ozon.adapters.catalog import fetch_macrolocal_clusters
+from backend.ozon.adapters.local_sale import LocalSaleResult, supply_period_for_days
 from backend.ozon.contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
-from backend.ozon.endpoints import CONNECTION_TEST_PATH, LOCAL_SALE_ITEMS_CLUSTERS_PATH
-from backend.ozon.source_contracts import (EndpointEvidence, OzonApiErrorEvidence,
-    OzonRecordQualityEvidence)
+from backend.ozon.endpoints import CONNECTION_TEST_PATH
 from backend.ozon.diagnostics import diagnose_connection
 from backend.ozon.transport_compare import compare_transports
 from backend.ozon.vault import CredentialVault, OzonVaultError
@@ -163,146 +159,6 @@ def source_status_view(snapshot):
         'diagnostics':wire(snapshot.diagnostics),
     }
 
-
-_SAFE_RECOMMENDATION_VALIDATION_ERRORS = {
-    'invalid local-sale response': 'Ozon вернул результат в неожиданной форме.',
-    'invalid local-sale pagination': 'В ответе Ozon нет ожидаемых полей items и total.',
-    'incomplete local-sale page': 'Ozon вернул неполную страницу рекомендаций.',
-    'invalid local-sale item': 'Запись рекомендации Ozon имеет неожиданную структуру.',
-    'invalid SKU evidence': 'В ответе Ozon отсутствует корректный SKU.',
-    'invalid destination cluster': 'В ответе Ozon нет корректного ID кластера назначения.',
-    'unexpected local-sale identity': 'Ozon вернул SKU или кластер вне запроса.',
-    'invalid local-sale metrics': 'У записи Ozon нет корректного блока metrics.',
-    'invalid recommended_supply': 'Ozon вернул некорректное количество recommended_supply.',
-    'conflicting local-sale recommendations': 'Ozon вернул разные рекомендации для одной пары SKU и кластер.',
-    'ambiguous macrolocal cluster': 'В каталоге Ozon повторяются ID или названия кластеров.',
-    'invalid macrolocal cluster': 'В каталоге Ozon некорректный ID кластера.',
-}
-
-
-def _recommendation_validation_message(exc):
-    if isinstance(exc, LocalSaleIdentityError):
-        return str(exc)
-    if isinstance(exc, LocalSaleResponseShapeError):
-        return f'Структура ответа Ozon не совпала с ожидаемой. Типы полей: {exc}.'
-    return _SAFE_RECOMMENDATION_VALIDATION_ERRORS.get(
-        str(exc), 'Формат рекомендации Ozon не соответствует ожидаемому.')
-
-
-def _unknown_recommendation_cluster_diagnostic(snapshot, client, recommendation):
-    def sku_label(sku):
-        visible = ''.join(char if char.isprintable() else '?' for char in sku[:48])
-        return visible + ('…' if len(sku) > 48 else '')
-
-    def cluster_name_label(name):
-        visible = ''.join(char if char.isprintable() else '?' for char in name[:80])
-        return visible + ('… [сокращено]' if len(name) > 80 else '')
-
-    catalog = next(item for item in snapshot.endpoint_evidence if item.name == 'clusters')
-    ids = recommendation.unknown_cluster_ids
-    details = '; '.join(
-        f'Кластер {row.cluster_id}: строк {row.record_count}, SKU {len(row.skus)} '
-        f'({", ".join(sku_label(sku) for sku in row.skus[:3])}'
-        f'{"…" if len(row.skus) > 3 else ""})'
-        for row in recommendation.unknown_cluster_evidence[:3])
-    if not details:
-        details = f'Кластер {ids[0]}: затронуто {len(recommendation.incomplete_skus)} SKU'
-    if len(ids) > 3:
-        details += f'; ещё ID: {len(ids) - 3}'
-    base = (f'{details}. Исходный каталог /v2/cluster/list от {catalog.fetched_at_utc}, '
-            f'кластеров: {len(snapshot.clusters)}. '
-            f'Запрос рекомендаций: FBO, {recommendation.analytics_from.isoformat()}–'
-            f'{recommendation.analytics_to.isoformat()}, {recommendation.supply_period}. '
-            f'Исключено {recommendation.excluded_record_count} записей всех затронутых SKU. ')
-    try:
-        fresh = fetch_macrolocal_clusters(client)
-        names = tuple(cluster.name for cluster in fresh.clusters)
-        if (not fresh.clusters or len(set(names)) != len(names)
-                or any(item.severity == 'error' for item in fresh.diagnostics)):
-            raise ValueError('incomplete fresh cluster catalog')
-        checked_at = datetime.now(timezone.utc).isoformat()
-        fresh_by_id = {cluster.cluster_id: cluster.name for cluster in fresh.clusters}
-        found = tuple(cluster_id for cluster_id in ids if cluster_id in fresh_by_id)
-        absent = tuple(cluster_id for cluster_id in ids if cluster_id not in fresh_by_id)
-        if found:
-            code = 'OZON_RECOMMENDED_SUPPLY_STALE_CLUSTER_CATALOG'
-            found_names = ', '.join(f'{cluster_id} ({cluster_name_label(fresh_by_id[cluster_id])})'
-                                    for cluster_id in found)
-            conclusion = (f'При повторной проверке /v2/cluster/list от {checked_at} '
-                          f'(кластеров: {len(fresh.clusters)}) найдено: {found_names}. '
-                          'Обновите всё для согласованного снимка. ')
-            if absent:
-                conclusion += f'ID {", ".join(map(str, absent))} по-прежнему отсутствуют. '
-        else:
-            code = 'OZON_RECOMMENDED_SUPPLY_UNKNOWN_CLUSTER'
-            conclusion = (f'При повторной проверке /v2/cluster/list от {checked_at} '
-                          f'(кластеров: {len(fresh.clusters)}) ID '
-                          f'{", ".join(map(str, absent))} по-прежнему отсутствуют. ')
-    except (OzonClientError, OzonVaultError, ValueError, TypeError) as exc:
-        code = 'OZON_RECOMMENDED_SUPPLY_CLUSTER_RECHECK_FAILED'
-        conclusion = ('Повторная проверка /v2/cluster/list не удалась; '
-                      'отсутствие ID в свежем каталоге не подтверждено. ')
-        if isinstance(exc, OzonClientError):
-            conclusion += f'Код: {exc.code.value}. '
-    return ImportDiagnostic('warning', code, base + conclusion +
-                            'Рекомендации этих SKU не используются.')
-
-
-def _attach_default_recommendation(snapshot, client, progress_callback=None):
-    """Capture optional 56-day advice with the exact SKU and cluster source identity."""
-    name = 'recommended_supply'
-    if progress_callback:
-        progress_callback({'type':'progress','stage':name,
-            'stage_index':len(SYNC_STAGES),'stage_count':len(SYNC_STAGES),
-            'label':'Рекомендации Ozon · 56 дней',
-            'detail':'Получаем точные значения по SKU и кластерам','completed':False})
-    started = datetime.now(timezone.utc).isoformat()
-    catalog = _complete_current_catalog(snapshot)
-    recommendation = None
-    api_error = None
-    diagnostic = None
-    clusters_complete = any(item.name == 'clusters' and item.complete
-                            for item in snapshot.endpoint_evidence)
-    if catalog is None or not snapshot.clusters or not clusters_complete:
-        diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_INPUTS_MISSING',
-                                      'Нет полного каталога SKU или кластеров для рекомендации Ozon.')
-    else:
-        try:
-            recommendation = fetch_recommended_supply(client, tuple(sorted(catalog)),
-                snapshot.clusters, snapshot.history_from, snapshot.history_to, 56)
-        except OzonClientError as exc:
-            diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_FAILED',
-                                          f'Ozon recommendation unavailable: {exc.code.value}.')
-            api_error = OzonApiErrorEvidence(exc.code.value, exc.endpoint, exc.status,
-                exc.vendor_code, exc.vendor_message, exc.request_id,
-                exc.transport_kind, exc.attempts, exc.elapsed_ms)
-        except (ValueError, TypeError) as exc:
-            diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_INVALID_RESPONSE',
-                                          _recommendation_validation_message(exc))
-        except OzonVaultError:
-            diagnostic = ImportDiagnostic('warning', 'OZON_RECOMMENDED_SUPPLY_VAULT_UNAVAILABLE',
-                                          'Подключение Ozon недоступно во время получения рекомендации.')
-    quality = None
-    if recommendation is not None and recommendation.excluded_record_count:
-        diagnostic = _unknown_recommendation_cluster_diagnostic(snapshot, client,
-                                                                 recommendation)
-        quality = OzonRecordQualityEvidence(recommendation.excluded_record_count,
-                                            recommendation.incomplete_skus)
-    evidence = EndpointEvidence(name, started,
-        len(recommendation.items) if recommendation is not None else 0,
-        recommendation is not None and quality is None,
-        (() if diagnostic is None else (diagnostic,)), api_error, quality)
-    if progress_callback:
-        progress_callback({'type':'progress','stage':name,
-            'stage_index':len(SYNC_STAGES),'stage_count':len(SYNC_STAGES),
-            'label':'Рекомендации Ozon · 56 дней',
-            'detail':('Частично' if quality is not None else
-                      'Получено' if recommendation is not None else 'Не удалось получить'),
-            'completed':True})
-    return replace(snapshot, recommended_supply=recommendation,
-        endpoint_evidence=tuple(x for x in snapshot.endpoint_evidence if x.name != name) +
-                          (evidence,),
-        diagnostics=snapshot.diagnostics + (() if diagnostic is None else (diagnostic,)))
 
 def _restore_persisted_source():
     try:
@@ -832,15 +688,13 @@ def _refresh_response(context, mode, progress_callback=None):
             OZON_CLIENT.bind_context(context),mode=mode,base_snapshot=base,
             credential_context_id=context.context_id,progress_callback=progress_callback)
 
-    if {item.name for item in candidate.endpoint_evidence}.issuperset({'products','clusters'}):
-        candidate=_attach_default_recommendation(
-            candidate,OZON_CLIENT.bind_context(context),progress_callback)
-        recommendation_state=next(x for x in candidate.endpoint_evidence
-                                  if x.name=='recommended_supply')
-        report=replace(report,
-            refreshed_endpoints=report.refreshed_endpoints+('recommended_supply',),
-            failed_endpoints=report.failed_endpoints+
-                (() if recommendation_state.complete else ('recommended_supply',)))
+    # The recommendation now belongs to the analysis upload, not the API source.
+    # Old persisted snapshots can still contain the former endpoint evidence.
+    candidate=replace(candidate,recommended_supply=None,
+        endpoint_evidence=tuple(item for item in candidate.endpoint_evidence
+                                if item.name!='recommended_supply'),
+        diagnostics=tuple(item for item in candidate.diagnostics
+                          if not item.code.startswith('OZON_RECOMMENDED_SUPPLY_')))
 
     def commit():
         active=base
@@ -1138,6 +992,7 @@ class PreparedAnalysisInputs:
     current_catalog_skus: frozenset[str] | None = None
     ozon_recommendation: object | None = None
     ozon_recommendation_error: str | None = None
+    recommendation_import: ImportResult | None = None
 
 
 def _complete_current_catalog(snapshot) -> frozenset[str] | None:
@@ -1228,42 +1083,6 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
         current_catalog_skus,
     )
 
-
-def _fetch_ozon_recommendation(snapshot, horizon_days):
-    """Capture fresh horizon-specific evidence; API failures leave our plan intact."""
-    if supply_period_for_days(horizon_days) is None:
-        return None, 'UNSUPPORTED_OZON_PERIOD'
-    if not snapshot.clusters:
-        return None, 'OZON_CLUSTER_CATALOG_UNAVAILABLE'
-    try:
-        context = OZON_VAULT.capture_context()
-        result = fetch_recommended_supply(
-            OZON_CLIENT.bind_context(context),
-            tuple(sorted(_complete_current_catalog(snapshot) or ())),
-            snapshot.clusters, snapshot.history_from, snapshot.history_to, horizon_days)
-        if not OZON_VAULT.is_context_active(context):
-            return None, 'OZON_CREDENTIAL_CONTEXT_CHANGED'
-        return result, None
-    except (OzonClientError, OzonVaultError, ValueError, TypeError) as exc:
-        return None, f'OZON_LOCAL_SALE_{type(exc).__name__.upper()}'
-
-
-def _current_default_recommendation(snapshot, horizon_days):
-    """Reuse a recent exact default from the same source; older advice is refreshed."""
-    cached = snapshot.recommended_supply
-    if (cached is None or horizon_days != cached.horizon_days or
-            cached.horizon_days != 56 or cached.supply_period != 'EIGHT_WEEKS' or
-            cached.analytics_from != snapshot.history_from or
-            cached.analytics_to != snapshot.history_to):
-        return None
-    try:
-        fetched = datetime.fromisoformat(cached.fetched_at_utc)
-        if fetched.tzinfo is None:
-            return None
-        age = datetime.now(timezone.utc) - fetched.astimezone(timezone.utc)
-    except (TypeError, ValueError):
-        return None
-    return cached if timedelta(0) <= age <= timedelta(hours=1) else None
 
 _IMPORTERS={"availability":import_availability,"restrictions":import_restrictions,"orders":import_orders,"tariffs":import_tariffs,"product-economics":import_product_economics}
 for _kind,_importer in _IMPORTERS.items():
@@ -1421,14 +1240,53 @@ async def prepare_analysis(request:Request, request_id="http"):
             try: raw.append((form[field],await read(form[field],field,request_id)))
             except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.',field)
         horizon = explicit_horizon or 56
-        cached = _current_default_recommendation(snapshot, horizon)
-        if cached is not None:
-            recommendation, recommendation_error = cached, None
-        else:
-            recommendation, recommendation_error = await asyncio.to_thread(
-                _fetch_ozon_recommendation, snapshot, horizon)
+        upload = form.get('recommendation_file')
+        if isinstance(upload, str):
+            if upload:
+                return error(400,'INVALID_RECOMMENDATION_FILE',
+                             'Выберите XLSX отчёт Ozon «Доступность товаров».',
+                             'recommendation_file')
+            upload = None
+        if (upload is not None and getattr(upload, 'filename', None) == ''
+                and getattr(upload, 'size', None) == 0):
+            upload = None
+        recommendation = None
+        recommendation_error = 'Загрузите XLSX «Доступность товаров» для сравнения с Ozon.'
+        imported = None
+        if upload is not None:
+            try: data = await read(upload,'recommendation_file',request_id)
+            except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.','recommendation_file')
+            imported = await asyncio.to_thread(import_recommendation_xlsx,
+                data, meta(upload).source_name, source_inputs.current_catalog_skus, snapshot.clusters)
+            if any(d.severity == 'error' for d in imported.diagnostics):
+                return error(422,'INVALID_RECOMMENDATION_FILE',
+                    next(d.message for d in imported.diagnostics if d.severity == 'error'),
+                    'recommendation_file')
+            if not imported.records:
+                return error(422,'EMPTY_RECOMMENDATION_FILE',
+                    'В отчёте нет подходящих строк для текущих SKU и кластеров Ozon.',
+                    'recommendation_file')
+            if supply_period_for_days(horizon) is None:
+                recommendation_error = 'Горизонт рекомендации Ozon не поддерживается: выберите 7, 14, 28 или 56 дней.'
+            elif horizon != imported.meta.recommendation_horizon_days:
+                recommendation_error = (f'Горизонт файла {imported.meta.recommendation_horizon_days} дней '
+                    f'не совпадает с горизонтом расчёта {horizon} дней.')
+            elif (datetime.fromisoformat(imported.meta.report_generated_at)
+                  .astimezone(timezone(timedelta(hours=3))).date() != as_of):
+                recommendation_error = ('Дата отчёта рекомендаций отличается от даты снимка API. '
+                                        'Обновите данные Ozon и выгрузите свежий XLSX.')
+            else:
+                recommendation_error = None
+                recommendation = LocalSaleResult(imported.records,
+                    imported.meta.report_generated_at,
+                    date.fromisoformat(imported.meta.period_start),
+                    date.fromisoformat(imported.meta.period_end),
+                    horizon, supply_period_for_days(horizon),
+                    endpoint='xlsx:availability-report',
+                    excluded_record_count=sum(d.row is not None for d in imported.diagnostics))
         source_inputs=replace(source_inputs,ozon_recommendation=recommendation,
-                              ozon_recommendation_error=recommendation_error)
+                              ozon_recommendation_error=recommendation_error,
+                              recommendation_import=imported)
     else:
         for field in files:
             try: raw.append((form[field],await read(form[field],field,request_id)))
@@ -1628,6 +1486,8 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     logger.info("[analysis %s] article_join done %.3fs rows=%d",request_id,perf_counter()-join_started,len(products.records))
     logger.info("[analysis %s] reports done %.3fs",request_id,perf_counter()-reports_started)
     imported=[availability,restrictions,orders,tariffs,products]
+    if source_inputs is not None and source_inputs.recommendation_import is not None:
+        imported.append(source_inputs.recommendation_import)
     settings=EconomicsSettings(*(values[n] for n in DECIMAL_NAMES[:4]),tax,*(values[n] for n in DECIMAL_NAMES[4:7])); thresholds=OptimizerThresholds(*(values[n] for n in DECIMAL_NAMES[7:]))
     explicit_horizon,include_inbound,objective=scenario_request
     scenario=ScenarioSettings(explicit_horizon or availability.meta.recommendation_horizon_days or 56,include_inbound,objective)
@@ -1651,10 +1511,19 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     if unitka is not None:
         input_statuses["unitka_file"]=input_status(products,tariffs)
     report_meta={field:item.meta for field,item in zip(files,statuses)}
+    if source_inputs is not None and source_inputs.recommendation_import is not None:
+        input_statuses['recommendation_file']=input_status(source_inputs.recommendation_import)
+        report_meta['recommendation_file']=source_inputs.recommendation_import.meta
     status_views={name:InputStatusView(value["ok"],value["record_count"],tuple(
-        DiagnosticView(d["severity"],d["code"],d["message"]) for d in value["diagnostics"]))
+        DiagnosticView(d["severity"],d["code"],d["message"],row=d.get("row"),field=d.get("field"))
+        for d in value["diagnostics"]),
+        excluded_record_count=(sum(d.get("row") is not None for d in value["diagnostics"])
+                               if name=='recommendation_file' else 0))
         for name,value in input_statuses.items()}
-    diagnostic_views=tuple(DiagnosticView(d.severity,d.code,d.message,getattr(d,"sku",None),getattr(d,"cluster_id",None),getattr(d,"destination_cluster_id",None)) for d in diagnostics)
+    diagnostic_views=tuple(DiagnosticView(d.severity,d.code,d.message,
+        getattr(d,"sku",None),getattr(d,"cluster_id",None),
+        getattr(d,"destination_cluster_id",None),getattr(d,"row",None),
+        getattr(d,"field",None)) for d in diagnostics)
     warnings=[]
     if not result.demand.window.coverage_current:
         warnings.append(
@@ -1666,17 +1535,16 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         if source_inputs.ozon_recommendation_error:
             warnings.append(f"Рекомендация Ozon (локальность) недоступна: {source_inputs.ozon_recommendation_error}.")
         if recommendation is not None and recommendation.excluded_record_count:
-            warnings.append(
-                f"Рекомендации Ozon частичны: ID кластера {recommendation.unknown_cluster_ids[0]} "
-                f"не сопоставлен с каталогом, использованным в расчёте. Для {len(recommendation.incomplete_skus)} "
-                "затронутых SKU количество Ozon неизвестно.")
+            warnings.append(f'Из XLSX рекомендаций исключено {recommendation.excluded_record_count} '
+                            'строк: проверьте диагностику файла. Остальные точные пары SKU и кластера используются.')
     elif availability.meta.recommendation_horizon_days is None and explicit_horizon is None:
         warnings.append("Горизонт рекомендации Ozon неизвестен; для сценария по умолчанию использовано 56 дней.")
     elif availability.meta.recommendation_horizon_days is None:
         warnings.append("Горизонт рекомендации Ozon неизвестен; прямое сравнение горизонтов невозможно.")
     elif availability.meta.recommendation_horizon_days != scenario.horizon_days:
         warnings.append(f"Горизонты различаются: Ozon {availability.meta.recommendation_horizon_days} дней, наш расчёт {scenario.horizon_days} дней.")
-    periods={(m.period_start,m.period_end) for m in report_meta.values() if m.period_start and m.period_end}
+    periods={(m.period_start,m.period_end) for field,m in report_meta.items()
+             if field != 'recommendation_file' and m.period_start and m.period_end}
     if len(periods)>1:warnings.append("Периоды загруженных отчётов различаются.")
     product_identities = {
         item.sku: (item.article, getattr(item, "product_name", "") or "")

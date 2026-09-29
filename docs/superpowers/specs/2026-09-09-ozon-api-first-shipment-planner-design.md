@@ -87,31 +87,30 @@ Missing evidence remains unknown; it is never coerced to zero for convenience.
 - API mode must not substitute turnover or another metric for the exact Ozon recommendation merely to make Safe Plan complete.
 - If that signal is absent, the comparison is explicitly incomplete; Calculated Plan remains usable.
 
-**Decision 2026-09-24 — manager-selected working source.** API analysis requests
-`metrics.recommended_supply` from `POST /v1/analytics/local-sale/items-clusters/info`
-for current Ozon SKUs and exact macrolocal destination IDs. It preserves the
-analytics `period.from/to` separately from the shipment frequency selected by
-scenario days: 7/14/28/56 map to `ONE_WEEK`/`TWO_WEEKS`/`FOUR_WEEKS`/`EIGHT_WEEKS`.
-Other horizons keep the Calculated Plan, with Ozon selection unavailable.
-This recommendation is a source quantity before seller stock, capacity and pack
-rules. It must not be discounted a second time for FBO stock or inbound.
-When Ozon returns an exact current SKU with a destination cluster ID absent
-from the current `/v2/cluster/list` catalog, quarantine every recommendation
-row for that SKU. Count all its rows as excluded and leave its Ozon quantity
-unknown; do not infer a cluster from its numeric ID or map it by display name.
-Keep exact recommendations (including zero) for unaffected SKUs and report
-the source as partial with the excluded count and affected SKU identities.
-If no unaffected values remain, the source still has no usable recommendation.
-For an unknown ID, perform one fresh `/v2/cluster/list` lookup under the same
-credential context. Distinguish an ID newly present in the fresh catalog from
-one still absent; show the exact name only when returned by the fresh canonical
-catalog, with explicitly shortened display for unusually long names. If the
-lookup fails or the catalog is ambiguous (including duplicate names), state that
-the comparison is unconfirmed. Preserve the original source snapshot and
-quarantine until a consistent full refresh. The diagnostic includes the
-original catalog timestamp, both catalog counts when available, the local-sale
-request window/frequency, and bounded ID × affected SKU counts. It never
-assigns a name by guessing or promotes `/v1` warehouse mapping to canonical.
+**Decision 2026-09-29 — XLSX recommendation source.** Ozon's local-sale API
+returned destination IDs absent even from a fresh `/v2/cluster/list`. Analysis
+no longer calls that API or reuses cached API advice; source sync does not fetch
+it. In API mode, order history, FBO/inbound/seller stock, product identities and
+cluster catalog remain API evidence. The manager may upload the Ozon
+`Доступность товаров` XLSX when calculating the plan. Without it, the
+Calculated Plan remains available and the Ozon comparison is unknown. Only its exact
+`Рекомендуемая поставка, шт на N дней` quantity is imported as recommendation.
+This is an explicit recommendation-channel exception to the API/FILES isolation:
+the XLSX never supplies stock, orders, prices or operational availability.
+
+Match SKU to the current complete API product catalog and a normalized exact
+cluster name to the current API cluster catalog. No numeric ID guessing,
+substring match or implicit manual mapping. Exclude unknown identities,
+FBS-only rows, non-integer/negative/missing quantities and every duplicate
+SKU × cluster pair, and report row diagnostics and source metadata. Explicit
+zero is a known recommendation. Reject malformed workbooks and workbooks with
+no usable rows. The report's declared horizon must match the scenario, and its
+Moscow update date must match the API snapshot business date; otherwise keep
+our plan, show the reason, and leave Ozon comparison unavailable. Preserve the
+report interval, update time, horizon, filename and accepted/excluded counts in
+the immutable analysis evidence. Valid exact pairs remain usable when unrelated
+rows are excluded. The recommendation is an upstream quantity before seller
+stock, capacity and pack rules; never discount FBO or inbound twice.
 
 Calculated Need, Calculated Plan and the comparable Safe Plan remain untouched.
 The Working Plan starts with the existing shippable Calculated quantities. For

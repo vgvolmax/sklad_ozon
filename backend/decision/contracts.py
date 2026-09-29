@@ -69,6 +69,8 @@ class DiagnosticView:
     sku: str | None = None
     cluster_id: str | None = None
     destination_cluster_id: str | None = None
+    row: int | None = None
+    field: str | None = None
 
 
 class DataQualityLevel(str, Enum):
@@ -121,6 +123,7 @@ class InputStatusView:
     ok: bool
     record_count: int
     diagnostics: tuple[DiagnosticView, ...]
+    excluded_record_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)

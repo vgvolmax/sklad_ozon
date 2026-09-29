@@ -39,7 +39,6 @@ SYNC_STAGES = (
     ("seller_stock", "Остаток продавца", "Получение остатков продавца"),
     ("inbound", "Поставки в пути", "Поиск заявок"),
     ("placement_zones", "Зоны размещения", "Получение зон размещения"),
-    ("recommended_supply", "Рекомендации Ozon · 56 дней", "Получение рекомендаций"),
 )
 CLUSTERS_TTL = timedelta(hours=24)
 SELLER_WAREHOUSES_TTL = timedelta(hours=24)
