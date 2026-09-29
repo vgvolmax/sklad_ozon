@@ -17,6 +17,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse, Response
 from backend.application import analyze
 from backend.economics import LogisticsContext
+from backend.economics.workspace import build_economics_workspace
 from backend.decision import (DataQualityFact, DiagnosticView, InputStatusView,
                               ScenarioSettings, assemble_snapshot,
                               build_data_quality_presentation,
@@ -362,6 +363,31 @@ def _working_identity(body):
 def _find_working_line(plan, identity):
     return next((line for line in plan.lines
                  if (line.sku,line.destination_cluster_id)==identity),None)
+
+@router.post('/api/economics/workspace')
+async def economics_workspace(request: Request):
+    body = await json_object(request)
+    if body is None:
+        return error(400, 'INVALID_ECONOMICS_SCENARIO',
+                     'Укажите параметры экономического сценария.', None)
+    snapshot_id = body.get('analysis_snapshot_id')
+    snapshot = ANALYSIS_STORE.get(snapshot_id) if isinstance(snapshot_id, str) else None
+    if snapshot is None or ANALYSIS_STORE.latest() is not snapshot:
+        return error(409, 'ANALYSIS_SNAPSHOT_STALE',
+                     'Расчёт устарел. Пересчитайте план.', 'analysis_snapshot_id')
+    overrides = body.get('per_sku_drr') or {}
+    if not isinstance(overrides, dict) or len(overrides) > 1000:
+        return error(400, 'INVALID_ECONOMICS_SCENARIO',
+                     'Плановый ДРР по товарам заполнен неверно.', 'per_sku_drr')
+    try:
+        report = build_economics_workspace(
+            snapshot, margin=body.get('target_margin'), roi=body.get('target_roi'),
+            goal=body.get('goal'), planned_drr=body.get('planned_drr'),
+            per_sku_drr=overrides)
+    except ValueError as exc:
+        return error(400, 'INVALID_ECONOMICS_SCENARIO', str(exc), None)
+    return {'api_version': 1, 'snapshot_id': snapshot.snapshot_id, 'workspace': wire(report)}
+
 
 @router.post('/api/working-plan')
 async def working_plan_get(request:Request):
@@ -1630,7 +1656,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         product_identities=product_identities, daily_locality=result.daily_locality,
         stockout_episode_impacts=result.stockout_episode_impacts,analysis_as_of=as_of,
         source_mode=provenance[0],source_snapshot_id=provenance[1],
-        demand_window=result.demand.window)
+        demand_window=result.demand.window,economics_settings=settings)
     cluster_ids=tuple(sorted({row.destination_cluster_id for row in snapshot.decision_rows}))
     economics_by_sku={product.sku:product for product in products.records}
     ozon_by_sku=({fact.sku:fact for fact in source_inputs.product_facts}
