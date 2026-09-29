@@ -13,7 +13,7 @@ from backend.analytics.routes import RouteProfile
 from backend.domain.contracts import ReportMeta, SourceMode
 from backend.domain.signals import RecommendationDistortionSignal, SignalConfidence, StockoutSignal
 from backend.economics import RouteOpportunity, UnitEconomicsResult
-from backend.project import OptimizerThresholds
+from backend.project import EconomicsSettings, OptimizerThresholds
 from backend.supply.contracts import OptimizationResult, ShippablePlan
 
 
@@ -353,3 +353,4 @@ class AnalysisSnapshot:
     ozon_recommendation: object | None = None
     ozon_recommendation_error: str | None = None
     optimizer_thresholds: OptimizerThresholds | None = None
+    economics_settings: EconomicsSettings | None = None

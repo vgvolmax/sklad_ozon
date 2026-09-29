@@ -357,6 +357,26 @@ Historical Flow remains focused/bounded and preserves destination/origin/SKU sem
 
 Economics keeps current mathematical ownership. Shipment ranking is operational/service-level; customer-delivery route costs are not seller→Ozon inbound tariff evidence.
 
+The Economics workspace initially groups the same observed delivered-route rows by
+SKU. One SKU expansion is a single highlighted surface containing its cluster
+breakdown; expanding a cluster creates a nested highlighted surface. Its
+`Где заказали` and `Откуда отгрузили` cuts are two views of the same routes,
+not additive totals. The separate route list always repeats article, SKU,
+origin and destination. Search, bounded load-more and partial coverage remain
+visible in both views.
+
+Margin and ROI targets, selected pricing goal and planned DRR are local
+scenario preferences. Python calculates weighted route averages, commission,
+modeled target shortfall and a price at unchanged rates/logistics. Planned DRR
+only affects prospective price; it never rewrites the historical model. A SKU
+without observed routes remains visible with an unknown shortfall and price.
+The observed route window contains completed ISO weeks and delivered postings;
+it excludes the current week and is not a confirmed buyout or Ozon payout
+ledger. The UI names the exact window and labels its shortfall as modeled,
+not as actual financial loss for the current month. A tariff step, a new
+price's effect on demand, and individual actual advertising spend are outside
+this scenario. A missing route blocks a universal price recommendation.
+
 ## Responsive/zoom
 
 Desktop/laptop primary. At narrow width/200% zoom:
@@ -387,7 +407,7 @@ The user remains the final actor and completes the real supply manually in Ozon.
 
 ## Кратность упаковки
 
-Раздел «Данные» содержит постоянный справочник кратности по артикулу: поиск по артикулу, inline-редактирование, импорт и экспорт XLSX, а также сброс override к Unitka. Источник показывается как «Вручную», «Импорт», «Unitka» или «Не задано». Новое inline-значение считается сохранённым только после ответа backend; ошибки остаются рядом с действием.
+Раздел «Данные» содержит постоянный справочник кратности по артикулу: поиск по артикулу, inline-редактирование, импорт и экспорт XLSX, а также сброс override к прайсу РТП или к неизвестной кратности. Юнитка не является источником кратности. Источник показывается как «Вручную», «Импорт», «Прайс РТП» или «Не задано». Новое inline-значение считается сохранённым только после ответа backend; ошибки остаются рядом с действием.
 
 Изменение справочника в PR1 не меняет уже рассчитанный план. Будущее применение выполняется отдельно для каждой строки `SKU × кластер`, без объединения потребностей разных кластеров.
 

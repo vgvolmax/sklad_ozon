@@ -218,11 +218,28 @@ Motion минимален и сообщает состояние: открыти
 
 `ShipmentManifest` and `OzonValidationStatus` render backend order and causal acceptance states without recalculation. The browser calls candidates then ShipmentPlan, displays every returned timeslot, and downloads backend-built XLSX/ZIP artifacts. Temporary drafts are disclosed; no UI claims or performs real supply creation.
 
+## Workspace redesign
+
+The four top-level sections share the compact navigation, quiet surface and
+typographic hierarchy of the reviewed workspace concept. The shipped Plan,
+Flow, source and shipment actions retain their original data ownership. Data
+places the API connection and analysis path in the primary column; cluster
+mappings occupy the secondary column on wide screens, with a full-width pack
+directory. Narrow layouts stack without hiding their controls.
+
+Economics starts with SKU averages and target settings. Opening a SKU colors
+the whole row and its cluster breakdown as one surface; opening a problem
+cluster adds a nested warm surface. Both origin and destination cuts are
+available with a route table naming both roles. The pricing scenario and
+historical model use separate labels and never substitute a missing value with
+zero. The shortfall is an estimate over delivered completed-week routes, not
+a current-month buyout or payout statement.
+
 ## Persistent pack-multiplicity directory (PR1)
 
-Pack multiplicity is article-level master data stored in Project schema v2. Each record keeps the Unitka baseline separately from a manual or XLSX-imported override; resolution is `override → Unitka → unknown`. The directory is persisted atomically in `data/project.json`, and importing a newer Unitka workbook refreshes only the baseline.
+Pack multiplicity is article-level master data stored in Project. The active resolution is `manual/XLSX override → RTP price → unknown`; Unitka contributes economics and tariffs but never pack multiplicity. The directory is persisted atomically in `data/project.json`.
 
-This directory is deliberately not connected to `ShippablePlan`, the optimizer, or shipment candidates in PR1. In PR2, one resolved article multiplicity will constrain **each `SKU × destination_cluster_id` line independently**. For example, Moscow need 25 and Rostov need 5 with pack 50 are two separate choices from `0 / 50 / 100 / …`; they must never be summed into one shared pack across clusters.
+The resolved article multiplicity constrains **each `SKU × destination_cluster_id` line independently**. For example, Moscow need 25 and Rostov need 5 with pack 50 are two separate choices from `0 / 50 / 100 / …`; they must never be summed into one shared pack across clusters.
 Pack multiplicity is applied independently to each SKU × destination cluster.
 The system pack target uses the nearest valid whole-pack quantity; half-pack ties
 round upward. No cross-cluster donor rebalance is performed. Examples:
