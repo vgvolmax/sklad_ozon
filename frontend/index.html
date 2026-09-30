@@ -5,10 +5,10 @@
 <header class="app-header"><div class="header-inner"><a class="brand" href="#plan" data-nav="plan">Sklad Ozon</a><nav aria-label="Основные разделы"><a href="#plan" data-nav="plan">План</a><a href="#flows" data-nav="flows">Потоки спроса</a><a href="#economics" data-nav="economics">Экономика</a><a href="#data" data-nav="data">Данные</a></nav></div></header>
 <main id="app-main">
  <div id="global-analysis-status" class="global-analysis-status" aria-live="polite" hidden><strong data-progress-message></strong><progress value="0" max="100"></progress><span data-stage></span> <span data-detail></span> <span data-count></span> <span data-time></span></div>
- <section data-section="plan" aria-labelledby="plan-title"><h1 id="plan-title" tabindex="-1">План</h1><div id="plan-screen"></div></section>
- <section data-section="flows" aria-labelledby="flows-title" hidden><h1 id="flows-title">Потоки спроса</h1><div id="flow-screen"></div></section>
+ <section data-section="plan" aria-labelledby="plan-title"><header class="workspace-heading"><div><p class="eyebrow">ПЛАНИРОВАНИЕ FBO</p><h1 id="plan-title" tabindex="-1">План поставок</h1><p>Проверьте решения по товарам и кластерам, затем переходите к отгрузке.</p></div><a href="#data" class="workspace-link">Проверить исходные данные</a></header><div id="plan-screen"></div></section>
+ <section data-section="flows" aria-labelledby="flows-title" hidden><header class="workspace-heading"><div><p class="eyebrow">ГЕОГРАФИЯ ИСПОЛНЕНИЯ</p><h1 id="flows-title">Потоки спроса</h1><p>Где возник спрос и из какого кластера Ozon исполнил заказ. Источник исполнения не меняет принадлежность спроса.</p></div><a href="#plan" class="workspace-link">Открыть план поставок</a></header><div id="flow-screen"></div></section>
  <section data-section="economics" aria-labelledby="economics-title" hidden><h1 id="economics-title">Экономика</h1><div id="economics-screen"></div></section>
- <section data-section="data" aria-labelledby="data-title" hidden><h1 id="data-title">Данные</h1><div id="data-screen"></div></section>
+ <section data-section="data" aria-labelledby="data-title" hidden><header class="workspace-heading"><div><p class="eyebrow">ИСТОЧНИКИ И РАСЧЁТ</p><h1 id="data-title">Данные</h1><p>Проверьте основу Ozon, добавьте локальные файлы и рассчитайте план.</p></div><a href="#plan" class="workspace-link">Открыть план</a></header><div id="data-screen"></div></section>
 </main>
 <aside id="detail-drawer" class="detail-drawer" hidden aria-labelledby="drawer-heading"><div id="drawer-content"></div></aside>
 <div id="progress-region" aria-live="polite" class="sr-only"></div>

@@ -223,3 +223,18 @@ def test_pack_feedback_uses_override_copy_and_article_with_row_diagnostics():
     assert "Переопределение сброшено" in pack_view
     assert "Ручное значение сброшено" not in pack_view
     assert "[d.article,d.row?`строка ${d.row}`:null]" in pack_view
+
+
+def test_field_error_reveals_collapsed_settings_before_correction():
+    components = ROOT / "frontend/assets/js/components.js"
+    script = f"""
+require({json.dumps(str(CORE_JS))});
+require({json.dumps(str(components))});
+const events=[];
+const details={{setAttribute:(name,value)=>events.push([name,value])}};
+const field={{setAttribute:()=>{{}},insertAdjacentHTML:()=>{{}},closest:()=>details}};
+SkladOzon.FormState.setError({{elements:{{min_roi:field}}}},'min_roi','Укажите число.');
+console.log(JSON.stringify(events));
+"""
+    result = json.loads(subprocess.check_output(["node", "-e", script], text=True))
+    assert result == [["open", ""]]

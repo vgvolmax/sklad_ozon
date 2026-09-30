@@ -379,6 +379,22 @@ this scenario. A missing route blocks a universal price recommendation.
 
 ## Responsive/zoom
 
+Plan's five decision-table groups preserve all exact values and working-plan
+actions in both product and cluster views. Grouping is presentation only;
+each line remains `SKU × destination_cluster_id`.
+
+Flow search restores focus after rendering so typing can continue. Context
+summary labels follow the selected origin/destination role, and exact route
+selection continues to own the timeline and SKU breakdown.
+
+Data preparation steps come from the active source and selected/validated
+inputs. The optional recommendations XLSX never becomes a prerequisite for
+the own-model calculation. Source diagnostics and economic settings can be
+collapsed; setting a field error reveals its containing disclosure. A normal
+source/status refresh must not recreate the analysis form or clear file
+selections. Pack editing/import/export and mappings remain actionable in the
+secondary panel.
+
 Desktop/laptop primary. At narrow width/200% zoom:
 - article selector stacks above selected-product detail;
 - tables own horizontal overflow;

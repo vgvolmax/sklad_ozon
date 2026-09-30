@@ -220,12 +220,38 @@ Motion минимален и сообщает состояние: открыти
 
 ## Workspace redesign
 
+The revised workspaces use shared tokens in the global `app.css` root block:
+`--workspace-tint` (#F8FBFA), `--workspace-border` (#DCE7E5),
+`--workspace-selected` (#E7F5EF), `--workspace-selected-border` (#B3DACF),
+`--workspace-active-border` (#94C7B8), `--workspace-nested` (#EDF7F3),
+`--workspace-ink` (#0A7164), `--workspace-muted` (#5D7279), and
+`--workspace-control-surface` (#E9F1F0). Surface and control shadows use
+`rgba(23,46,54,.03)` and `rgba(26,76,60,.11)` respectively. Existing semantic
+Ozon/model/warning colors keep their meanings.
+
 The four top-level sections share the compact navigation, quiet surface and
 typographic hierarchy of the reviewed workspace concept. The shipped Plan,
-Flow, source and shipment actions retain their original data ownership. Data
-places the API connection and analysis path in the primary column; cluster
-mappings occupy the secondary column on wide screens, with a full-width pack
-directory. Narrow layouts stack without hiding their controls.
+Flow, source and shipment actions retain their original data ownership.
+
+Plan places the calculation context above the product/cluster selector and
+selected workspace. Its decision table has five groups: identity, demand and
+stocks, recommendations, packing, and final working quantity. Source selection,
+whole-pack editing, delta, volume, zones and status stay on the same decision
+row. Product and cluster perspectives share this structure.
+
+Flow has a compact control band and three working columns: context selector,
+selected context with its evidence summary and exact routes, and route detail.
+The origin summary describes fulfillment and other clusters' demand; the
+destination summary describes demand and its fulfillment. Selected context and
+routes are visibly marked. Timeline and exact SKU evidence remain below.
+
+Data puts API connection, source state, local files and calculation in the
+primary column. The pack directory, cluster mappings and reserve-mode guidance
+occupy the secondary column. Preparation steps reflect current input state;
+the recommendations XLSX is explicitly optional. Diagnostics and calculation
+settings use native disclosures. File inputs retain their DOM nodes during
+ordinary refreshes, and field errors open a containing disclosure. Narrow
+layouts stack without hiding their controls.
 
 Economics starts with SKU averages and target settings. Opening a SKU colors
 the whole row and its cluster breakdown as one surface; opening a problem

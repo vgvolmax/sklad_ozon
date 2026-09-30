@@ -16,7 +16,7 @@ globalThis.fetch=(path,options)=>path==='/api/local-session'
   ? Promise.resolve({{ok:true,json:async()=>({{session_token:'test-session'}})}})
   : new Promise((resolve,reject)=>requests.push({{path,options,resolve,reject}}));
 let source=fs.readFileSync({json.dumps(str(app))},'utf8');
-source=source.replace("if(root.document)document.addEventListener('DOMContentLoaded',S.boot);", "S.__workingPlanTest={{mutateWorking,loadWorkingPlan,workingEditor,workingSourceControl,sourceBulkMarkup,ozonCoverageLabel,setState(value){{state=value;S.AppState=value;}},getState(){{return state;}}}};");
+source=source.replace("if(root.document)document.addEventListener('DOMContentLoaded',S.boot);", "S.__workingPlanTest={{mutateWorking,loadWorkingPlan,workingEditor,workingSourceControl,sourceBulkMarkup,ozonCoverageLabel,bindWorkingEditors,setState(value){{state=value;S.AppState=value;}},getState(){{return state;}}}};");
 vm.runInThisContext(source);
 globalThis.document={{querySelector:()=>null,querySelectorAll:()=>[]}};
 const base=SkladOzon.createInitialState();
@@ -26,6 +26,25 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{{{scenario}}})().catch(error=>{{console.error(error);process.exit(1);}});
 """
     return json.loads(subprocess.check_output(['node', '-e', javascript], text=True))
+
+
+def test_enter_in_working_quantity_sends_exact_integer_to_backend():
+    result = run_working_plan_lifecycle("""
+const test=SkladOzon.__workingPlanTest,current=test.getState();
+test.setState({...current,workingPlan:{...current.workingPlan,plan:{lines:[
+  {sku:'SKU-A',destination_cluster_id:'Москва',working_qty:50,pack_multiple:25}
+]}}});
+const input={value:'75',addEventListener:(kind,handler)=>input[kind]=handler};
+const cell={dataset:{workingKey:'SKU-A|||Москва'},querySelectorAll:()=>[],
+  querySelector:selector=>selector==='[data-working-input]'?input:null};
+const root={querySelectorAll:selector=>selector==='[data-working-key]'?[cell]:[],querySelector:()=>null};
+test.bindWorkingEditors(root);
+input.keydown({key:'Enter',preventDefault:()=>{}});
+await flush();
+console.log(JSON.stringify({quantity:requests[0]?JSON.parse(requests[0].options.body).quantity:null,
+  error:test.getState().workingPlan.error}));
+""")
+    assert result == {'quantity': 75, 'error': None}
 
 
 def test_working_plan_ui_uses_one_server_authoritative_state():
