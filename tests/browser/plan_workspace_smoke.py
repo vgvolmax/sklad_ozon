@@ -189,7 +189,7 @@ def main():
             page.evaluate("""()=>{const S=SkladOzon,current=S.__browserPlan.getState();S.__browserPlan.setState({...current,snapshot:{...current.snapshot,snapshot_id:'B'}});} """)
             page.locator('[data-dialog-confirm]').click()
             assert len(requests) == before
-            assert 'План изменился' in page.locator('.notice-error').inner_text()
+            assert 'План изменился' in page.locator('#plan-screen .notice-error').inner_text()
             page.locator('#plan-go-shipments').click()
             assert page.locator('#shipment-date-from').is_visible()
             assert page.locator('[data-cluster]').count() >= 1
