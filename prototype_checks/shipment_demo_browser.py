@@ -202,6 +202,7 @@ def main():
             page.locator("#slot-scenario").select_option("normal")
             page.locator("#slot-search").click()
             page.wait_for_function("document.querySelectorAll('[data-slot-index]').length===8")
+            assert not errors, errors
             page.screenshot(path=str(ARTIFACTS / "shipment-slots.png"), full_page=True)
             page.locator('[data-slot-index="6"]').click()
             page.locator("#slots-apply").click()
