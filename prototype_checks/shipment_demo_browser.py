@@ -234,6 +234,14 @@ def main():
             page.locator("#slots-dialog").press("Escape")
             checks.append("storage warehouse comes from accepted demo response; partial content blocks creation; rate limit preserves known draft")
 
+
+            # Leaving a pending lookup must discard its late response.
+            page.locator("#find-demo-rostov").click()
+            page.locator("#slot-search").click()
+            page.locator("#slots-dialog").press("Escape")
+            page.wait_for_timeout(700)
+            assert page.evaluate("ShipmentDemo.getState().config['demo-rostov'].evidence") is None
+            checks.append("closing pending search discards late response")
             search_for("demo-rostov")
             page.locator('[data-slot-index="0"]').click()
             page.locator("#slots-apply").click()
