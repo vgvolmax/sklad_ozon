@@ -37,17 +37,13 @@ Single job:
 
 > inspect one SKU-backed product context, compare Ozon/Need/Plan, and see exact whole-pack quantities by destination cluster.
 
-Desktop composition:
-
-```text
-┌ bounded product selector ┐ ┌ selected product workspace ┐
-│ article / short name     │ │ identity + decision line   │
-│ SKU secondary            │ │ cluster table              │
-│ shipment summary         │ │ assignment evidence        │
-└──────────────────────────┘ └────────────────────────────┘
-```
-
-At narrow width / 200% zoom, selector stacks above workspace. Do not squeeze two unusable columns.
+Approved 2026-09-30 composition: compact settings/data band, one horizontal
+product/cluster context-card strip with search and a paginated full-list modal,
+then a full-width selected workspace. This supersedes the former permanent
+sidebar. The strip remains bounded and every context is accessible through
+search/full picker. At narrow width / 200% zoom, controls reflow and the table
+owns its horizontal overflow. Product/cluster identity and server math remain
+unchanged.
 
 ### `План → Отгрузки`
 
@@ -87,7 +83,7 @@ Search may match article, SKU and name.
 
 ### 4.1 Product selector
 
-Each selector item represents exactly one SKU-backed product, not one cluster.
+In product perspective each card represents exactly one SKU-backed product. Cluster perspective groups the same matrix by destination cluster. Neither perspective selects shipment scope. Search filters cards while preserving the opened workspace; full-list selection reveals its context.
 
 Compact item:
 
@@ -104,7 +100,7 @@ Search is local and immediate with an explicit clear button; clear restores inpu
 Selection reconciliation:
 
 - keep prior SKU if it still exists;
-- otherwise choose first visible stable item;
+- otherwise choose the first stable item from the complete current context list;
 - never use article alone as state key.
 
 ### 4.2 Product header
@@ -154,7 +150,7 @@ separate worksheet alongside the unchanged Ozon import template.
 
 ### 4.4 Selected-SKU cluster table
 
-Default target columns:
+Default compact columns (approved 2026-09-30):
 
 ```text
 Кластер
@@ -164,13 +160,11 @@ Ozon
 Потребность
 Аналитический план
 Кратность
-К поставке
-Объём
-Зона
+К поставке (with delta and working volume)
 Статус
 ```
 
-The table belongs only to selected SKU and owns its local overflow/pagination. Product name/article are not repeated in every cluster row.
+The table belongs to the selected SKU or destination cluster and owns local overflow. Inline row evidence retains whole-pack system/selected-source recommendations, source actions, zone, unit volume, seller stock and full reasons. Expanding colors the complete row and its evidence together. Product name/article are not repeated in every cluster row.
 
 Pack adjustment is explicit (`17 → 18`, `кратность 6`) and is not styled as an error unless a real constraint exists.
 

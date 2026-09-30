@@ -16,7 +16,7 @@ globalThis.fetch=(path,options)=>path==='/api/local-session'
   ? Promise.resolve({{ok:true,json:async()=>({{session_token:'test-session'}})}})
   : new Promise((resolve,reject)=>requests.push({{path,options,resolve,reject}}));
 let source=fs.readFileSync({json.dumps(str(app))},'utf8');
-source=source.replace("if(root.document)document.addEventListener('DOMContentLoaded',S.boot);", "S.__workingPlanTest={{mutateWorking,loadWorkingPlan,workingEditor,workingSourceControl,sourceBulkMarkup,ozonCoverageLabel,bindWorkingEditors,setState(value){{state=value;S.AppState=value;}},getState(){{return state;}}}};");
+source=source.replace("if(root.document)document.addEventListener('DOMContentLoaded',S.boot);", "S.__workingPlanTest={{mutateWorking,confirmWorkingChange,loadWorkingPlan,workingEditor,workingSourceControl,sourceBulkMarkup,ozonCoverageLabel,bindWorkingEditors,setState(value){{state=value;S.AppState=value;}},getState(){{return state;}}}};");
 vm.runInThisContext(source);
 globalThis.document={{querySelector:()=>null,querySelectorAll:()=>[]}};
 const base=SkladOzon.createInitialState();
@@ -47,11 +47,45 @@ console.log(JSON.stringify({quantity:requests[0]?JSON.parse(requests[0].options.
     assert result == {'quantity': 75, 'error': None}
 
 
+def test_bulk_confirmation_rejects_replaced_snapshot_or_working_plan():
+    for replacement in (
+        "snapshot:{snapshot_id:'B',shippable_plan:{shippable_plan_id:'SP-B'}}",
+        "workingPlan:{...current.workingPlan,plan:{working_plan_id:'WP-B',lines:[]}}",
+        "staleSnapshot:true",
+    ):
+        result = run_working_plan_lifecycle(f"""
+const test=SkladOzon.__workingPlanTest;
+let confirm;
+SkladOzon.AppDialog={{open:options=>{{confirm=options.onConfirm;}}}};
+test.confirmWorkingChange({{title:'Принять наш расчёт?'}},'/api/working-plan/bulk',{{action:'reset_to_system',lines:[{{sku:'SKU-A',destination_cluster_id:'Москва'}}]}});
+const current=test.getState();
+test.setState({{...current,{replacement}}});
+confirm();await flush();
+console.log(JSON.stringify({{calls:requests.length,error:test.getState().workingPlan.error}}));
+""")
+        assert result['calls'] == 0
+        assert 'План изменился' in result['error']
+
+
+def test_confirmed_bulk_uses_captured_scope_when_context_changes():
+    result = run_working_plan_lifecycle("""
+const test=SkladOzon.__workingPlanTest;
+let confirm;
+SkladOzon.AppDialog={open:options=>{confirm=options.onConfirm;}};
+test.confirmWorkingChange({title:'Не поставлять?'},'/api/working-plan/bulk',{action:'set_zero',lines:[{sku:'SKU-A',destination_cluster_id:'Москва'}]});
+const current=test.getState();test.setState({...current,planView:{...current.planView,selectedSku:'SKU-B'}});
+confirm();await flush();
+console.log(JSON.stringify(JSON.parse(requests[0].options.body)));
+""")
+    assert result == {'analysis_snapshot_id': 'A', 'shippable_plan_id': 'SP-A',
+                      'action': 'set_zero', 'lines': [{'sku': 'SKU-A', 'destination_cluster_id': 'Москва'}]}
+
+
 def test_working_plan_ui_uses_one_server_authoritative_state():
     app = (ROOT / 'frontend/assets/js/app.js').read_text()
     core = (ROOT / 'frontend/assets/js/core.js').read_text()
     for text in ('/api/working-plan', 'Рекомендация', 'К поставке', 'data-working-step',
-                 'data-working-input', 'data-working-reset', 'Сбросить все ручные изменения'):
+                 'data-working-input', 'data-working-reset', 'Сбросить количества и источники'):
         assert text in app
     assert 'workingLine(row)' in app
     assert "workingPlan:{plan:null,busy:false,mutationBusy:false,error:null" in core
@@ -125,7 +159,7 @@ def test_working_plan_failure_and_legacy_shipment_guard_are_explicit():
 def test_missing_working_line_is_compact_but_accessible():
     app = (ROOT / 'frontend/assets/js/app.js').read_text()
     assert "if(!line)return planUnknown('Рабочий план недоступен')" in app
-    assert "boxes=qty!=null&&pack?`${qty/pack} кор.`:planUnknown('Количество коробок не рассчитано')" in app
+    assert "boxes=line.working_qty!=null&&pack?`${line.working_qty/pack} кор.`:planUnknown('Количество коробок не рассчитано')" in app
 
 
 def test_backend_zero_renders_as_automatic_decision_and_aggregates_as_known():
@@ -211,6 +245,6 @@ def test_all_working_plan_controls_use_global_mutation_lock():
     assert 'busy=state.workingPlan.mutationBusy' in app
     assert "rowSaving=state.workingPlan.savingKeys.includes(key)" in app
     assert "line.is_overridden?`<button type=\"button\" class=\"working-reset\" data-working-reset ${busy?'disabled':''}" in app
-    assert app.count("data-working-bulk=\"reset_to_system\" ${state.workingPlan.mutationBusy?'disabled':''}") == 2
-    assert app.count("data-working-bulk=\"set_zero\" ${state.workingPlan.mutationBusy?'disabled':''}") == 2
-    assert "<button data-working-global-reset ${state.workingPlan.mutationBusy?'disabled':''}" in app
+    assert 'data-working-bulk="reset_to_system" ${state.workingPlan.mutationBusy||!visible.length?' in app
+    assert 'data-working-bulk="set_zero" ${state.workingPlan.mutationBusy||!visible.length?' in app
+    assert "data-working-global-reset ${state.workingPlan.mutationBusy?'disabled':''}" in app
