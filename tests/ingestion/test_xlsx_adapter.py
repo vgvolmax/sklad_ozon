@@ -1,5 +1,9 @@
 from io import BytesIO
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from xml.etree import ElementTree
+
+import openpyxl.writer.excel as excel_writer
 
 from backend.ingestion.xlsx import iter_worksheet_rows
 from tests.helpers.xlsx_fixtures import make_xlsx, worksheet_xml
@@ -21,7 +25,17 @@ def test_malformed_dimension_returns_all_populated_rows_and_one_diagnostic():
     assert [d.code for d in result.diagnostics] == ["WORKSHEET_DIMENSION_REPAIRED"]
 
 
-def test_regular_workbook_needs_no_repair():
+def test_regular_workbook_needs_no_repair(monkeypatch):
+    # openpyxl overwrites modified on save; cross a second boundary deliberately.
+    moments = iter((datetime(2026, 9, 30, 11, 0, 0, tzinfo=timezone.utc),
+                    datetime(2026, 9, 30, 11, 0, 1, tzinfo=timezone.utc)))
+
+    class SaveClock:
+        @staticmethod
+        def now(tz=None):
+            return next(moments)
+
+    monkeypatch.setattr(excel_writer, "datetime", SimpleNamespace(datetime=SaveClock, timezone=timezone))
     payload = make_xlsx(headers=["SKU"], rows=_ROWS)
     assert payload == make_xlsx(headers=["SKU"], rows=_ROWS)
     result = iter_worksheet_rows(BytesIO(payload), "Отчёт")

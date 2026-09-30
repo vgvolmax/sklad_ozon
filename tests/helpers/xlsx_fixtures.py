@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
+from xml.etree import ElementTree
 
 from openpyxl import Workbook
 
@@ -130,5 +131,15 @@ def _normalize_zip_metadata(payload: bytes) -> bytes:
             info = ZipInfo(name, _FIXED_TIMESTAMP)
             info.compress_type = ZIP_DEFLATED
             info.external_attr = archive.getinfo(name).external_attr
-            rebuilt.writestr(info, archive.read(name))
+            content = archive.read(name)
+            if name == "docProps/core.xml":
+                # save_workbook replaces modified with wall-clock time even when
+                # properties were fixed before save. Normalize the XML too.
+                core = ElementTree.fromstring(content)
+                for field in ("created", "modified"):
+                    node = core.find("{http://purl.org/dc/terms/}" + field)
+                    if node is not None:
+                        node.text = datetime(*_FIXED_TIMESTAMP).isoformat() + "Z"
+                content = ElementTree.tostring(core, encoding="utf-8")
+            rebuilt.writestr(info, content)
     return target.getvalue()
