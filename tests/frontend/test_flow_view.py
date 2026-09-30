@@ -36,3 +36,35 @@ def test_sku_cards_and_hub_use_product_identity_with_safe_fallback():
     }
     fallback=node("SkladOzon.FlowView.buildProductIdentityLookup({decision_rows:[{sku:'SKU-X'}]})['SKU-X']")
     assert fallback == {'sku':'SKU-X','product_name':None,'article':None}
+
+
+def test_workspace_render_keeps_origin_role_and_search_focus_request():
+    snapshot = fixture()
+    snapshot['analysis_as_of'] = '2026-09-29'
+    snapshot['flow_view_aggregates']['clean_views'][1]['context_summary'] = {
+        'own_destination_demand_qty': 7,
+        'fulfilled_quantity': 20,
+        'same_cluster_fulfilled_qty': 0,
+        'cross_cluster_fulfilled_qty': 20,
+        'same_cluster_share': '0',
+    }
+    result = node(f"""(()=>{{
+      SkladOzon.FlowTimeline={{render:()=>{{}}}};
+      const search={{value:'Казан',oninput:null}},show={{onclick:null}};
+      const container={{innerHTML:'',querySelectorAll:()=>[],querySelector:selector=>
+        selector==='#flow-selector-search'?search:selector==='[data-show-routes]'?show:null}};
+      let changed=null;
+      SkladOzon.FlowView.render(container,{json.dumps(snapshot, ensure_ascii=False)},
+        {{mode:'origin',metric:'units',evidence:'clean',selectorPage:3}},
+        (next,focus)=>{{changed={{next,focus}};}});
+      search.oninput();
+      return {{html:container.innerHTML,changed}};
+    }})()""")
+    stats = result['html'].split('<dl class="flow-stats">')[1].split('</dl>')[0]
+    assert '<dt>Исполнено</dt><dd>20 шт.</dd>' in stats
+    assert '<dt>Чужой спрос</dt><dd>20 шт.</dd>' in stats
+    assert 'Собственный спрос' not in stats
+    assert 'Казань → Москва' in result['html']
+    assert result['changed']['focus'] == '#flow-selector-search'
+    assert result['changed']['next']['selectorQuery'] == 'Казан'
+    assert result['changed']['next']['selectorPage'] == 1

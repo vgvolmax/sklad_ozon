@@ -238,22 +238,25 @@ def test_cluster_workspace_reuses_existing_ordered_demand_and_status_helpers():
     app = (ROOT / 'frontend/assets/js/app.js').read_text()
     assert 'function clusterWorkspace(item,snap)' in app
     assert 'S.presentOrderedDemand(row,horizon)' in app
-    assert '(sh.reason_codes||[]).map(S.shippableReasonLabel)' in app
-    assert 'planTableHeaders(\'Товар\',orderedHeading)' in app
+    assert 'workingStatus(row)' in app
+    assert "workspaceDecisionHeaders('Товар')" in app
 
 
 def test_compact_plan_tables_keep_identity_and_shared_column_grid():
     app = (ROOT / 'frontend/assets/js/app.js').read_text()
-    css = (ROOT / 'frontend/assets/css/app.css').read_text()
+    css = (ROOT / 'frontend/assets/css/workspace.css').read_text()
 
     assert '<strong class="plan-product-article">' in app
-    assert '<span class="plan-product-name" title="${productName}">${productName}</span>' in app
+    assert '<span class="plan-product-name"' in app
     assert '<small class="plan-product-sku">SKU ${S.escapeHtml(row.sku)}</small>' in app
-    assert '<td class="plan-table-identity">${S.escapeHtml(row.destination_cluster_id)}</td>' in app
-    for column in ('col-fbo', 'col-inbound', 'col-ordered', 'col-ozon', 'col-need',
-                   'col-plan', 'col-pack', 'col-ship', 'col-volume', 'col-zone', 'col-status'):
-        assert app.count(f'class="{column}') == 2
-        assert column in css
+    assert 'workspaceDecisionRow(row,S.escapeHtml(row.destination_cluster_id),horizon)' in app
+    assert '<td class="plan-table-identity">${identity}</td>' in app
+    for label in ('Спрос и остатки', 'Рекомендации', 'Упаковка', 'К поставке'):
+        assert label in app
+    for data in ('current_fbo_stock', 'inbound_qty', 'calculated_need_qty',
+                 'pack_multiple', 'workingEditor(row)', 'workingStatus(row)'):
+        assert data in app
+    assert '.plan-decision-table th:nth-child(5)' in css
 
 
 def test_compact_plan_table_headers_and_sticky_context_are_presentational():
@@ -264,7 +267,7 @@ def test_compact_plan_table_headers_and_sticky_context_are_presentational():
     assert 'function planTableHeaders(identity,orderedHeading)' in app
     assert 'orderedHeading.replace(/^Заказано,\\s*/' in app
     assert 'S.presentOrderedDemand(row,horizon)' in app
-    assert '(sh.reason_codes||[]).map(S.shippableReasonLabel)' in app
+    assert "workspaceDecisionHeaders('Кластер')" in app
     assert '-webkit-line-clamp:3' in css
     assert '.plan-table thead th{position:sticky' in css
     assert '.plan-table-identity{position:sticky' in css
