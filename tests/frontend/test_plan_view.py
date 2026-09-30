@@ -174,7 +174,7 @@ def test_product_cluster_columns_place_ordered_demand_after_inbound():
 
 def test_search_selection_reconciles_against_visible_items():
     app=(ROOT/'frontend/assets/js/app.js').read_text()
-    assert 'selected=S.reconcileSelectedSku(visible,state.planView.selectedSku)' in app
+    assert 'P.buildModel(snap,state.workingPlan.plan,state.planView)' in app
 
 
 def test_cluster_plan_items_group_matrix_by_cluster_without_collapsing_skus():
@@ -239,7 +239,7 @@ def test_cluster_workspace_reuses_existing_ordered_demand_and_status_helpers():
     assert 'function clusterWorkspace(item,snap)' in app
     assert 'S.presentOrderedDemand(row,horizon)' in app
     assert 'workingStatus(row)' in app
-    assert "workspaceDecisionHeaders('Товар')" in app
+    assert "workspaceDecisionHeaders(cluster?'Товар':'Кластер',horizon)" in app
 
 
 def test_compact_plan_tables_keep_identity_and_shared_column_grid():
@@ -249,9 +249,9 @@ def test_compact_plan_tables_keep_identity_and_shared_column_grid():
     assert '<strong class="plan-product-article">' in app
     assert '<span class="plan-product-name"' in app
     assert '<small class="plan-product-sku">SKU ${S.escapeHtml(row.sku)}</small>' in app
-    assert 'workspaceDecisionRow(row,S.escapeHtml(row.destination_cluster_id),horizon)' in app
-    assert '<td class="plan-table-identity">${identity}</td>' in app
-    for label in ('Спрос и остатки', 'Рекомендации', 'Упаковка', 'К поставке'):
+    assert 'workspaceDecisionRow(row,identity,horizon,index)' in app
+    assert '<div>${identity}</div></div></td>' in app
+    for label in ('FBO', 'В пути', 'Наш расчёт', 'К поставке'):
         assert label in app
     for data in ('current_fbo_stock', 'inbound_qty', 'calculated_need_qty',
                  'pack_multiple', 'workingEditor(row)', 'workingStatus(row)'):
@@ -267,7 +267,7 @@ def test_compact_plan_table_headers_and_sticky_context_are_presentational():
     assert 'function planTableHeaders(identity,orderedHeading)' in app
     assert 'orderedHeading.replace(/^Заказано,\\s*/' in app
     assert 'S.presentOrderedDemand(row,horizon)' in app
-    assert "workspaceDecisionHeaders('Кластер')" in app
+    assert "workspaceDecisionHeaders(cluster?'Товар':'Кластер',horizon)" in app
     assert '-webkit-line-clamp:3' in css
     assert '.plan-table thead th{position:sticky' in css
     assert '.plan-table-identity{position:sticky' in css

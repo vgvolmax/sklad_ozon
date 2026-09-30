@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from io import BytesIO
+import re
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from openpyxl import Workbook
@@ -130,5 +131,16 @@ def _normalize_zip_metadata(payload: bytes) -> bytes:
             info = ZipInfo(name, _FIXED_TIMESTAMP)
             info.compress_type = ZIP_DEFLATED
             info.external_attr = archive.getinfo(name).external_attr
-            rebuilt.writestr(info, archive.read(name))
+            content = archive.read(name)
+            if name == "docProps/core.xml":
+                # save_workbook replaces modified with wall-clock time even when
+                # properties were fixed before save. Replace only the timestamp
+                # text in this controlled openpyxl output, preserving namespace
+                # declarations and the dcterms QName used by xsi:type.
+                fixed = (datetime(*_FIXED_TIMESTAMP).isoformat() + "Z").encode()
+                content = re.sub(
+                    rb"(<dcterms:(?:created|modified)\b[^>]*>)[^<]*(</dcterms:(?:created|modified)>)",
+                    lambda match: match[1] + fixed + match[2], content,
+                )
+            rebuilt.writestr(info, content)
     return target.getvalue()

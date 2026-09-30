@@ -112,7 +112,7 @@ Product Completion uses one non-selectable placement strategy: available stock i
 3. **Экономика** — детальная юнитка и маршрутные затраты.
 4. **Данные** — импорт, актуальность, настройки и mappings.
 
-Главный экран «План» строится сверху вниз: контекст данных → сценарий → decision line → фильтры → таблица. Детали строки открываются в широком правом drawer, а не в модальном окне.
+Главный экран «План» строится сверху вниз: контекст данных → сценарий → decision line → фильтры → таблица. В Плане детали раскрываются внутри строки: вся строка и её пояснения образуют одну выделенную поверхность. Другие аналитические detail drawer сохраняют свой контракт.
 
 «Потоки спроса» имеют трёхзонную desktop-композицию:
 
@@ -212,7 +212,7 @@ Motion минимален и сообщает состояние: открыти
 
 `Данные` is API-first: `OzonConnectionPanel` and `CredentialVaultDialog` own setup, restart unlock, lock, connection checks, explicit sync, and domain-level freshness. The connection panel presents one compact ordered DNS → TLS → Seller API → permissions diagnostic with per-stage timings; the same diagnostic gates heavy sync and preserves a stable panel while it runs. `SourceModePanel` exposes FILES only as an explicit reserve analytical workflow; one analysis run never mixes API and file source evidence.
 
-`План` has `Товары | Отгрузки`. Inside `Товары`, `По товарам | По кластерам` changes only the direction in which the same immutable `SKU × destination_cluster_id` matrix is viewed. Product perspective remains article-first and SKU-backed; cluster perspective groups the same decision and shippable rows by destination cluster without changing shipment intent. The shared `PlanEntitySelector` owns bounded listbox behavior, while explicit product and cluster workspaces keep `Ozon → Наша потребность → План`, exact whole-pack evidence, and `Не рассчитано` for incomplete totals.
+`План` has `Товары | Отгрузки`. Inside `Товары`, `По товарам | По кластерам` changes only the direction in which the same immutable `SKU × destination_cluster_id` matrix is viewed. Product perspective remains article-first and SKU-backed; cluster perspective groups the same decision and shippable rows by destination cluster without changing shipment intent. The shared `PlanWorkspace` owns the horizontal product/cluster context strip and paginated full picker; `AppDialog` owns its native modal and bulk confirmations. Product and cluster workspaces retain exact whole-pack evidence and explicit partial/unknown coverage.
 
 `ShipmentIntentForm` uses native date inputs and checkboxes. `SellerWarehouseSelector` uses a native `<select>` only when several active warehouses require choice. `HandoffPointSelector` is the single authored asynchronous combobox: remote search begins after four trimmed characters and resolved points remain backend evidence only for the current process.
 
@@ -233,11 +233,21 @@ The four top-level sections share the compact navigation, quiet surface and
 typographic hierarchy of the reviewed workspace concept. The shipped Plan,
 Flow, source and shipment actions retain their original data ownership.
 
-Plan places the calculation context above the product/cluster selector and
-selected workspace. Its decision table has five groups: identity, demand and
-stocks, recommendations, packing, and final working quantity. Source selection,
-whole-pack editing, delta, volume, zones and status stay on the same decision
-row. Product and cluster perspectives share this structure.
+Plan uses the approved horizontal-card prototype: a compact data/settings
+band, one searchable product/cluster strip, and a full-width selected workspace.
+The strip renders at most 120 matching cards plus the selected matching item;
+the full-list modal uses pages of 100. Search filters cards without moving the
+opened workspace. Selection from the full list reveals the chosen card.
+The table shows identity, FBO, inbound, ordered quantity, Ozon, Need, our
+analytical plan, pack multiple, editable working quantity and concise status.
+An inline disclosure retains whole-pack system/selected-source recommendations,
+source eligibility/actions, seller stock, unit volume, zone and exact causes.
+One expanded row and all its evidence use `--workspace-selected` together;
+this is the same grouped-surface behavior as Economics. Quantity delta and
+working volume stay visible beside the editor. Unknown totals are qualified
+known subtotals, never fabricated complete values. Settings and bulk actions
+use native disclosures; the table owns overflow without constraining Shipments.
+Runtime geometry lives in `plan_workspace.css` using existing global tokens.
 
 Flow has a compact control band and three working columns: context selector,
 selected context with its evidence summary and exact routes, and route detail.

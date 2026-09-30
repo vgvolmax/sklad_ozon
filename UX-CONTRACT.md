@@ -383,9 +383,7 @@ this scenario. A missing route blocks a universal price recommendation.
 
 ## Responsive/zoom
 
-Plan's five decision-table groups preserve all exact values and working-plan
-actions in both product and cluster views. Grouping is presentation only;
-each line remains `SKU × destination_cluster_id`.
+Plan's compact table and inline evidence preserve all exact values and working-plan actions in both perspectives. Each line remains `SKU × destination_cluster_id`; context selection never changes shipment scope.
 
 Flow search restores focus after rendering so typing can continue. Context
 summary labels follow the selected origin/destination role, and exact route
@@ -400,7 +398,7 @@ selections. Pack editing/import/export and mappings remain actionable in the
 secondary panel.
 
 Desktop/laptop primary. At narrow width/200% zoom:
-- article selector stacks above selected-product detail;
+- the horizontal context strip and controls reflow above full-width detail;
 - tables own horizontal overflow;
 - root page must not use `overflow:hidden` to fake fit;
 - shipment controls stack logically;
@@ -435,8 +433,53 @@ The user remains the final actor and completes the real supply manually in Ozon.
 
 - The Plan table distinguishes `Рекомендация` from editable `К поставке`, and shows signed `Δ` plus volume calculated from the working quantity.
 - `−` and `+` move by exactly one known pack. Direct input commits on Enter and cancels on Escape; invalid input is never rounded or saved. Zero is an explicit valid decision.
-- Manual lines say `вручную`, automatic lines say `авто`, and a manual line offers `К рекомендации`, which deletes the override rather than copying the recommendation.
+- Manual lines say `вручную`, automatic lines say `авто`, and a manual line offers `К нашему расчёту`, which deletes the override and Ozon selection rather than copying a value.
 - The compact summary exposes ready, attention, manual, and orphan counts. Product and cluster perspectives share one authoritative server response.
 - In API mode, the Ozon column identifies the exact `Рекомендуемая поставка` value from the uploaded Ozon XLSX with source horizon and report dates. Its exact quantity, the manager-selected source, and the final working quantity remain distinct. Ozon may be selected only when backend evidence and quality gates allow it; return to the own model is always available on a selected line. The per-view bulk action names suitable and skipped rows and reports server results.
 - After source selection, the backend changes `working_plan_id` and invalidates candidate, validation and export results. The manager can download a separate provenance worksheet; the Ozon import template keeps its existing three columns.
 - A changed recommendation preserves the manual decision and calls out the change. Stock/capacity conflicts preserve individually valid entries but block execution. Working Plan load failure never falls back to browser-calculated quantities.
+
+
+## Plan context cards and inline evidence (2026-09-30)
+
+The approved Plan prototype replaces the permanent sidebar with one horizontal
+context strip (`PlanWorkspace` in `plan_workspace.js`). Product IDs are SKU;
+cluster IDs are destination cluster identities from the analysis. Duplicate
+articles remain separate SKU cards. Switching perspective preserves each
+selection and changes presentation only. Search is immediate, IME-safe and
+has a clear action; it filters cards without changing the opened context.
+Card attention/manual filters are independent of the selected table's filters.
+A native `AppDialog` full picker searches all contexts and paginates at 100;
+selection clears incompatible strip filters so the chosen context is visible.
+The strip caps rendering at 120 plus its selected matching item, exposes arrows,
+visible scrollbars, arrow/Home/End focus navigation and Enter/Space selection.
+
+The compact table retains exact FBO/inbound/orders/Ozon/Need/analytical values,
+pack multiple, server working quantity, delta, volume and concise status.
+Expanding a line colors its row and all evidence as one surface. Evidence
+contains full identity, all reasons, zones, unit volume, seller stock, original
+whole-pack system recommendation and current selected-source recommendation,
+plus the existing source choice/reset actions. Unknown quantity differs from
+explicit zero. Qualified known subtotal is displayed alongside unknown count;
+attention/blocked statuses remain explicit and never claim shipment acceptance.
+Working Plan load failure leaves quantities unknown without browser fallback.
+
+Enter commits exact integers through the existing backend; Escape cancels.
+IME composition never submits. Invalid or server-rejected input stays beside
+an associated field error. Only successful server responses change quantities.
+Global mutation/stale guards remain authoritative and shipment evidence is
+invalidated by successful edits or source choice. Table/strip scroll and focus
+survive render. Bulk actions name and confirm the exact selected context and
+row-filter scope; accepting our calculation explicitly removes manual quantities and Ozon selections in that scope. Global reset names both quantities and sources. Source bulk confirms the eligible/skipped scope; returning to our model preserves manual quantities. A confirmation captures analysis and working-plan identities and is rejected after replacement or invalidation.
+Global override reset has a separate confirmation. Single-line editing remains
+reversible through the existing server reset; no browser undo ledger is added.
+`AppDialog` in `components.js` owns native modal focus, Escape, title, close and
+focus restoration; its shared styling uses existing tokens.
+
+Opening Shipments leaves its real intent, active warehouse/handoff search,
+explicit validation, temporary-draft disclosure and export flow unchanged.
+It performs no Ozon request merely because a context or a tab was selected.
+Browser acceptance lives in `tests/browser/plan_workspace_smoke.py`: production
+assets with synthetic response contracts, external requests blocked, desktop,
+narrow/reflow, source disclosure, editing/error/retry, exact bulk scope, keyboard
+and modal restoration. Existing backend and Flow tests remain required.
