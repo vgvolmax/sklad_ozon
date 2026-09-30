@@ -106,6 +106,7 @@ def main():
             checks.append("manual pack autosave and provenance; confirmation; no rounding; reload")
 
             page.locator('[data-composition="demo-kazan"] summary').click()
+            page.wait_for_function("document.querySelector('[data-cluster=\"demo-kazan\"]').classList.contains('is-open')", timeout=1500)
             assert page.locator('[data-cluster="demo-kazan"]').evaluate("(n)=>n.classList.contains('is-open')")
             page.locator('[data-cluster="demo-kazan"] [data-edit-pack="39439"]').click()
             page.locator("#pack-39439").fill("2")
