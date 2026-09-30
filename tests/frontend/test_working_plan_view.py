@@ -81,6 +81,16 @@ console.log(JSON.stringify(JSON.parse(requests[0].options.body)));
                       'action': 'set_zero', 'lines': [{'sku': 'SKU-A', 'destination_cluster_id': 'Москва'}]}
 
 
+def test_replaced_or_invalidated_working_plan_discards_rejected_edit():
+    result = run_working_plan_lifecycle("""
+const test=SkladOzon.__workingPlanTest,current=test.getState(),edited={...current,workingPlan:{...current.workingPlan,editError:{key:'SKU-A|||Москва',quantity:'7',message:'Не кратно'}}};
+const invalidated=SkladOzon.invalidateOperationalPlan(edited);
+test.setState(edited);test.loadWorkingPlan();await flush();
+console.log(JSON.stringify({invalidated:invalidated.workingPlan.editError,loaded:test.getState().workingPlan.editError}));
+""")
+    assert result == {'invalidated': None, 'loaded': None}
+
+
 def test_working_plan_ui_uses_one_server_authoritative_state():
     app = (ROOT / 'frontend/assets/js/app.js').read_text()
     core = (ROOT / 'frontend/assets/js/core.js').read_text()
@@ -245,6 +255,6 @@ def test_all_working_plan_controls_use_global_mutation_lock():
     assert 'busy=state.workingPlan.mutationBusy' in app
     assert "rowSaving=state.workingPlan.savingKeys.includes(key)" in app
     assert "line.is_overridden?`<button type=\"button\" class=\"working-reset\" data-working-reset ${busy?'disabled':''}" in app
-    assert 'data-working-bulk="reset_to_system" ${state.workingPlan.mutationBusy||!visible.length?' in app
-    assert 'data-working-bulk="set_zero" ${state.workingPlan.mutationBusy||!visible.length?' in app
-    assert "data-working-global-reset ${state.workingPlan.mutationBusy?'disabled':''}" in app
+    assert 'data-working-bulk="reset_to_system" ${state.workingPlan.mutationBusy||state.workingPlan.busy||!state.workingPlan.plan||!visible.length?' in app
+    assert 'data-working-bulk="set_zero" ${state.workingPlan.mutationBusy||state.workingPlan.busy||!state.workingPlan.plan||!visible.length?' in app
+    assert "data-working-global-reset ${state.workingPlan.mutationBusy||state.workingPlan.busy||!state.workingPlan.plan?'disabled':''}" in app
