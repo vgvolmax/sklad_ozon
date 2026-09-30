@@ -170,6 +170,25 @@ def main():
             assert page.locator(".empty").is_visible()
             assert page.locator("#prepare").is_disabled()
             checks.append("no-ready empty state; zero differs from unknown")
+            # The handoff is a standalone file, so exercise file:// offline.
+            offline = browser.new_context(locale="ru-RU", timezone_id="Europe/Moscow")
+            offline.set_offline(True)
+            file_page = offline.new_page()
+            file_page.on("pageerror", lambda e: errors.append(str(e)))
+            file_page.on("request", lambda r: external.append(r.url) if not r.url.startswith("file:") else None)
+            file_page.goto((ROOT / PAGE).as_uri())
+            assert file_page.locator("[data-cluster]").count() == 3
+            file_page.locator("#fix-plan").click()
+            file_page.locator("#pack-39439").fill("5")
+            file_page.locator("#pack-39439").press("Enter")
+            file_page.wait_for_function("ShipmentDemo.getState().manual['39439']?.value===5")
+            file_page.locator("#confirm-39439").click()
+            file_page.locator("#repair-done").click()
+            file_page.reload()
+            assert file_page.locator("[data-cluster]").count() == 4
+            assert file_page.evaluate("ShipmentDemo.getState().manual['39439'].value") == 5
+            offline.close()
+            checks.append("standalone file opens offline and retains manual packs after reload")
             assert not errors,errors
             assert not external,external
             browser.close()
