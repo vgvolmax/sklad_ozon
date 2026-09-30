@@ -236,11 +236,12 @@ def main():
 
 
             # Leaving a pending lookup must discard its late response.
+            previous_evidence = page.evaluate("ShipmentDemo.getState().config['demo-rostov'].evidence")
             page.locator("#find-demo-rostov").click()
             page.locator("#slot-search").click()
             page.locator("#slots-dialog").press("Escape")
             page.wait_for_timeout(700)
-            assert page.evaluate("ShipmentDemo.getState().config['demo-rostov'].evidence") is None
+            assert page.evaluate("ShipmentDemo.getState().config['demo-rostov'].evidence") == previous_evidence
             checks.append("closing pending search discards late response")
             search_for("demo-rostov")
             page.locator('[data-slot-index="0"]').click()
