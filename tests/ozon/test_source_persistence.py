@@ -51,6 +51,15 @@ def test_source_snapshot_round_trip_restores_domain_types(tmp_path):
     assert load_source_snapshot_if_exists(path) == original
 
 
+def test_saved_catalog_name_is_restored_and_old_cache_remains_readable():
+    document = source_snapshot_to_document(snapshot())
+    facts = document["snapshot"]["product_facts"][0]
+    facts["product_name"] = "Товар из карточки"
+    assert source_snapshot_from_document(document).product_facts[0].product_name == "Товар из карточки"
+    facts.pop("product_name")
+    assert source_snapshot_from_document(document).product_facts[0].product_name == ""
+
+
 def test_source_snapshot_round_trip_preserves_exact_56_day_recommendations(tmp_path):
     path = tmp_path / "source.json"
     original = replace(snapshot(), recommended_supply=LocalSaleResult(

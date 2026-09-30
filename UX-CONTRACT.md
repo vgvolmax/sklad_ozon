@@ -160,9 +160,13 @@ API-backed calculation. This is the sole allowed recommendation-channel XLSX
 exception; the separate FILES mode remains the reserve analytical workflow.
 The form preserves both selected files during unrelated renders and identifies
 the current API snapshot date. The recommendation file is optional: without it,
-the calculated plan remains available and Ozon comparison is unknown. Invalid
-XLSX has field-level correction feedback; row exclusions and file provenance
-appear in the resulting analysis.
+the calculated plan remains available and Ozon comparison is unknown. Selecting the XLSX immediately starts backend validation against the current API
+SKU and cluster catalogs. The file shows accepted/excluded rows, SKU/cluster counts,
+report dates, horizon and diagnostics before calculation. Pending or invalid selected
+files block calculation; retry and remove actions stay next to the upload. Removing
+the optional file restores the own-model workflow. Changing the API snapshot or
+horizon revalidates the retained upload; stale asynchronous responses cannot authorize
+calculation. Final analysis independently repeats the same validation rules.
 A horizon or business-date mismatch keeps the own-model plan available and
 explains why the Ozon comparison is unavailable. No stale API recommendation
 status or remote recommendation request is shown during source refresh.

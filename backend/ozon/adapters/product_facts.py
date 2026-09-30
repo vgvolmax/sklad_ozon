@@ -21,6 +21,7 @@ class ProductApiFacts:
     price: Decimal | None = None
     commission_rate: Decimal | None = None
     volume_liters: Decimal | None = None
+    product_name: str = ""
 
 
 def _decimal(value):
@@ -106,7 +107,10 @@ def normalize_product_attributes(response, catalog):
             code = ("PRODUCT_API_DIMENSION_UNIT_UNSUPPORTED" if all(_decimal(raw.get(key)) is not None and _decimal(raw.get(key)) > 0 for key in ("width", "height", "depth")) else "PRODUCT_API_DIMENSIONS_MISSING")
             diagnostics.append(ImportDiagnostic("warning", code, f"Valid package dimensions are unavailable for SKU {item.sku}."))
             incomplete.add(item.sku)
-        records.append(ProductApiFacts(item.sku, item.offer_id, item.product_id, volume_liters=volume))
+        name = raw.get("name")
+        records.append(ProductApiFacts(item.sku, item.offer_id, item.product_id,
+                                      volume_liters=volume,
+                                      product_name=name.strip() if isinstance(name, str) else ""))
     return tuple(records), tuple(diagnostics), OzonRecordQualityEvidence(rejected, tuple(sorted(incomplete)))
 
 
@@ -138,5 +142,6 @@ def merge_product_facts(catalog, prices, attributes):
     price_by_sku = {item.sku: item for item in prices}
     dimensions_by_sku = {item.sku: item for item in attributes}
     return tuple(replace(price_by_sku.get(item.sku, ProductApiFacts(item.sku, item.offer_id, item.product_id)),
-                         volume_liters=getattr(dimensions_by_sku.get(item.sku), "volume_liters", None))
+                         volume_liters=getattr(dimensions_by_sku.get(item.sku), "volume_liters", None),
+                         product_name=getattr(dimensions_by_sku.get(item.sku), "product_name", ""))
                  for item in catalog)

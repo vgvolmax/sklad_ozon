@@ -62,3 +62,24 @@ def test_bad_dimensions_are_scoped_and_never_fabricated_as_zero():
     assert [item.code for item in diagnostics] == [
         "PRODUCT_API_DIMENSION_UNIT_UNSUPPORTED", "PRODUCT_API_DIMENSIONS_MISSING",
     ]
+
+
+def test_catalog_names_survive_merge_even_without_stock_price_or_dimensions():
+    from backend.ozon.adapters.product_facts import merge_product_facts
+    records, _, _ = normalize_product_attributes({"result": [
+        {"id": 101, "offer_id": "ART-1", "name": "  Товар один  "},
+        {"id": 102, "offer_id": "ART-2", "name": "Товар два"},
+    ]}, CATALOG)
+    merged = merge_product_facts(CATALOG, (), records)
+    assert [(x.sku, x.product_name) for x in merged] == [
+        ("SKU-1", "Товар один"), ("SKU-2", "Товар два")]
+    assert all(x.volume_liters is None and x.price is None for x in merged)
+
+
+def test_invalid_name_does_not_erase_valid_dimensions_or_create_a_label():
+    records, _, _ = normalize_product_attributes({"result": [{
+        "id": 101, "name": {"debug": "bad"}, "width": 100, "height": 50,
+        "depth": 20, "dimension_unit": "mm",
+    }]}, CATALOG)
+    assert records[0].product_name == ""
+    assert records[0].volume_liters == Decimal("0.1")

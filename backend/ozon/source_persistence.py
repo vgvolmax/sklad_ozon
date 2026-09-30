@@ -154,10 +154,13 @@ def _decimal(value):
 
 def _facts(value):
     item = _object(value)
+    name = item.get("product_name", "")
+    if not isinstance(name, str):
+        raise ValueError("invalid product name")
     return ProductApiFacts(
         _required(item, "sku", str), _required(item, "article", str),
         _required(item, "product_id", int), _decimal(item.get("price")),
-        _decimal(item.get("commission_rate")), _decimal(item.get("volume_liters")),
+        _decimal(item.get("commission_rate")), _decimal(item.get("volume_liters")), name,
     )
 
 

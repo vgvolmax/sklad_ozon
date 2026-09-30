@@ -34,7 +34,7 @@ SYNC_STAGES = (
     ("seller_warehouses", "Склады отправления продавца", "Получение складов"),
     ("products", "Каталог SKU", "Получение каталога товаров"),
     ("product_prices", "Цены и комиссии", "Получение цен и комиссий"),
-    ("product_attributes", "Габариты товаров", "Получение габаритов товаров"),
+    ("product_attributes", "Названия и габариты товаров", "Получение названий и габаритов товаров"),
     ("fbo_stock", "FBO остатки", "Получение остатков FBO"),
     ("seller_stock", "Остаток продавца", "Получение остатков продавца"),
     ("inbound", "Поставки в пути", "Поиск заявок"),
@@ -540,10 +540,11 @@ def refresh_ozon_source(client, *, mode="smart", base_snapshot=None,
     if product_evidence.complete:
         prices = run("product_prices", lambda: call(fetch_product_prices, client, catalog, stage="product_prices"), ())
         reuse_attributes = (not catalog_changed and
+                            all(row.product_name for row in base_snapshot.product_facts) and
                             _fresh_complete(old_evidence.get("product_attributes"), current, PRODUCT_ATTRIBUTES_TTL))
         if reuse_attributes:
             reuse("product_attributes")
-            attributes = tuple(row for row in base_snapshot.product_facts if row.volume_liters is not None)
+            attributes = base_snapshot.product_facts
         else:
             attributes = run("product_attributes", lambda: call(fetch_product_attributes, client, catalog, stage="product_attributes"), ())
     else:

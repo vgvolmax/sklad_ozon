@@ -32,7 +32,7 @@ from backend.ingestion.cluster_resolution import resolve_analysis_clusters
 from backend.domain.contracts import (AnalysisSourceCoverage, ImportResult,
                                       ReportMeta, ImportDiagnostic, SourceMode)
 from backend.ingestion.availability import import_availability
-from backend.ingestion.recommendations import import_recommendation_xlsx
+from backend.ingestion.recommendations import import_recommendation_xlsx, check_recommendation_import
 from backend.ingestion.restrictions import import_restrictions
 from backend.ingestion.orders import import_orders, scope_orders_to_coverage
 from backend.analytics._weeks import (ObservationCoverage,
@@ -688,7 +688,8 @@ async def ozon_handoff_search(request:Request):
         return error(400,'INVALID_SUPPLY_TYPES','Unknown shipment method.','supply_types')
     try:
         context=OZON_VAULT.capture_context()
-        points=search_handoff_points(OZON_CLIENT.bind_context(context),query,ozon_supply_types)
+        points=await asyncio.to_thread(search_handoff_points,
+            OZON_CLIENT.bind_context(context),query,ozon_supply_types)
         return commit_active_credential_context(
             context,lambda:(HANDOFF_STORE.put_all(points),
                             {'api_version':1,'items':wire(points)})[1])
@@ -1163,6 +1164,64 @@ async def validate_unitka(request:Request):
             'diagnostics':wire(diagnostics),
             'content_sha256':hashlib.sha256(data).hexdigest()}
 
+def _recommendation_preflight_source(source_id):
+    snapshot = OZON_SOURCE_STORE.get(source_id)
+    if snapshot is None:
+        return None, error(400,'OZON_SOURCE_SNAPSHOT_NOT_FOUND',
+            'Обновите данные Ozon перед проверкой файла.','source_snapshot_id')
+    latest = OZON_SOURCE_STORE.latest()
+    if latest is None or latest.source_snapshot_id != source_id:
+        return None, error(409,'OZON_SOURCE_SNAPSHOT_STALE',
+            'Источник Ozon обновился. Повторите проверку файла.','source_snapshot_id')
+    if _complete_current_catalog(snapshot) is None:
+        return None, error(409,'CURRENT_OZON_CATALOG_INCOMPLETE',
+            'Обновите каталог Ozon перед проверкой файла.','source_snapshot_id')
+    try:
+        require_source_credential_context(snapshot, OZON_VAULT.credential_context_id(),
+                                          field='source_snapshot_id')
+    except ShipmentPreparationError as exc:
+        return None, error(exc.http_status,exc.code,exc.message,exc.field)
+    return snapshot, None
+
+
+@router.post('/api/import/recommendations/validate')
+async def validate_recommendations(request:Request):
+    """Validate recommendations against retained API identities, without mutations."""
+    form = await request.form()
+    upload = form.get('file')
+    if upload is None or isinstance(upload, str):
+        return error(400,'MISSING_FIELD','Выберите XLSX «Доступность товаров».','recommendation_file')
+    raw_horizon = str(form.get('horizon_days', '')).strip()
+    if not raw_horizon.isascii() or not raw_horizon.isdigit() or int(raw_horizon) <= 0:
+        return error(400,'INVALID_HORIZON_DAYS','Expected a positive integer.','horizon_days')
+    horizon = int(raw_horizon)
+    source_id = str(form.get('source_snapshot_id', '')).strip()
+    snapshot, failure = _recommendation_preflight_source(source_id)
+    if failure is not None:
+        return failure
+    try:
+        data = await read(upload,'recommendation_file')
+    except OverflowError:
+        return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.','recommendation_file')
+    imported = await asyncio.to_thread(import_recommendation_xlsx,
+        data, meta(upload).source_name, _complete_current_catalog(snapshot), snapshot.clusters)
+    _, failure = _recommendation_preflight_source(source_id)
+    if failure is not None:
+        return failure
+    checked = check_recommendation_import(imported, horizon_days=horizon,
+                                          source_as_of=snapshot.source_as_of)
+    return {'api_version':1, **wire(checked),
+        'source_snapshot_id':source_id, 'source_as_of':snapshot.source_as_of.isoformat(),
+        'horizon_days':horizon, 'record_count':len(imported.records),
+        'sku_count':len({row.sku for row in imported.records}),
+        'cluster_count':len({row.cluster_id for row in imported.records}),
+        'excluded_record_count':len({d.row for d in imported.diagnostics if d.row is not None}),
+        'warning_count':sum(d.severity=='warning' for d in imported.diagnostics),
+        'error_count':sum(d.severity=='error' for d in imported.diagnostics),
+        'diagnostics':wire(imported.diagnostics), 'report_meta':wire(imported.meta),
+        'content_sha256':hashlib.sha256(data).hexdigest()}
+
+
 async def prepare_analysis(request:Request, request_id="http"):
     form=await request.form(); common=['availability_file','restrictions_file','orders_file']
     try: source_mode=SourceMode(str(form.get('source_mode','files')).strip().lower())
@@ -1284,24 +1343,11 @@ async def prepare_analysis(request:Request, request_id="http"):
             except OverflowError:return error(413,'UPLOAD_TOO_LARGE','File exceeds 64 MiB.','recommendation_file')
             imported = await asyncio.to_thread(import_recommendation_xlsx,
                 data, meta(upload).source_name, source_inputs.current_catalog_skus, snapshot.clusters)
-            if any(d.severity == 'error' for d in imported.diagnostics):
-                return error(422,'INVALID_RECOMMENDATION_FILE',
-                    next(d.message for d in imported.diagnostics if d.severity == 'error'),
-                    'recommendation_file')
-            if not imported.records:
-                return error(422,'EMPTY_RECOMMENDATION_FILE',
-                    'В отчёте нет подходящих строк для текущих SKU и кластеров Ozon.',
-                    'recommendation_file')
-            if supply_period_for_days(horizon) is None:
-                recommendation_error = 'Горизонт рекомендации Ozon не поддерживается: выберите 7, 14, 28 или 56 дней.'
-            elif horizon != imported.meta.recommendation_horizon_days:
-                recommendation_error = (f'Горизонт файла {imported.meta.recommendation_horizon_days} дней '
-                    f'не совпадает с горизонтом расчёта {horizon} дней.')
-            elif (datetime.fromisoformat(imported.meta.report_generated_at)
-                  .astimezone(timezone(timedelta(hours=3))).date() != as_of):
-                recommendation_error = ('Дата отчёта рекомендаций отличается от даты снимка API. '
-                                        'Обновите данные Ozon и выгрузите свежий XLSX.')
-            else:
+            checked = check_recommendation_import(imported, horizon_days=horizon, source_as_of=as_of)
+            if not checked.valid:
+                return error(422,checked.code,checked.message,'recommendation_file')
+            recommendation_error = checked.message
+            if checked.usable_for_comparison:
                 recommendation_error = None
                 recommendation = LocalSaleResult(imported.records,
                     imported.meta.report_generated_at,

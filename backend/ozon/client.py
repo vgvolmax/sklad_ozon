@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
 import json
 import logging
 import math
 import socket
 import ssl
 import time
+from threading import Lock
 from typing import Callable, Mapping, Protocol
 import unicodedata
 from urllib.error import HTTPError, URLError
@@ -16,13 +18,16 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from .contracts import OzonCredentialContext, OzonCredentials, OzonErrorCode
-from .endpoints import OZON_API_BASE
+from .endpoints import FBO_STOCK_PATH, OZON_API_BASE
 from .vault import CredentialVault
 
 
 logger = logging.getLogger(__name__)
 _TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
 _MAX_SERVER_RETRY_AFTER_SECONDS = 60.0
+# Conservative application pacing, not an assertion of Ozon's account quota.
+_REQUEST_INTERVAL_SECONDS = 1.1
+_STOCK_INTERVAL_SECONDS = 6.0
 MAX_VENDOR_MESSAGE_CHARS = 300
 
 
@@ -92,6 +97,8 @@ class OzonClient:
         transport: Transport = urllib_transport,
         timeout: float = 15.0,
         sleeper: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
     ) -> None:
         if isinstance(timeout, bool) or not 0 < timeout < 60:
             raise ValueError("timeout must be finite and between 0 and 60 seconds")
@@ -99,6 +106,13 @@ class OzonClient:
         self._transport = transport
         self._timeout = float(timeout)
         self._sleep = sleeper
+        self._clock = clock
+        self._wall_clock = wall_clock
+        self._request_lock = Lock()
+        self._next_request = 0.0
+        self._next_stock_request = 0.0
+        self._cooldown_until = 0.0
+        self._cooldown_error: OzonClientError | None = None
 
     def post_json(
         self, path: str, payload: dict, *, policy: OzonRequestPolicy,
@@ -132,7 +146,9 @@ class OzonClient:
         for attempt in range(1, attempts + 1):
             self._assert_context_active(context, path)
             try:
-                response = self._transport(request, request_timeout)
+                response = self._send(request, request_timeout, path, context, attempt)
+            except OzonClientError:
+                raise
             except Exception as exc:
                 self._assert_context_active(context, path)
                 logger.warning("Ozon request transport failure path=%s attempt=%d", path, attempt)
@@ -218,28 +234,61 @@ class OzonClient:
         endpoint: str,
         credentials: OzonCredentials,
     ) -> float:
-        retry_after = next((value for key, value in response.headers.items() if key.lower() == "retry-after"), None)
-        if retry_after is not None:
+        value = self._retry_after(response)
+        if value is not None and value > _MAX_SERVER_RETRY_AFTER_SECONDS:
+            error = self._http_error(response, endpoint=endpoint, credentials=credentials)
+            raise OzonClientError(
+                OzonErrorCode.RATE_LIMITED,
+                "Ozon API rate limit exceeds the client wait budget",
+                endpoint=error.endpoint, status=error.status,
+                vendor_code=error.vendor_code, vendor_message=error.vendor_message,
+                request_id=error.request_id,
+            )
+        fallback = min(60.0, 10.0 * 2 ** (attempt - 1)) if response.status == 429 else self._backoff(attempt)
+        return max(value or 0.0, fallback)
+
+    def _retry_after(self, response: TransportResponse) -> float | None:
+        header = next((value for key, value in response.headers.items()
+                       if key.lower() == "retry-after"), None)
+        if header is None:
+            return None
+        try:
+            value = float(header)
+        except (TypeError, ValueError):
             try:
-                value = float(retry_after)
-                if math.isfinite(value) and 0 <= value <= _MAX_SERVER_RETRY_AFTER_SECONDS:
-                    return value
-                if math.isfinite(value) and value > _MAX_SERVER_RETRY_AFTER_SECONDS:
-                    error = self._http_error(
-                        response, endpoint=endpoint, credentials=credentials,
-                    )
-                    raise OzonClientError(
-                        OzonErrorCode.RATE_LIMITED,
-                        "Ozon API rate limit exceeds the client wait budget",
-                        endpoint=error.endpoint,
-                        status=error.status,
-                        vendor_code=error.vendor_code,
-                        vendor_message=error.vendor_message,
-                        request_id=error.request_id,
-                    )
-            except (TypeError, ValueError):
-                pass
-        return self._backoff(attempt)
+                parsed = parsedate_to_datetime(header)
+                if parsed.tzinfo is None:
+                    return None
+                value = parsed.timestamp() - self._wall_clock()
+            except (TypeError, ValueError, OverflowError):
+                return None
+        return max(0.0, value) if math.isfinite(value) else None
+
+    def _send(self, request, timeout, path, context, attempt):
+        # Shared by all bound clients. Serialize admission and response cooldown
+        # so concurrent sync/search callers cannot bypass a just-received 429.
+        with self._request_lock:
+            self._assert_context_active(context, path)
+            now = self._clock()
+            if self._cooldown_until - now > _MAX_SERVER_RETRY_AFTER_SECONDS:
+                raise self._cooldown_error
+            allowed = max(self._next_request, self._cooldown_until,
+                          self._next_stock_request if path == FBO_STOCK_PATH else 0.0)
+            if allowed > now:
+                self._sleep(allowed - now)
+            self._assert_context_active(context, path)
+            started = self._clock()
+            self._next_request = started + _REQUEST_INTERVAL_SECONDS
+            if path == FBO_STOCK_PATH:
+                self._next_stock_request = started + _STOCK_INTERVAL_SECONDS
+            response = self._transport(request, timeout)
+            if response.status == 429:
+                delay = max(self._retry_after(response) or 0.0,
+                            min(60.0, 10.0 * 2 ** (attempt - 1)))
+                self._cooldown_until = max(self._cooldown_until, self._clock() + delay)
+                self._cooldown_error = self._http_error(
+                    response, endpoint=path, credentials=context.credentials)
+            return response
 
     def _http_error(
         self,

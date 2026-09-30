@@ -94,6 +94,16 @@ def test_invalid_report_is_rejected_without_api_fallback():
     assert response.json()['error']['field'] == 'recommendation_file'
 
 
+def test_plan_uses_card_name_when_stock_response_has_no_name():
+    original = source()
+    updated = replace(original, product_facts=tuple(
+        replace(item, product_name='Название из карточки Ozon') for item in original.product_facts))
+    response = post(updated, None)
+    assert response.status_code == 200, response.text
+    rows = response.json()['snapshot']['decision_rows']
+    assert rows and all(row['product_name'] == 'Название из карточки Ozon' for row in rows)
+
+
 def test_browser_empty_file_field_keeps_own_plan_usable():
     response = post(source(), None)
     assert response.status_code == 200, response.text

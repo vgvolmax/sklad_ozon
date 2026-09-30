@@ -162,12 +162,15 @@ def test_retry_safe_is_bounded_and_respects_numeric_retry_after():
     transport = FakeTransport([
         response(429, b"{}", {"Retry-After": "2"}), response(503, b"{}"), response(),
     ])
-    sleeps = []
-    client = OzonClient(VaultStub(), transport=transport, sleeper=sleeps.append)
+    sleeps, clock = [], [0.0]
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+    client = OzonClient(VaultStub(), transport=transport, sleeper=sleep, clock=lambda: clock[0])
     result = client.post_json("/v1/test", {}, policy=OzonRequestPolicy(True, max_attempts=3))
     assert result == {"result": "ok"}
     assert len(transport.calls) == 3
-    assert sleeps == [2.0, 1.0]
+    assert sleeps == pytest.approx([10.0, 1.0, 0.1])
 
 
 def test_retry_after_above_wait_budget_stops_without_early_retry():
