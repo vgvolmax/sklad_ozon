@@ -41,7 +41,19 @@ def main():
             assert data["requests"][0]["create_at"] is None
             assert data["requests"][0]["automatic_launch"] is False
             assert data["real_requests_created"] is False
+            assert page.locator("[data-date-group]").count() == 2
+            assert page.locator("[data-date-group]").evaluate_all("(ns)=>ns.map(n=>n.dataset.dateGroup)") == ["2026-10-02","2026-10-04"]
+            colors = page.locator('[data-date-group="2026-10-02"] [data-cluster]').evaluate_all("(ns)=>ns.map(n=>getComputedStyle(n).borderTopColor)")
+            assert colors[0] == colors[1]
+            page.locator("#sort-date").select_option("desc")
+            assert page.locator("[data-date-group]").evaluate_all("(ns)=>ns.map(n=>n.dataset.dateGroup)") == ["2026-10-04","2026-10-02"]
+            page.locator("#sort-date").select_option("asc")
+            assert page.locator("#method-demo-novosibirsk-PVZ").is_disabled()
+            assert page.locator("#method-demo-novosibirsk-SC").is_disabled()
+            assert page.locator("#method-demo-novosibirsk-DIRECT").is_enabled()
+            assert "KGT" in page.evaluate("ShipmentDemo.compatibility('demo-novosibirsk','PVZ')")
             page.screenshot(path=str(ARTIFACTS / "shipments-desktop.png"), full_page=True)
+            checks.append("same delivery date same color; date sorting; KGT blocks incompatible demo points")
             checks.append("only ready clusters; no-date means manual launch")
 
             page.locator("#scheduled-demo-moscow").check()
@@ -157,11 +169,142 @@ def main():
             page.emulate_media(reduced_motion="reduce")
             page.screenshot(path=str(ARTIFACTS / "shipments-narrow.png"), full_page=True)
             checks.append("320/390/720/1024/1440 reflow; modal bounds; reduced motion")
+
+            page.set_viewport_size({"width":1440,"height":1050})
+            # Local readiness is insufficient for creation: need accepted content + a slot.
+            page.locator("#create-demo-moscow").click()
+            assert "проверка всего состава" in page.locator("#feedback").inner_text()
+            assert not page.locator("#review-dialog").is_visible()
+            page.locator("#method-demo-moscow-PVZ").click()
+            page.locator("#seller-demo-moscow").select_option("")
+            page.locator("#find-demo-moscow").click()
+            page.locator("#slot-search").click()
+            assert "действующий склад" in page.locator("#slot-result").inner_text()
+            page.locator("#slots-dialog").press("Escape")
+            page.locator("#seller-demo-moscow").select_option("demo-seller-2")
+            checks.append("creation needs accepted evidence and slot; crossdock requires seller warehouse")
+
+            def search_for(cluster, scenario="normal"):
+                page.locator(f"#find-{cluster}").click()
+                page.locator("#slots-body .doc-note summary").click()
+                page.locator("#slot-scenario").select_option(scenario)
+                page.locator("#slot-search").click()
+                page.wait_for_function("document.getElementById('slot-search')&&!document.getElementById('slot-search').disabled")
+            search_for("demo-moscow","empty")
+            assert "Нет окон" in page.locator("#slot-result").inner_text()
+            assert page.locator("#slots-apply").is_disabled()
+            page.locator("#slot-to").fill("2026-10-05")
+            page.locator("#slot-to").dispatch_event("change")
+            # Collapsed native disclosure does not stop select_option.
+            page.locator("#slots-body .doc-note summary").click()
+            page.locator("#slot-scenario").select_option("normal")
+            page.locator("#slot-search").click()
+            page.wait_for_function("document.querySelectorAll('[data-slot-index]').length===8")
+            page.screenshot(path=str(ARTIFACTS / "shipment-slots.png"), full_page=True)
+            page.locator('[data-slot-index="6"]').click()
+            page.locator("#slots-apply").click()
+            state = page.evaluate("ShipmentDemo.getState()")
+            assert state["config"]["demo-moscow"]["slot"]["day"] == "2026-10-05"
+            assert page.locator('[data-cluster="demo-moscow"]').get_attribute("data-day") == "2026-10-05"
+            assert page.locator("[data-date-group]").evaluate_all("(ns)=>ns.map(n=>n.dataset.dateGroup)") == ["2026-10-02","2026-10-04","2026-10-05"]
+            page.locator("#method-demo-moscow-SC").click()
+            assert page.evaluate("ShipmentDemo.getState().config['demo-moscow'].slot") is None
+            assert page.evaluate("ShipmentDemo.getState().config['demo-moscow'].evidence") is None
+            checks.append("empty windows retain desired date; extended search; explicit slot selection regrouping; route invalidates evidence")
+
+            search_for("demo-moscow")
+            page.locator("#slot-storage").select_option("demo-storage-alt-demo-moscow")
+            assert page.locator("[data-slot-index]").count() == 0
+            page.locator("#slot-search").click()
+            page.wait_for_function("document.querySelectorAll('[data-slot-index]').length===8")
+            page.locator('[data-slot-index="0"]').click()
+            page.locator("#slots-apply").click()
+            assert page.evaluate("ShipmentDemo.getState().config['demo-moscow'].evidence.storageId") == "demo-storage-alt-demo-moscow"
+            # A failed local save must not silently report that selection was committed.
+            search_for("demo-rostov","partial")
+            assert "Принят не весь состав" in page.locator("#slot-result").inner_text()
+            assert page.locator("#slots-apply").is_disabled()
+            draft = page.evaluate("ShipmentDemo.getState().config['demo-rostov'].evidence.draftId")
+            page.locator("#slots-dialog").press("Escape")
+            page.locator("#create-demo-rostov").click()
+            assert not page.locator("#review-dialog").is_visible()
+            search_for("demo-rostov","rate")
+            assert "429" in page.locator("#slot-result").inner_text()
+            assert page.evaluate("ShipmentDemo.getState().config['demo-rostov'].evidence.draftId") == draft
+            page.locator("#slots-dialog").press("Escape")
+            checks.append("storage warehouse comes from accepted demo response; partial content blocks creation; rate limit preserves known draft")
+
+            search_for("demo-rostov")
+            page.locator('[data-slot-index="0"]').click()
+            page.locator("#slots-apply").click()
+            page.locator("#scheduled-demo-rostov").check()
+            page.locator("#date-demo-rostov").fill("2026-10-02")
+            page.locator("#date-demo-rostov").dispatch_event("change")
+            page.locator("#time-demo-rostov").fill("11:00")
+            page.locator("#time-demo-rostov").dispatch_event("change")
+            page.locator("#create-demo-rostov").click()
+            assert "раньше окна" in page.locator("#feedback").inner_text()
+            page.locator("#date-demo-rostov").fill("2026-10-01")
+            page.locator("#date-demo-rostov").dispatch_event("change")
+            page.locator("#create-demo-rostov").click()
+            assert page.locator("#review-dialog").is_visible()
+            page.locator("#review-confirm").click()
+            page.wait_for_function("ShipmentDemo.getState().config['demo-rostov'].creation?.status==='SCHEDULED'")
+            page.wait_for_timeout(750)
+            assert page.locator("#date-demo-rostov").is_disabled()
+            assert page.locator('#create-demo-rostov').is_disabled()
+            page.locator('[data-cancel-job="demo-rostov"]').click()
+            assert page.evaluate("ShipmentDemo.getState().config['demo-rostov'].creation") is None
+            assert page.locator("#date-demo-rostov").is_enabled()
+            checks.append("request creation is separate from shipment date; before-slot validation; scheduled demo job is cancelable")
+
+            page.locator("#creation-outcome").select_option("unknown")
+            page.locator("#create-demo-moscow").click()
+            page.locator("#review-confirm").click()
+            assert page.locator("#create-demo-moscow").is_disabled()
+            page.wait_for_function("ShipmentDemo.getState().config['demo-moscow'].creation?.status==='UNKNOWN'")
+            assert page.locator("#create-demo-moscow").is_disabled()
+            page.reload()
+            assert page.locator("#create-demo-moscow").is_disabled()
+            page.locator('[data-status="demo-moscow"]').click()
+            assert page.evaluate("ShipmentDemo.getState().config['demo-moscow'].creation.status") == "SUCCESS"
+            page.locator("#logistics-demo-moscow").click()
+            assert page.locator("#logistics-body .checklist li").count() == 6
+            page.locator("#logistics-dialog").press("Escape")
+            checks.append("busy prevents duplicate create; unknown outcome survives reload; check status without retry; post-create requirements")
+
+            search_for("demo-novosibirsk")
+            page.locator('[data-slot-index="0"]').click()
+            page.locator("#slots-apply").click()
+            assert page.evaluate("ShipmentDemo.getState().config['demo-novosibirsk'].slot.from").endswith("+07:00")
+            page.locator(".demo-tools summary").click()
+            page.locator("#creation-outcome").select_option("slot_lost")
+            page.locator("#create-demo-novosibirsk").click()
+            page.locator("#review-confirm").click()
+            page.wait_for_function("ShipmentDemo.getState().config['demo-novosibirsk'].creation?.status==='FAILED'")
+            assert page.evaluate("ShipmentDemo.getState().config['demo-novosibirsk'].slot") is None
+            assert page.locator("#find-demo-novosibirsk").is_enabled()
+            assert "Окно недоступно" in page.locator('[data-cluster="demo-novosibirsk"]').inner_text()
+            search_for("demo-novosibirsk")
+            page.locator('[data-slot-index="0"]').click()
+            page.locator("#slots-apply").click()
+            page.locator("#creation-outcome").select_option("success")
+            page.locator("#create-demo-novosibirsk").click()
+            page.locator("#review-confirm").click()
+            page.wait_for_function("ShipmentDemo.getState().config['demo-novosibirsk'].creation?.status==='SUCCESS'")
+            checks.append("point timezone preserved; lost window clears selection; new search and successful demo creation")
+            # Inspection at mobile size after statuses and selected windows have changed.
+            for width in (320,390,720,1024,1440):
+                page.set_viewport_size({"width":width,"height":950})
+                assert page.evaluate("document.documentElement.scrollWidth<=innerWidth+1"), width
+            page.set_viewport_size({"width":390,"height":900})
+            page.screenshot(path=str(ARTIFACTS / "shipment-configured-narrow.png"), full_page=True)
+
             state = page.evaluate("ShipmentDemo.getState()")
             state["quantities"] = {f"{c}|{sku}":0 for c,skus in [
                 ("demo-moscow",["1783408913","1783432877"]),
                 ("demo-rostov",["1783408913","1783432877"]),
-                ("demo-novosibirsk",["1783408913","1783432877"]),
+                ("demo-novosibirsk",["1783408913","1783432877","demo-kgt-01"]),
                 ("demo-kazan",["1784511149","1783408913"]),
                 ("demo-ekaterinburg",["1784511180","1783432877"])
             ] for sku in skus}
@@ -195,10 +338,10 @@ def main():
     finally:
         server.shutdown()
         server.server_close()
-    result={"status":"passed","checks":checks,"screenshots":3,"browser_errors":errors,"external_requests":external}
+    result={"status":"passed","checks":checks,"screenshots":5,"browser_errors":errors,"external_requests":external}
     (ARTIFACTS / "verification.json").write_text(json.dumps(result,ensure_ascii=False,indent=2))
     print(json.dumps(result,ensure_ascii=False))
-    for name in ("shipments-desktop.png", "manual-pack.png", "shipments-narrow.png"):
+    for name in ("shipments-desktop.png", "manual-pack.png", "shipments-narrow.png", "shipment-slots.png", "shipment-configured-narrow.png"):
         encoded=base64.b64encode((ARTIFACTS / name).read_bytes()).decode()
         for offset in range(0,len(encoded),4000):
             print(f"SCREENSHOT|{name}|{offset:09d}|{encoded[offset:offset+4000]}")
