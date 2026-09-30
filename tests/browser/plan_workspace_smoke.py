@@ -126,25 +126,27 @@ def main():
             page.locator('#plan-picker-search input').fill('Москва')
             page.locator('#plan-picker-grid button').click()
             assert page.locator('.plan-selected-heading h2').inner_text() == 'Москва'
-            page.locator('#plan-row-toggle-0').click()
+            target_row = page.locator('[data-working-row="S1|||Москва"]')
+            quantity_input = '[data-working-row="S1|||Москва"] [data-working-input]'
+            target_row.locator('[data-plan-expand]').click()
             assert page.locator('.plan-row-group--expanded').count() == 1
             colors = page.locator('.plan-row-group--expanded td').evaluate_all('(nodes)=>nodes.map(n=>getComputedStyle(n).backgroundColor)')
             assert len(set(colors)) == 1
             page.screenshot(path=str(ARTIFACTS / 'cluster-expanded.png'), full_page=True)
-            field = page.locator('#working-input-0')
+            field = page.locator(quantity_input)
             field.fill('7')
             field.press('Enter')
-            page.wait_for_function("document.querySelector('#working-input-0').getAttribute('aria-invalid')==='true'")
-            assert page.locator('#working-input-0').input_value() == '7'
-            assert page.locator('#working-error-0').inner_text() == 'Количество должно быть кратно 10 шт.'
-            field = page.locator('#working-input-0')
+            page.wait_for_function("(selector)=>document.querySelector(selector)?.getAttribute('aria-invalid')==='true'", arg=quantity_input)
+            assert page.locator(quantity_input).input_value() == '7'
+            assert target_row.locator('[data-working-input-error]').inner_text() == 'Количество должно быть кратно 10 шт.'
+            field = page.locator(quantity_input)
             field.fill('40')
             field.press('Enter')
-            page.wait_for_function("document.querySelector('#working-input-0').value==='40' && !SkladOzon.__browserPlan.getState().workingPlan.mutationBusy")
-            assert page.locator('#working-input-0').evaluate('(node)=>document.activeElement===node')
-            page.locator('#working-input-0').fill('99')
-            page.locator('#working-input-0').press('Escape')
-            assert page.locator('#working-input-0').input_value() == '40'
+            page.wait_for_function("(selector)=>document.querySelector(selector)?.value==='40' && !SkladOzon.__browserPlan.getState().workingPlan.mutationBusy", arg=quantity_input)
+            assert page.locator(quantity_input).evaluate('(node)=>document.activeElement===node')
+            page.locator(quantity_input).fill('99')
+            page.locator(quantity_input).press('Escape')
+            assert page.locator(quantity_input).input_value() == '40'
             page.locator('#plan-row-filter-overridden').click()
             page.locator('.plan-bulk-menu summary').click()
             page.locator('#plan-zero-context').click()
@@ -156,10 +158,10 @@ def main():
             page.locator('[data-dialog-confirm]').click()
             page.wait_for_function("!SkladOzon.__browserPlan.getState().workingPlan.mutationBusy")
             assert requests[-1]['payload']['lines'] == [{'sku': 'S1', 'destination_cluster_id': 'Москва'}]
-            assert page.locator('#working-input-0').input_value() == '0'
+            assert page.locator(quantity_input).input_value() == '0'
             # Returning to the system quantity removes the sole manual row.
-            page.locator('#working-input-0').fill('20')
-            page.locator('#working-input-0').press('Enter')
+            page.locator(quantity_input).fill('20')
+            page.locator(quantity_input).press('Enter')
             page.wait_for_function("!SkladOzon.__browserPlan.getState().workingPlan.mutationBusy && !document.querySelector('[data-working-input]')")
             assert page.locator('#plan-row-filter-all').evaluate('(node)=>document.activeElement===node')
             page.locator('#plan-row-filter-all').click()
