@@ -105,13 +105,13 @@ def main():
             checks.append("pack changes invalidate readiness; Escape restores usable focus")
 
             page.locator("#fix-plan").click()
-            page.evaluate("window.savedSet=Storage.prototype.setItem;Storage.prototype.setItem=function(){throw new Error('Synthetic quota failure');}")
+            page.evaluate("()=>{window.savedSet=Storage.prototype.setItem;Storage.prototype.setItem=function(){throw new Error('Synthetic quota failure');};}")
             page.locator("#pack-39439").fill("5")
             page.wait_for_function("!document.getElementById('retry-39439').hidden")
             assert page.locator("#pack-39439").input_value() == "5"
             assert page.locator("#confirm-39439").is_disabled()
             assert page.evaluate("ShipmentDemo.getState().manual['39439'].value") == 2
-            page.evaluate("Storage.prototype.setItem=window.savedSet")
+            page.evaluate("()=>{Storage.prototype.setItem=window.savedSet;}")
             page.locator("#retry-39439").click()
             assert page.evaluate("ShipmentDemo.getState().manual['39439'].value") == 5
             page.locator("#confirm-39439").click()
