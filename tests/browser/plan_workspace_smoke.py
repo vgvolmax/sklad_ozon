@@ -202,6 +202,12 @@ def main():
             page.locator('#plan-open-picker').click()
             page.keyboard.press('Escape')
             assert page.locator('#plan-open-picker').evaluate('(node)=>document.activeElement===node')
+            for width in (1024, 390, 320):
+                page.set_viewport_size({'width': width, 'height': 900})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth+1'), width
+                page.locator('#plan-open-picker').click()
+                assert page.locator('dialog').is_visible()
+                page.keyboard.press('Escape')
             page.emulate_media(reduced_motion='reduce')
             assert not external, external
             assert not errors, errors
