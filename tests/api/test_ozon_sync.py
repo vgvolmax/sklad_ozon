@@ -504,7 +504,7 @@ def _smart_base(now):
         history_from=date(2026, 6, 1), history_to=date(2026, 9, 21),
         orders=_orders(now.date(), 12, source_channel="fbo"),
         clusters=(Cluster(10, "Москва"),), endpoint_evidence=evidence,
-        product_facts=(ProductApiFacts("A", "article-a", 1),),
+        product_facts=(ProductApiFacts("A", "article-a", 1, product_name="Товар A"),),
         warehouse_to_macrolocal=((777, 10),),
     )
 
@@ -520,6 +520,39 @@ def _patch_smart_success(monkeypatch, calls):
     monkeypatch.setattr(module, "fetch_product_attributes", lambda *_args: ((), ()))
     monkeypatch.setattr(module, "fetch_seller_stock", lambda *_args: ((), ()))
     monkeypatch.setattr(module, "fetch_placement_zones", lambda *_args: ((), ()))
+
+
+def test_smart_refresh_refills_names_from_old_cache_without_waiting_for_metadata_ttl(monkeypatch):
+    import backend.ozon.sync as module
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    _patch_smart_success(monkeypatch, [])
+    monkeypatch.setattr(module, 'fetch_fbo_stock', lambda *_: ((), ()))
+    monkeypatch.setattr(module, 'fetch_inbound', lambda *_: ((), ()))
+    refreshed = []
+    def attributes(*_):
+        refreshed.append(True)
+        return (ProductApiFacts('A', 'article-a', 1, product_name='Название из Ozon'),), ()
+    monkeypatch.setattr(module, 'fetch_product_attributes', attributes)
+    base = _smart_base(now)
+    base = replace(base, product_facts=(replace(base.product_facts[0], product_name=''),))
+    candidate, report = refresh_ozon_source(object(), base_snapshot=base, now=now)
+    assert refreshed == [True]
+    assert candidate.product_facts[0].product_name == 'Название из Ozon'
+    assert 'product_attributes' not in report.reused_endpoints
+
+
+def test_smart_metadata_reuse_preserves_name_even_if_dimensions_are_unknown(monkeypatch):
+    import backend.ozon.sync as module
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    _patch_smart_success(monkeypatch, [])
+    monkeypatch.setattr(module, 'fetch_fbo_stock', lambda *_: ((), ()))
+    monkeypatch.setattr(module, 'fetch_inbound', lambda *_: ((), ()))
+    monkeypatch.setattr(module, 'fetch_product_attributes', lambda *_: (_ for _ in ()).throw(
+        AssertionError('Fresh complete metadata should be reused')))
+    candidate, report = refresh_ozon_source(object(), base_snapshot=_smart_base(now), now=now)
+    assert candidate.product_facts[0].product_name == 'Товар A'
+    assert candidate.product_facts[0].volume_liters is None
+    assert 'product_attributes' in report.reused_endpoints
 
 
 def test_smart_reuse_restores_warehouse_mapping_for_fbo_and_inbound(monkeypatch):

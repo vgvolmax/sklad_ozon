@@ -251,7 +251,12 @@ occupy the secondary column. Preparation steps reflect current input state;
 the recommendations XLSX is explicitly optional. Diagnostics and calculation
 settings use native disclosures. File inputs retain their DOM nodes during
 ordinary refreshes, and field errors open a containing disclosure. Narrow
-layouts stack without hiding their controls.
+layouts stack without hiding their controls. Recommendation validation runs on
+selection and whenever its source snapshot or horizon changes. Its stable status
+region announces progress and the verdict, shows row exclusions and report metadata,
+and offers retry/removal. A valid report with mismatched dates/horizon keeps the
+own-model calculation available with a comparison warning. Product labels come from
+Ozon card attributes and persist independently of stock/history responses.
 
 Economics starts with SKU averages and target settings. Opening a SKU colors
 the whole row and its cluster breakdown as one surface; opening a problem

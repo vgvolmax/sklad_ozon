@@ -336,6 +336,28 @@ has no offset pagination. `available_stock_count` maps to existing FBO availabil
 evidence. A product-list or stock-batch failure leaves FBO evidence incomplete.
 `/v2/analytics/stock_on_warehouses` is not the new architecture owner.
 
+The shared backend client serializes requests across bound credential contexts,
+with conservative application start intervals of 1.1 seconds overall and 6 seconds
+for stock batches. These are application defaults, not published Ozon quotas.
+HTTP 429 adds a shared cooldown (10/20/40 seconds for the default three attempts)
+and honors a longer numeric or HTTP-date `Retry-After`. Cooldown survives the end
+of a failed operation; an excessive server wait fails without an early retry.
+Only explicitly retry-safe requests are retried; temporary draft creation remains
+single-attempt. Finite HTTP timeouts and credential-context revocation still apply.
+Official Seller API release notes classify the per-second rate error as common to
+all methods: https://t.me/s/OzonEnSellerAPI?after=207 (June 5, 2025). A numeric
+quota for `/v1/analytics/stocks` could not be verified in accessible official docs.
+
+Product presentation identity uses `name` from the existing
+`/v4/product/info/attributes` request, normalized by exact catalog product ID/offer.
+It is retained in `ProductApiFacts`, merged alongside prices/dimensions and saved
+in the source cache. Older cache entries default to an empty name and force a
+metadata refresh on smart sync. A missing label never creates a SKU, zero volume,
+or price/stock fallback. Fresh metadata reuse preserves labels even with unknown
+dimensions. The optional recommendation upload has a pure backend preflight at
+`/api/import/recommendations/validate`, scoped to the current source snapshot,
+SKU/cluster catalog and scenario horizon; final analysis repeats the same verdict.
+
 ### 5.3 Inbound FBO supply
 
 Build inbound only from current supply-order evidence:

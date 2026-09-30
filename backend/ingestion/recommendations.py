@@ -1,6 +1,7 @@
 """Ozon Availability XLSX recommendation, scoped to exact current identities."""
 
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 import re
 from zipfile import BadZipFile
 from xml.etree.ElementTree import ParseError
@@ -16,13 +17,44 @@ from backend.ingestion._common import read_xlsx_tables, parse_decimal
 from backend.ingestion.normalization import (normalize_cluster_label,
                                              normalize_seller_article_identity,
                                              normalize_text)
-from backend.ozon.adapters.local_sale import RecommendedSupply
+from backend.ozon.adapters.local_sale import RecommendedSupply, supply_period_for_days
 
 
 _HEADER = re.compile(r"^рекомендуемая поставка,?\s*шт\s*на\s*(\d+)\s*дн", re.I)
 _PERIOD = re.compile(r"период:\s*(\d{2}\.\d{2}\.\d{4})\s*[-–]\s*(\d{2}\.\d{2}\.\d{4})", re.I)
 _UPDATED = re.compile(r"дата обновления:\s*(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})\s+мск", re.I)
 _MAX_EXACT_EXCEL_INTEGER = (1 << 53) - 1
+
+
+@dataclass(frozen=True, slots=True)
+class RecommendationFileCheck:
+    valid: bool
+    usable_for_comparison: bool
+    code: str | None = None
+    message: str | None = None
+
+
+def check_recommendation_import(imported: ImportResult, *, horizon_days: int,
+                                source_as_of: date) -> RecommendationFileCheck:
+    """One verdict shared by upload preflight and the final analysis boundary."""
+    first_error = next((d for d in imported.diagnostics if d.severity == "error"), None)
+    if first_error:
+        return RecommendationFileCheck(False, False, "INVALID_RECOMMENDATION_FILE", first_error.message)
+    if not imported.records:
+        return RecommendationFileCheck(False, False, "EMPTY_RECOMMENDATION_FILE",
+            "В отчёте нет подходящих строк для текущих SKU и кластеров Ozon.")
+    if supply_period_for_days(horizon_days) is None:
+        message = "Горизонт рекомендации Ozon не поддерживается: выберите 7, 14, 28 или 56 дней."
+    elif horizon_days != imported.meta.recommendation_horizon_days:
+        message = (f"Горизонт файла {imported.meta.recommendation_horizon_days} дней "
+                   f"не совпадает с горизонтом расчёта {horizon_days} дней.")
+    elif (datetime.fromisoformat(imported.meta.report_generated_at)
+          .astimezone(timezone(timedelta(hours=3))).date() != source_as_of):
+        message = ("Дата отчёта рекомендаций отличается от даты снимка API. "
+                   "Обновите данные Ozon и выгрузите свежий XLSX.")
+    else:
+        return RecommendationFileCheck(True, True)
+    return RecommendationFileCheck(True, False, "RECOMMENDATION_NOT_COMPARABLE", message)
 
 
 def _metadata(data: bytes):
