@@ -113,6 +113,7 @@ def main():
             assert "Казань" not in page.evaluate("ShipmentDemo.readyNames()")
             page.locator("#repair-dialog").press("Escape")
             assert not page.locator("#repair-dialog").is_visible()
+            page.wait_for_function("document.activeElement?.id==='fix-plan'", timeout=1500)
             assert page.locator("#fix-plan").evaluate("(n)=>document.activeElement===n")
             checks.append("pack changes invalidate readiness; Escape restores usable focus")
 
@@ -134,6 +135,7 @@ def main():
             page.locator("#prepare").click()
             assert page.locator("#review-body .review-line").count() == 5
             page.locator("#review-cancel").click()
+            page.wait_for_function("document.activeElement?.id==='prepare'", timeout=1500)
             assert page.locator("#prepare").evaluate("(n)=>document.activeElement===n")
             page.locator("#prepare").click()
             page.locator("#review-confirm").click()
