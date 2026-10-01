@@ -86,7 +86,8 @@ function bind(panel){
     selected=Math.max(0,Math.min(days.length-1,index));
     const day=days[selected], x=LEFT+WIDTH*(selected+.5)/days.length;
     tooltip.innerHTML=`<strong>${e(date(day.day))}</strong><span>СПП ${percent(day.spp)}</span><span>Цена покупателя ${money(day.buyer_price_mean)}</span><span>Заказы ${day.orders==null?'n/a':format.format(day.orders)+' шт.'}</span>`;
-    if(day.orders>0&&(day.spp_priced_qty<day.orders||day.buyer_priced_qty<day.orders))tooltip.innerHTML+=`<span class="econ-daily-coverage">Цены: СПП ${day.spp_priced_qty} / ${day.orders} шт.; покупатель ${day.buyer_priced_qty} / ${day.orders} шт.</span>`;
+    const coverage=day.orders>0&&(day.spp_priced_qty<day.orders||day.buyer_priced_qty<day.orders)?`Цены: СПП ${day.spp_priced_qty} / ${day.orders} шт.; покупатель ${day.buyer_priced_qty} / ${day.orders} шт.`:'';
+    if(coverage)tooltip.innerHTML+=`<span class="econ-daily-coverage">${e(coverage)}</span>`;
     tooltip.hidden=false;cursor.hidden=false;cursor.removeAttribute('hidden');
     cursor.setAttribute('x1',x);cursor.setAttribute('x2',x);
     const width=plot.clientWidth;
@@ -94,7 +95,7 @@ function bind(panel){
     const left=viewport?Math.max(0,viewport.left-rect.left):0;
     const right=viewport?Math.min(width,viewport.right-rect.left):width;
     tooltip.style.left=Math.max(left,Math.min(right-tooltip.offsetWidth,x/1000*width+8))+'px';
-    if(announce)live.textContent=`${date(day.day)}. СПП ${percent(day.spp)}. Цена покупателя ${money(day.buyer_price_mean)}. Заказы ${day.orders==null?'n/a':day.orders+' шт.'}`;
+    if(announce)live.textContent=`${date(day.day)}. СПП ${percent(day.spp)}. Цена покупателя ${money(day.buyer_price_mean)}. Заказы ${day.orders==null?'n/a':day.orders+' шт.'}${coverage?'. '+coverage:''}`;
   }
   function hide(){tooltip.hidden=true;cursor.setAttribute('hidden','');live.textContent='';}
   const pick=event=>{

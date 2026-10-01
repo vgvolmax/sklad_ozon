@@ -48,7 +48,7 @@ followed by presentation, synchronized hover and contract/documentation updates.
 
 ## Verification
 
-Full local suite: 1860 passed, with the existing Starlette deprecation warning.
+Full local suite: 1864 passed, with the existing Starlette deprecation warning.
 Both production browser checks pass with zero JavaScript errors and external
 requests. Economics uses a real loopback API and synthetic orders with varying
 same-day prices and one missing buyer price: day mean SPP 60%, buyer price 200 RUB,
@@ -56,8 +56,11 @@ coverage 2/3 units; next day SPP 50%, buyer price 1450 RUB. It checks actual-abo
 labels/colors, all three plots, error/retry/focus, keyboard/touch, advertising
 batches/replacements/deletion, cost edits, exports and narrow-window popup bounds.
 Screenshots were inspected. Runtime JavaScript syntax and git diff --check pass.
-Independent review and published-head CI, including Windows portable, are checked
-before handoff; the PR is not merged by the agent.
+Independent review found no critical defects. Its partial-coverage accessibility
+finding was fixed with a failing-then-passing production-browser assertion: keyboard
+live announcements now include the same covered-unit counts as the visual popup.
+Published-head CI, including Windows portable, is checked before handoff; the PR
+is not merged by the agent.
 
 Premium strict audit retains the baseline 29 template action-binding heuristic
 findings, with none in the daily module; this is not a clean-audit claim. Customer

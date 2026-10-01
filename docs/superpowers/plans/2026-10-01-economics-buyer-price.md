@@ -50,4 +50,6 @@
 - [x] Add independently scaled buyer-price line and hover mean/coverage; stack labeled actual and plan values using teal/purple.
 - [x] Run frontend tests, both production browser smoke checks and strict design audit; inspect screenshots.
 - [x] Run complete pytest, JavaScript syntax checks and git diff --check; expect passing.
-- [ ] Commit, obtain independent review, resolve blocking findings, publish new PR and verify CI/head/mergeability without merging.
+- [x] Commit and obtain independent review; resolve blocking findings with regression tests.
+
+**Handoff:** Publish a new PR and verify CI/head/mergeability without merging.
