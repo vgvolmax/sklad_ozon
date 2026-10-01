@@ -105,6 +105,8 @@ def _historical_price(candidates, *, buyer=False) -> float | None:
                     source.get("customer_currency_code" if buyer else "currency_code"))
         if currency and currency != "RUB":
             return None if buyer else 0.0
+        if isinstance(value, dict) and "amount" not in value:
+            return None if buyer else 0.0
         amount = value.get("amount") if isinstance(value, dict) else value
         if amount is None or isinstance(amount, str) and not amount.strip():
             continue

@@ -50,6 +50,15 @@ def test_explicit_foreign_customer_price_is_not_replaced_with_other_evidence():
     assert rows[0].buyer_price is None
 
 
+@pytest.mark.parametrize('malformed',[{}, {'value':'40'}, [], True])
+def test_malformed_price_shape_is_not_mistaken_for_blank(malformed):
+    posting=fbo()
+    posting['products'][0]['customer_price']=malformed
+    posting['financial_data']['products']=[{'product_id':123,'customer_price':40}]
+    rows,_,_=normalize_fbo_posting(posting)
+    assert rows[0].buyer_price is None
+
+
 def test_wrong_currency_and_missing_buyer_prices_are_unknown():
     posting=fbo()
     posting['products'][0]['customer_price']={'amount':'10','currency':'USD'}

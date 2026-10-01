@@ -45,9 +45,9 @@
 
 **Interfaces:** Consume Task 1 daily means and coverage only; existing Economics financial values remain backend-owned.
 
-- [ ] Write geometry tests and browser assertions for three synchronized plots, daily mean hover and actual-above-plan colors.
-- [ ] Run the targeted tests/check; expect failure for absent buyer-price plot/presentation.
-- [ ] Add independently scaled buyer-price line and hover mean/coverage; stack labeled actual and plan values using teal/purple.
-- [ ] Run frontend tests, both production browser smoke checks and strict design audit; inspect screenshots.
-- [ ] Run complete pytest, JavaScript syntax checks and git diff --check; expect passing.
+- [x] Write geometry tests and browser assertions for three synchronized plots, daily mean hover and actual-above-plan colors.
+- [x] Run the targeted tests/check; expect failure for absent buyer-price plot/presentation.
+- [x] Add independently scaled buyer-price line and hover mean/coverage; stack labeled actual and plan values using teal/purple.
+- [x] Run frontend tests, both production browser smoke checks and strict design audit; inspect screenshots.
+- [x] Run complete pytest, JavaScript syntax checks and git diff --check; expect passing.
 - [ ] Commit, obtain independent review, resolve blocking findings, publish new PR and verify CI/head/mergeability without merging.

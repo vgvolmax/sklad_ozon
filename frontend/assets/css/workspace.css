@@ -53,7 +53,7 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .pack-table th,.pack-table td{padding:.62rem .75rem}
 
 /* Economics: the SKU and all revealed cluster details form one selected surface. */
-.econ-page{display:grid;gap:.85rem}
+.econ-page{--econ-fact:#0d6e60;--econ-plan:#7041a5;display:grid;gap:.85rem}
 .workspace-intro h2{font-size:1.45rem;letter-spacing:-.035em;margin:.2rem 0 .35rem}
 .workspace-intro p:last-child{margin:0;color:#60727a;font-size:.85rem;max-width:58rem}
 .econ-targets{padding:1rem 1.2rem}
@@ -73,7 +73,7 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .econ-summary>div:last-child{border-right:0}
 .econ-summary span,.econ-summary small{display:block;color:#62777c;font-size:.7rem}
 .econ-summary strong{display:block;margin:.25rem 0;color:#1c343a;font-size:1.15rem;font-variant-numeric:tabular-nums}
-.econ-summary>div:first-child strong{color:#97530c}
+.econ-summary .econ-plan-key strong{color:var(--econ-plan)}
 .econ-main{padding:0;min-width:0}
 .econ-main-head{display:flex;justify-content:space-between;align-items:center;gap:1rem;padding:1rem 1.2rem .7rem}
 .econ-main-head h2{font-size:1rem;letter-spacing:-.025em}
@@ -100,7 +100,7 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .econ-pill{display:inline-block;background:#edf1f2;border-radius:.25rem;font-size:.63rem;padding:.2rem .3rem;margin-top:.3rem}
 .econ-drr-cell{display:flex!important;align-items:center;gap:.2rem;white-space:nowrap}
 .econ-drr-cell input{width:3.4rem;min-height:1.8rem;padding:.2rem;border:1px solid #bfd2d4;background:white;text-align:center}
-.econ-below{color:#a3590d;font-weight:750}
+.econ-below{color:var(--econ-fact);font-weight:750}
 .econ-table tr.econ-sku-row.is-open>td,.econ-table tr.econ-sku-row.is-open:hover>td{background:#eaf6f1;border-top:2px solid #8fc6b4;border-bottom:0}
 .econ-table tr.econ-sku-row.is-open>td:first-child{box-shadow:inset 4px 0 #25816f}
 .econ-table tr.econ-sku-row.is-open>td:last-child{box-shadow:inset -1px 0 #8fc6b4}
@@ -321,16 +321,16 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .econ-daily-head>button{margin-left:auto;padding:.25rem .6rem;font-size:.7rem}
 .econ-daily-legend{display:flex;align-items:center;gap:.4rem;color:#536c74}
 .econ-daily-legend i{display:inline-block;width:.8rem;height:.2rem;background:#16836e}
-.econ-daily-legend i.orders{height:.65rem;width:.4rem;background:#8ca9d0;margin-left:.5rem}
+.econ-daily-legend i.orders{height:.65rem;width:.4rem;background:#78b6a9;margin-left:.5rem}
 .econ-daily-period,.econ-daily-note,.econ-daily-status{font-size:.67rem;color:#61777d;margin:.35rem 0 0}
 .econ-daily-plot{position:relative;margin-top:.25rem;outline-offset:3px;touch-action:pan-y}
 .econ-daily-plot:focus-visible{outline:2px solid #137969}
-.econ-daily-svg{display:block;width:100%;height:80px;overflow:visible}
-.is-expanded .econ-daily-svg{height:230px}
+.econ-daily-svg{display:block;width:100%;height:110px;overflow:visible}
+.is-expanded .econ-daily-svg{height:310px}
 .econ-daily-svg text{font:10px system-ui,sans-serif;fill:#526a73}
 .econ-daily-line{fill:none;stroke:#16836e;stroke-width:2;vector-effect:non-scaling-stroke}
 .econ-daily-dot{fill:#16836e}
-.econ-daily-bar{fill:#8ca9d0}
+.econ-daily-bar{fill:#78b6a9}
 .econ-daily-baseline{stroke:#dce5e7;stroke-width:1}
 .econ-daily-cursor{stroke:#466671;stroke-width:1;stroke-dasharray:3 3;pointer-events:none}
 .econ-daily-cursor[hidden]{display:none}
@@ -344,3 +344,28 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .econ-advertising-list .econ-ads-matches li{display:list-item;border:0;padding:.2rem 0;font-size:.65rem}
 @media(forced-colors:active){.econ-daily-line{stroke:CanvasText}.econ-daily-dot,.econ-daily-bar{fill:CanvasText}.econ-daily-cursor{stroke:Highlight}.econ-daily-tooltip{background:Canvas;color:CanvasText;border:1px solid CanvasText}}
 @media(max-width:43rem){.econ-advertising-head{display:block}.econ-advertising-picker{margin-top:.8rem}.econ-advertising{padding:.8rem}}
+
+/* Economics: actual evidence above editable plan and targets. */
+.econ-fact,.econ-fact-key{color:var(--econ-fact)}
+.econ-plan,.econ-plan-key{color:var(--econ-plan)}
+.econ-sku-row>td{vertical-align:top}
+.econ-fact{min-height:3.3rem;font-weight:650}
+.econ-plan{min-height:3.3rem;margin-top:.3rem;padding-top:.35rem;border-top:1px solid #e3dced;font-weight:650}
+.econ-sku-row>td:last-child>.econ-plan{margin-top:3.6rem}
+.econ-table .econ-band-label{color:inherit;font-size:.6rem;font-weight:600;margin:0 0 .3rem;white-space:nowrap}
+.econ-table .econ-fact small,.econ-table .econ-plan small{color:inherit}
+.econ-table .field-error{color:var(--color-danger,#9e2525)}
+.econ-plan .econ-drr-cell{color:inherit;align-items:center}
+.econ-fact input{color:var(--econ-fact)}
+.econ-plan input,.econ-targets input[type=number],.econ-targets label,.econ-targets fieldset legend{color:var(--econ-plan)}
+.econ-value-legend{padding:0 1.1rem;display:flex;flex-wrap:wrap;gap:.4rem 1.5rem;margin:.6rem 0;font-size:.72rem;font-weight:650}
+.econ-drr-details{font-size:.65rem;margin-top:.35rem;color:var(--econ-fact)}
+.econ-drr-details summary{cursor:pointer}
+.econ-drr-details small{color:var(--econ-fact)!important}
+.econ-route-table tbody td:nth-child(n+4),.econ-cluster-head>span:nth-child(n+2){color:var(--econ-fact)}
+.econ-route-table tbody td:last-child,.econ-cluster-head>span:last-child{color:var(--econ-plan)}
+.econ-daily-legend i.buyer{background:transparent;border-top:2px dashed #16836e;height:0;margin-left:.5rem}
+.econ-daily-buyer-line{stroke-dasharray:5 3}
+.econ-daily-buyer-dot{fill:white;stroke:#16836e;stroke-width:1.5;vector-effect:non-scaling-stroke}
+.econ-daily-coverage{margin-top:.3rem;border-top:1px solid #ffffff44;padding-top:.25rem;font-size:.65rem}
+@media(forced-colors:active){.econ-daily-buyer-dot{fill:Canvas;stroke:CanvasText}}
