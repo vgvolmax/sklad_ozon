@@ -25,6 +25,7 @@ from backend.advertising_store import (AdvertisingData, apply_report, advertisin
     campaign_items, load_advertising, save_advertising)
 from backend.ingestion.advertising import import_advertising
 from backend.economics.advertising import build_order_revenue, real_drr_by_sku
+from backend.economics.daily_series import build_daily_evidence, daily_series
 from backend.decision import (DataQualityFact, DiagnosticView, InputStatusView,
                               ScenarioSettings, assemble_snapshot,
                               build_data_quality_presentation,
@@ -121,7 +122,7 @@ def wire(value):
         # Daily revenue stays server-side; the Economics endpoint exposes only
         # the exact period totals required by its consumer.
         return {f.name:wire(getattr(value, f.name)) for f in fields(value)
-                if f.name != 'order_revenue_evidence'}
+                if f.name not in {'order_revenue_evidence', 'daily_order_evidence'}}
     if isinstance(value,Enum): return value.value
     if isinstance(value,Decimal): return _decimal_string(value)
     if isinstance(value,(date,datetime)): return value.isoformat()
@@ -463,6 +464,30 @@ def _advertising_snapshot(snapshot_id):
     return snapshot if snapshot is not None and ANALYSIS_STORE.latest() is snapshot else None
 
 
+@router.post('/api/economics/daily-series')
+async def economics_daily_series(request: Request):
+    body = await json_object(request)
+    if body is None:
+        return error(400, 'INVALID_DAILY_SERIES', 'Укажите SKU товаров.', 'skus')
+    skus = body.get('skus')
+    if (not isinstance(skus, list) or not 1 <= len(skus) <= 100 or
+            any(not isinstance(sku, str) or not sku or len(sku) > 80 for sku in skus)):
+        return error(400, 'INVALID_DAILY_SERIES', 'Укажите от 1 до 100 SKU.', 'skus')
+    with PROJECT_PERSISTENCE_LOCK:
+        snapshot = _advertising_snapshot(body.get('analysis_snapshot_id'))
+    if snapshot is None:
+        return error(409, 'ANALYSIS_SNAPSHOT_STALE', 'Пересчитайте план.', 'analysis_snapshot_id')
+    known = {row.sku for row in snapshot.decision_rows}
+    if set(skus) - known:
+        return error(400, 'UNKNOWN_SKU', 'SKU не найден в текущем ассортименте.', 'skus')
+    series = {sku: daily_series(getattr(snapshot, 'daily_order_evidence', None), sku)
+              for sku in dict.fromkeys(skus)}
+    with PROJECT_PERSISTENCE_LOCK:
+        if _advertising_snapshot(snapshot.snapshot_id) is not snapshot:
+            return error(409, 'ANALYSIS_SNAPSHOT_STALE', 'План изменился. Повторите загрузку.', None)
+    return {'api_version': 1, 'snapshot_id': snapshot.snapshot_id, 'series': wire(series)}
+
+
 @router.post('/api/economics/advertising/import')
 async def advertising_import(request: Request):
     try:
@@ -505,6 +530,11 @@ async def advertising_import(request: Request):
             skus = {row.sku for row in snapshot.decision_rows}
             for index, report in parsed:
                 updated, results[index] = apply_report(updated, report, skus)
+                matched = {row.sku for row in report.days} & skus
+                results[index]['matched_products'] = [
+                    {'sku': row.sku, 'article': row.article, 'name': row.product_name}
+                    for row in {row.sku: row for row in snapshot.decision_rows}.values()
+                    if row.sku in matched]
             changed = updated != old
             if changed: save_advertising(path, updated)
     except ValueError as exc:
@@ -1950,6 +1980,10 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         blocked_decision_rows=snapshot.decision_rows,
     )
     snapshot=replace(snapshot,shippable_plan=shippable_plan,
+        daily_order_evidence=build_daily_evidence(orders.records, order_coverage,
+            orders_complete=(source_inputs is None or source_inputs.order_revenue_complete),
+            source_coverage=(source_inputs.source_coverage if source_inputs is not None else None),
+            diagnostics=orders.diagnostics),
         order_revenue_evidence=build_order_revenue(orders.records, order_coverage,
             source_coverage=(source_inputs.source_coverage if source_inputs is not None else None),
             diagnostics=orders.diagnostics),

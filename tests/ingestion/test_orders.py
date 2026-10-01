@@ -53,3 +53,11 @@ def test_real_shape_your_price_direction_and_pii_are_preserved_safely():
     record = result.records[0]
     assert (record.article, record.seller_price, record.origin_cluster, record.destination_cluster) == ("ART-X", 999.0, "Казань", "Москва")
     assert "SECRET" not in json.dumps(asdict(result), ensure_ascii=False, default=str)
+
+
+def test_optional_customer_price_is_per_unit_and_bad_value_keeps_demand():
+    header='SKU;Количество;Цена продавца;Цена покупателя;Кластер отгрузки;Кластер доставки;Статус\n'
+    result=import_orders((header+'1;2;100;40;Казань;Москва;Доставлен\n2;1;100;bad;Казань;Москва;Доставлен\n').encode(),META)
+    assert result.records[0].buyer_price==40
+    assert result.records[1].buyer_price is None
+    assert not result.diagnostics

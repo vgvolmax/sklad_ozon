@@ -369,20 +369,36 @@ not additive totals. The separate route list always repeats article, SKU,
 origin and destination. Search, bounded load-more and partial coverage remain
 visible in both views.
 
-Margin and ROI targets, selected pricing goal, modeled and planned DRR are local
+Margin and ROI targets, selected pricing goal and planned DRR are local
 scenario preferences. Python calculates weighted route averages, commission,
 modeled target shortfall and a price at unchanged rates/logistics. Planned DRR
-only affects prospective price; the shared modeled DRR recalculates current
+only affects prospective price. Read-only real DRR recalculates current
 margin, ROI and modeled shortfall on the same observed route mix without
-mutating the analysis snapshot. It initially uses 5% and can explicitly be set
-to zero. A SKU
+mutating the analysis snapshot. Unknown real DRR shows `n/a` and its reason,
+but applies an explicit `В расчёте 0 %` assumption. A SKU
 without observed routes remains visible with an unknown shortfall and price.
 The observed route window contains completed ISO weeks and delivered postings;
 it excludes the current week and is not a confirmed buyout or Ozon payout
 ledger. The UI names the exact window and labels its shortfall as modeled,
 not as actual financial loss for the current month. A tariff step, a new
-price's effect on demand, and individual actual advertising spend are outside
-this scenario. A missing route blocks a universal price recommendation.
+price's effect on demand are outside this scenario. Uploaded advertising spend
+is joined strictly by SKU; import results disclose matched article/name/SKU.
+A missing route blocks a universal price recommendation.
+
+Commission is displayed as percent with rubles per unit immediately below it.
+Each product row ends with a compact, independently expandable daily SPP/orders
+panel. Both charts use the same calendar for the complete loaded order period;
+they do not inherit the completed-week/delivered route filter. Orders means
+ordered units of all lifecycle states and channels. SPP uses historical seller
+and buyer amounts weighted by quantity. A missing/invalid pair makes that day's
+SPP unknown, retaining its order quantity; incomplete history cannot manufacture
+zero-order days. SPP's bounds are observed min/max, with a centered constant line.
+The expanded view exposes date/SPP/orders on hover, touch and keyboard, with
+arrow/Home/End/Escape support, focus visibility and a popup constrained by the
+visible table viewport. Loading, missing evidence and retryable errors stay local
+to the panel. Only visible SKU histories are requested in bounded batches; old
+snapshot responses cannot overwrite the new snapshot. History prices/records
+stay server-side; only daily aggregates reach the browser.
 
 Cost is a visible, editable column, including when other economics evidence is
 incomplete. Enter or leaving the field saves the cost atomically to Project
@@ -398,8 +414,8 @@ Older Project schemas v1–v4 migrate without losing existing mappings or quanti
 Economics has separate downloads for the stored cost directory and a compact
 Excel report. The report uses the active scenario for the entire current snapshot,
 independent of search, filters and load-more. It has one article per row and only
-article, product, current price, planned DRR, margin, ROI, target margin and
-required price. Required price follows the selected margin/ROI goal; target margin
+article, product, current price, planned/real/applied DRR, margin, ROI, target margin,
+required price and commission rubles per unit. Required price follows the selected margin/ROI goal; target margin
 remains the explicit margin setting. Missing values stay blank, rates/money are
 numeric, and duplicate/missing article identity blocks export instead of merging
 different SKU. Draft cost edits, a failed scenario or pending calculation disable
@@ -521,6 +537,8 @@ the previous directory. Deleting a campaign uses shared AppDialog confirmation.
 The row label is `Реальный`, read-only, never a fallback to scenario/local
 preferences. Overall DRR uses all posting states and FBO/FBS seller revenue
 over the expense dates, never attributed sales or averaged vendor percentages.
-Missing complete evidence means `n/a`, unknown current margin/ROI/shortfall.
+Missing complete evidence means `n/a`; the current Economics model applies
+0% with an explicit assumption label, preserving margin/ROI/shortfall when
+all other route inputs are complete. Unknown source expense remains unknown.
 Planned DRR remains editable and drives target pricing independently. Ad
 imports do not change Data uploads, source mode, Demand, Need or Plan.

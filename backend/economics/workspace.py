@@ -136,7 +136,7 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
         price = route.price_per_unit
         cost = costs.get(route.sku, unit.cost if unit else None)
         logistics = route.route_cost_rub
-        model_rate = rates.get(route.sku)
+        model_rate = rates.get(route.sku) or ZERO
         profit = None
         inputs_ready = (unit is not None and unit.price is not None and unit.price > 0
                         and unit.commission is not None and price is not None and price > 0
@@ -210,8 +210,11 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
                          "cost": costs.get(sku, unit.cost if unit else None),
                          "commission_rate": (unit.commission / unit.price if unit and
                                               unit.commission is not None and unit.price else None),
+                         "commission_per_unit": unit.commission if unit else None,
                          "real_drr_rate": rates.get(sku),
-                         "assumed_drr_rate": rates.get(sku),
+                         "applied_drr_rate": rates.get(sku) or ZERO,
+                         "drr_zero_assumed": rates.get(sku) is None,
+                         "assumed_drr_rate": rates.get(sku) or ZERO,
                          "planned_drr_rate": overrides.get(sku, planned_drr),
                          **summary, "groups": groups})
     weeks = snapshot.observed_routes.window.included_weeks

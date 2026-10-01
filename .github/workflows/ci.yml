@@ -22,6 +22,7 @@ jobs:
       - run: node --check frontend/assets/js/flow_timeline.js
       - run: node --check frontend/assets/js/flow.js
       - run: node --check frontend/assets/js/economics_workspace.js
+      - run: node --check frontend/assets/js/economics_daily.js
       - run: node --check frontend/assets/js/app.js
       - run: node --check frontend/assets/js/plan_workspace.js
 

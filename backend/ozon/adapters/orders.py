@@ -89,6 +89,38 @@ def _posting_price(value: object) -> tuple[float, bool]:
     return price, True
 
 
+def _buyer_price(product: dict, financial: dict, sku: str) -> float | None:
+    """Join monetary evidence by SKU, never by position or seller article."""
+    source = product
+    if "customer_price" not in source:
+        rows = financial.get("products")
+        matches = [row for row in (rows if isinstance(rows, list) else [])
+                   if isinstance(row, dict) and
+                   _sku_text(row.get("sku") or row.get("product_id")) == sku]
+        if len(matches) != 1:
+            return None
+        source = matches[0]
+    value = source.get("customer_price", source.get("client_price"))
+    currency = (value.get("currency") or value.get("currency_code")
+                if isinstance(value, dict) else source.get("customer_currency_code"))
+    if currency and currency != "RUB":
+        return None
+    price, valid = _posting_price(value)
+    return price if valid else None
+
+
+def _spp_base_price(product: dict) -> float | None:
+    field = "seller_price" if "seller_price" in product else "price"
+    if field not in product:
+        return None
+    value = product[field]
+    currency = ((value.get("currency") or value.get("currency_code"))
+                if isinstance(value, dict) else product.get("currency_code"))
+    price, valid = _posting_price(value)
+    # A malformed explicit base must not silently fall back to another price.
+    return price if valid and (not currency or currency == "RUB") else 0.0
+
+
 def _business_timestamp(value: object, field: str, diagnostics: list[ImportDiagnostic]) -> str:
     raw = _text(value)
     if not raw:
@@ -197,6 +229,8 @@ def _normalize_posting(posting: dict, *, fbs: bool) -> tuple[
             product_name=_product_text(product, "name", "product_name", fbs=fbs),
             origin_warehouse=origin_warehouse, seller_price=seller_price,
             source_channel="fbs" if fbs else "fbo",
+            buyer_price=_buyer_price(product, financial, sku),
+            spp_base_price=_spp_base_price(product),
         ))
     if not destination and lifecycle in {OrderLifecycle.FULFILLED, OrderLifecycle.IN_PROGRESS}:
         diagnostics.append(ImportDiagnostic(

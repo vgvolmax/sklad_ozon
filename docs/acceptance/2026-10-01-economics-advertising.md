@@ -1,5 +1,9 @@
 # Economics advertising acceptance
 
+Follow-up rule: [daily-panel acceptance](2026-10-01-economics-daily-panels.md)
+supersedes the initial `n/a` calculation behavior described below: real DRR
+keeps its unknown source label while the Economics model explicitly applies 0%.
+
 ## User behavior
 
 Economics accepts optional batches of daily Ozon product-promotion XLSX reports.

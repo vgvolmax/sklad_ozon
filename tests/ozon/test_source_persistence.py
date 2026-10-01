@@ -111,6 +111,27 @@ def test_previous_source_snapshot_without_recommendation_still_loads():
     assert source_snapshot_from_document(document).recommended_supply is None
 
 
+def test_buyer_amount_survives_restart_and_old_cache_stays_unknown(tmp_path):
+    original=snapshot()
+    original=replace(original,orders=(replace(original.orders[0],buyer_price=40.25,spp_base_price=100),))
+    path=tmp_path/'source.json'
+    save_source_snapshot_atomic(path,original)
+    assert load_source_snapshot_if_exists(path).orders[0].buyer_price==40.25
+    assert load_source_snapshot_if_exists(path).orders[0].spp_base_price==100
+    document=source_snapshot_to_document(original)
+    document['snapshot']['orders'][0].pop('buyer_price')
+    document['snapshot']['orders'][0].pop('spp_base_price')
+    assert source_snapshot_from_document(document).orders[0].buyer_price is None
+
+
+@pytest.mark.parametrize('value',[True,-1,'40',float('inf'),float('nan')])
+def test_corrupt_buyer_price_is_rejected(value):
+    document=source_snapshot_to_document(snapshot())
+    document['snapshot']['orders'][0]['buyer_price']=value
+    with pytest.raises(ValueError,match='invalid buyer_price'):
+        source_snapshot_from_document(document)
+
+
 @pytest.mark.parametrize("mutation", [
     lambda document: "{broken",
     lambda document: {**document, "schema_version": 99},

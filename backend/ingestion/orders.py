@@ -40,6 +40,17 @@ def import_orders(data: bytes, report_context: ReportMeta) -> ImportResult[Order
                 lifecycle_diagnostic.severity, lifecycle_diagnostic.code,
                 lifecycle_diagnostic.message, row_number, lifecycle_diagnostic.field,
             ))
+        buyer_price = None
+        # Price headers are per unit; an amount paid is the whole row amount.
+        for header in ("цена покупателя", "цена для покупателя", "оплачено покупателем"):
+            if row.get(header) not in (None, ""):
+                try:
+                    buyer_price = parse_non_negative_number(row[header])
+                    if header == "оплачено покупателем":
+                        buyer_price = buyer_price / quantity_number if quantity_number else None
+                except ValueError:
+                    pass  # Missing SPP evidence must not reject a demand record.
+                break
         # Deliberately construct only the canonical OrderRecord whitelist. Any
         # buyer, address, phone, email, or other source columns are discarded.
         records.append(OrderRecord(
@@ -49,6 +60,7 @@ def import_orders(data: bytes, report_context: ReportMeta) -> ImportResult[Order
             article=normalize_text(row.get("артикул продавца") or row.get("артикул")),
             product_name=normalize_text(row.get("название товара")), seller_price=price,
             origin_warehouse=normalize_text(row.get("склад отгрузки")) or None,
+            buyer_price=buyer_price,
         )); sources.append(row_number)
     return ImportResult(tuple(records), tuple(diagnostics), report_context, tuple(sources))
 

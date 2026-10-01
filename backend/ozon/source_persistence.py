@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from math import isfinite
 
 from backend.domain.contracts import ImportDiagnostic, OrderLifecycle, OrderRecord
 from backend.ingestion.availability import AvailabilityRecord
@@ -110,6 +111,14 @@ def _order(value):
         lifecycle = OrderLifecycle(_required(item, "lifecycle", str))
     except ValueError as exc:
         raise ValueError("invalid lifecycle") from exc
+    buyer = item.get("buyer_price")
+    if buyer is not None and (isinstance(buyer, bool) or not isinstance(buyer, (int, float))
+                              or not isfinite(buyer) or buyer < 0):
+        raise ValueError("invalid buyer_price")
+    base = item.get("spp_base_price")
+    if base is not None and (isinstance(base, bool) or not isinstance(base, (int, float))
+                             or not isfinite(base) or base < 0):
+        raise ValueError("invalid spp_base_price")
     return OrderRecord(
         sku=_required(item, "sku", str), quantity=_required(item, "quantity", int),
         origin_cluster=_required(item, "origin_cluster", str),
@@ -123,6 +132,8 @@ def _order(value):
         origin_warehouse=_optional(item, "origin_warehouse", str),
         volumetric_weight_kg=(None if item.get("volumetric_weight_kg") is None else float(item["volumetric_weight_kg"])),
         source_channel=item.get("source_channel", "") if isinstance(item.get("source_channel", ""), str) else (_ for _ in ()).throw(ValueError("invalid source_channel")),
+        buyer_price=float(buyer) if buyer is not None else None,
+        spp_base_price=float(base) if base is not None else None,
     )
 
 

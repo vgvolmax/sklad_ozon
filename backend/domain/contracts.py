@@ -99,6 +99,10 @@ class OrderRecord:
     # Backend provenance used when an API history tail replaces one channel.
     # File imports intentionally keep the empty default.
     source_channel: str = ""
+    # Per-unit buyer amount in RUB; absent evidence is never a zero discount.
+    buyer_price: float | None = None
+    # SPP-only base. Explicit modern seller_price need not equal legacy price.
+    spp_base_price: float | None = None
 
 
 RecordT = TypeVar("RecordT")
