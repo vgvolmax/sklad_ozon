@@ -61,11 +61,16 @@ def test_economics_updates_cost_without_mutating_snapshot(tmp_path, monkeypatch)
     snapshot.snapshot_id = 'snap-1'
     store.put(snapshot)
     assert client.put('/api/project/cost-prices/26572', json={'cost': '50'}).status_code == 200
-    result = client.post('/api/economics/workspace', json={**BODY, 'modeled_drr': '.10'})
+    from tests.economics.test_advertising import advertising_xlsx, evidence, order
+    snapshot.order_revenue_evidence = evidence([order('2026-09-01', 400, sku='SKU')])
+    uploaded = client.post('/api/economics/advertising/import', data={'analysis_snapshot_id': 'snap-1'},
+        files={'files': ('report.xlsx', advertising_xlsx(rows=[['01.09.2026', 'SKU', 'Товар', 40]]))})
+    assert uploaded.status_code == 200
+    result = client.post('/api/economics/workspace', json=BODY)
     assert result.status_code == 200, result.text
     product = result.json()['workspace']['products'][0]
     assert product['cost'] == '50' and product['cost_source'] == 'manual'
-    assert product['assumed_drr_rate'] == '0.1'
+    assert product['real_drr_rate'] == '0.1'
     assert product['profit_per_unit'].startswith('-8.666')
     assert snapshot.unit_economics[0].cost == Decimal('40')
     assert snapshot.route_economics[0].current_profit_per_unit == Decimal('13')
@@ -83,13 +88,14 @@ def test_economics_excel_has_one_product_row_and_numeric_rates(tmp_path, monkeyp
     sheet = load_workbook(BytesIO(result.content)).active
     assert sheet.max_row == 2
     assert [c.value for c in sheet[1]] == ['Артикул', 'Товар', 'Текущая цена, ₽',
-        'ДРР по плану, %', 'Маржа, %', 'ROI, %', 'Плановая маржа, %', 'Необходимая цена, ₽']
+        'ДРР по плану, %', 'Реальный ДРР, %', 'Маржа, %', 'ROI, %', 'Плановая маржа, %', 'Необходимая цена, ₽']
     assert sheet.cell(2, 1).value == '26572'
     assert sheet.cell(2, 3).value == 100
     assert sheet.cell(2, 4).value == .05
-    assert sheet.cell(2, 7).value == .20
+    assert sheet.cell(2, 8).value == .20
+    assert sheet.cell(2, 5).value is None and sheet.cell(2, 6).value is None
     assert sheet.cell(2, 4).number_format == '0.0%'
-    assert sheet.freeze_panes == 'C2' and sheet.auto_filter.ref == 'A1:H2'
+    assert sheet.freeze_panes == 'C2' and sheet.auto_filter.ref == 'A1:I2'
     api.ANALYSIS_STORE.clear()
     assert client.post('/api/economics/export', json=BODY).status_code == 409
 

@@ -294,3 +294,24 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 @media(max-width:75rem){.flow-layout{grid-template-columns:minmax(12rem,15rem) minmax(0,1fr)}.flow-context{grid-column:2}.data-workspace{grid-template-columns:minmax(0,1fr) minmax(16rem,19rem)}}
 @media(max-width:62rem){.product-layout{grid-template-columns:1fr}.flow-layout,.data-workspace{grid-template-columns:1fr}.flow-context{grid-column:auto}.data-side{grid-template-columns:repeat(2,minmax(0,1fr))}.data-fallback-card{grid-column:1/-1}.product-selector{min-height:0}}
 @media(max-width:43rem){.workspace-heading{display:block}.workspace-link{margin-top:.7rem}.flow-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.flow-stats>div:nth-child(2){border-right:0}.data-side,.data-files-card .file-grid{grid-template-columns:1fr}.data-fallback-card{grid-column:auto}.plan-provenance>span{border:0;padding-left:0}.working-summary button[data-working-global-reset]{margin-left:0}}
+
+/* Optional advertising evidence stays on Economics. */
+.econ-advertising{padding:1rem 1.2rem}
+.econ-advertising-head{display:flex;align-items:center;justify-content:space-between;gap:1rem}
+.econ-advertising h3{font-size:1rem;margin:0}
+.econ-advertising h3 small{font-size:.75rem;font-weight:400;color:var(--color-text-muted)}
+.econ-advertising p{font-size:.8rem;color:var(--color-text-muted);margin:.4rem 0}
+.econ-advertising-picker{display:grid;gap:.35rem;flex:0 1 22rem;font-size:.8rem;font-weight:700}
+.econ-advertising-picker input{max-width:100%;font-size:.8rem}
+.econ-advertising-list{list-style:none;padding:0;margin:.6rem 0;max-height:18rem;overflow:auto}
+.econ-advertising-list li{display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.6rem 0;border-bottom:1px solid var(--workspace-border)}
+.econ-advertising-list li>div{min-width:0}
+.econ-advertising-list strong,.econ-advertising-list small{display:block;overflow-wrap:anywhere}
+.econ-advertising-list strong{font-size:.8rem}
+.econ-advertising-list small{font-size:.75rem;color:var(--color-text-muted);margin-top:.25rem}
+.econ-advertising-list .field-error{color:var(--color-danger)}
+.econ-advertising-list button{flex-shrink:0}
+.econ-advertising-campaigns summary{cursor:pointer;font-size:.8rem;font-weight:700;padding:.5rem 0}
+.econ-real-drr{display:block;white-space:nowrap;font-size:.78rem}
+.econ-table td:nth-child(6){min-width:11rem;max-width:18rem;overflow-wrap:anywhere}
+@media(max-width:43rem){.econ-advertising-head{display:block}.econ-advertising-picker{margin-top:.8rem}.econ-advertising{padding:.8rem}}

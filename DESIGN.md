@@ -276,8 +276,13 @@ historical model use separate labels and never substitute a missing value with
 zero. The shortfall is an estimate over delivered completed-week routes, not
 a current-month buyout or payout statement.
 
-Economics keeps modeled and planned DRR together in the existing compact target
-band. Cost uses an inline money editor with a source/status line, and a failed
+Economics keeps target margin, ROI and planned DRR in the compact target
+band. Real DRR is read-only in each SKU row, with uploaded expense, all-order
+revenue and period; unknown values show `n/a` with a reason. The optional
+advertising panel on Economics owns batch selection, per-file results/retry,
+and a bounded campaign list. Campaign deletion uses the shared AppDialog.
+The queue survives redraws and navigation. Advertising mutations serialize
+with economics edits/export; they refresh Economics without making Plan stale. Cost uses an inline money editor with a source/status line, and a failed
 save keeps its value and correction text. The table owns horizontal overflow
 after the additional cost column; its expanded product/cluster surface remains
 unchanged. Two neutral download actions below the target controls distinguish

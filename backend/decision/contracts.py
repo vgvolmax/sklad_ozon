@@ -11,6 +11,7 @@ from backend.analytics._weeks import AnalyticsWindow
 from backend.analytics.demand_estimate import DemandEstimate
 from backend.analytics.routes import RouteProfile
 from backend.domain.contracts import ReportMeta, SourceMode
+from backend.domain.advertising import OrderRevenueEvidence
 from backend.domain.signals import RecommendationDistortionSignal, SignalConfidence, StockoutSignal
 from backend.economics import RouteOpportunity, UnitEconomicsResult
 from backend.project import EconomicsSettings, OptimizerThresholds
@@ -355,3 +356,4 @@ class AnalysisSnapshot:
     optimizer_thresholds: OptimizerThresholds | None = None
     economics_settings: EconomicsSettings | None = None
     cost_prices_fingerprint: str | None = None
+    order_revenue_evidence: OrderRevenueEvidence | None = None
