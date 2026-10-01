@@ -85,7 +85,7 @@ def test_invalid_pack_multiple(value):
 
 def test_v1_migrates_and_v2_round_trip_persists(tmp_path):
     path=tmp_path/'project.json'; save_project_atomic(path,Project())
-    payload=json.loads(path.read_text()); payload['schema_version']=1; payload.pop('pack_multiplicity'); path.write_text(json.dumps(payload))
+    payload=json.loads(path.read_text()); payload.pop('cost_prices'); payload['schema_version']=1; payload.pop('pack_multiplicity'); path.write_text(json.dumps(payload))
     assert load_project(path).pack_multiplicity=={}
     project=Project(pack_multiplicity={'17261':PackMultiplicityRecord(unitka_pack_multiple=20,override_pack_multiple=50,override_origin='manual',override_updated_at='now')})
     save_project_atomic(path,project); assert load_project(path)==project

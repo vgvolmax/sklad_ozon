@@ -354,3 +354,4 @@ class AnalysisSnapshot:
     ozon_recommendation_error: str | None = None
     optimizer_thresholds: OptimizerThresholds | None = None
     economics_settings: EconomicsSettings | None = None
+    cost_prices_fingerprint: str | None = None

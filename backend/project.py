@@ -10,8 +10,8 @@ from datetime import date
 
 from backend.domain.contracts import ProductEconomicsInput, ReportMeta, TariffRow
 
-SCHEMA_VERSION = 4
-_TOP_FIELDS = {"schema_version", "tariffs", "tariff_meta", "product_economics", "product_economics_meta", "seller_available_stock", "manual_cluster_mappings", "economics_settings", "optimizer_thresholds", "operational_snapshots", "pack_multiplicity", "working_quantity_overrides"}
+SCHEMA_VERSION = 5
+_TOP_FIELDS = {"schema_version", "tariffs", "tariff_meta", "product_economics", "product_economics_meta", "seller_available_stock", "manual_cluster_mappings", "economics_settings", "optimizer_thresholds", "operational_snapshots", "pack_multiplicity", "working_quantity_overrides", "cost_prices"}
 _FORBIDDEN = {"buyer_name", "customer_name", "address", "phone", "email", "inn", "kpp", "raw_row", "raw_report", "raw_bytes", "raw_csv", "raw_xlsx", "base64_report", "payment_data"}
 _SNAPSHOT_FIELDS = {
     "availability": {"sku", "warehouse", "cluster", "available_quantity"},
@@ -68,6 +68,14 @@ class WorkingQuantityOverride:
 
 
 @dataclass(frozen=True, slots=True)
+class CostPriceRecord:
+    cost: Decimal
+    source: str
+    updated_at: str
+    product_name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class Project:
     schema_version: int = field(default=SCHEMA_VERSION, init=False)
     tariffs: tuple[TariffRow, ...] = ()
@@ -81,6 +89,7 @@ class Project:
     operational_snapshots: tuple[OperationalSnapshot, ...] = ()
     pack_multiplicity: dict[str, PackMultiplicityRecord] = field(default_factory=dict)
     working_quantity_overrides: dict[str, dict[str, WorkingQuantityOverride]] = field(default_factory=dict)
+    cost_prices: dict[str, CostPriceRecord] = field(default_factory=dict)
 
 
 def _decimal(value: object) -> Decimal:
@@ -150,6 +159,15 @@ def _validate(project: Project):
     if project.optimizer_thresholds:
         for name in OptimizerThresholds.__slots__: _decimal(getattr(project.optimizer_thresholds, name))
     for snapshot in project.operational_snapshots: _validate_snapshot(snapshot)
+    for article, record in project.cost_prices.items():
+        if not isinstance(article, str) or not article.strip() or type(record) is not CostPriceRecord:
+            raise ProjectValidationError("Invalid cost price identity.")
+        if not 0 <= _decimal(record.cost) <= Decimal('1000000000000'):
+            raise ProjectValidationError("Invalid cost price.")
+        if record.source not in {'manual', 'import'} or not isinstance(record.updated_at, str) or not record.updated_at:
+            raise ProjectValidationError("Invalid cost price metadata.")
+        if not isinstance(record.product_name, str):
+            raise ProjectValidationError("Invalid cost price name.")
     for article, record in project.pack_multiplicity.items():
         if not isinstance(article, str) or not article or type(record) is not PackMultiplicityRecord:
             raise ProjectValidationError("Invalid pack multiplicity record.")
@@ -195,6 +213,9 @@ def _to_payload(project: Project):
         "operational_snapshots": [{"kind": s.kind, "report_date": s.report_date, "period_start": s.period_start, "period_end": s.period_end, "records": list(s.records)} for s in project.operational_snapshots],
         "pack_multiplicity": {article: {name: getattr(record, name) for name in PackMultiplicityRecord.__slots__} for article, record in sorted(project.pack_multiplicity.items())},
         "working_quantity_overrides": {sku: {cluster: {name: getattr(record, name) for name in WorkingQuantityOverride.__slots__} for cluster, record in sorted(clusters.items())} for sku, clusters in sorted(project.working_quantity_overrides.items())},
+        "cost_prices": {article: {"cost": _decimal_json(record.cost), "source": record.source,
+                                  "updated_at": record.updated_at, "product_name": record.product_name}
+                        for article, record in sorted(project.cost_prices.items())},
     }
     _reject_forbidden_keys(payload)
     return payload
@@ -242,6 +263,7 @@ def load_project(path: Path) -> Project:
     try: payload = json.loads(Path(path).read_text("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc: raise ProjectValidationError("Project is not valid UTF-8 JSON.") from exc
     _reject_forbidden_keys(payload)
+    legacy_fields = _TOP_FIELDS - {"cost_prices"}
     def migrate_pack_records(records):
         return {article: {**raw, "rtp_price_pack_multiple": None,
                           "rtp_price_updated_at": None}
@@ -249,18 +271,21 @@ def load_project(path: Path) -> Project:
 
     if isinstance(payload, dict) and payload.get("schema_version") == 1:
         payload = dict(payload); payload.pop("working_quantity_overrides", None)
-        _strict(payload, _TOP_FIELDS - {"pack_multiplicity", "working_quantity_overrides"}, "project")
-        payload = {**payload, "schema_version": SCHEMA_VERSION, "pack_multiplicity": {}, "working_quantity_overrides": {}}
+        _strict(payload, legacy_fields - {"pack_multiplicity", "working_quantity_overrides"}, "project")
+        payload = {**payload, "schema_version": SCHEMA_VERSION, "pack_multiplicity": {}, "working_quantity_overrides": {}, "cost_prices": {}}
     elif isinstance(payload, dict) and payload.get("schema_version") == 2:
-        _strict(payload, _TOP_FIELDS - {"working_quantity_overrides"}, "project")
+        _strict(payload, legacy_fields - {"working_quantity_overrides"}, "project")
         payload = {**payload, "schema_version": SCHEMA_VERSION,
                    "pack_multiplicity": migrate_pack_records(payload["pack_multiplicity"]),
-                   "working_quantity_overrides": {}}
+                   "working_quantity_overrides": {}, "cost_prices": {}}
     elif isinstance(payload, dict) and payload.get("schema_version") == 3:
-        _strict(payload, _TOP_FIELDS, "project")
+        _strict(payload, legacy_fields, "project")
         migrated_packs = migrate_pack_records(payload.get("pack_multiplicity", {}))
         payload = {**payload, "schema_version": SCHEMA_VERSION,
-                   "pack_multiplicity": migrated_packs}
+                   "pack_multiplicity": migrated_packs, "cost_prices": {}}
+    elif isinstance(payload, dict) and payload.get("schema_version") == 4:
+        _strict(payload, legacy_fields, "project")
+        payload = {**payload, "schema_version": SCHEMA_VERSION, "cost_prices": {}}
     _strict(payload, _TOP_FIELDS, "project")
     if type(payload.get("schema_version")) is not int or payload["schema_version"] != SCHEMA_VERSION: raise ProjectValidationError("Missing or unsupported schema version.")
     if not isinstance(payload["tariffs"], list) or not isinstance(payload["product_economics"], list) or not isinstance(payload["operational_snapshots"], list): raise ProjectValidationError("Project collections must be lists.")
@@ -298,7 +323,12 @@ def load_project(path: Path) -> Project:
         for cluster, raw in clusters.items():
             _strict(raw, WorkingQuantityOverride.__slots__, "working quantity override")
             overrides[sku][cluster] = WorkingQuantityOverride(**raw)
-    project = Project(tuple(tariffs), _meta(payload["tariff_meta"]), tuple(products), _meta(payload["product_economics_meta"]), payload["seller_available_stock"], payload["manual_cluster_mappings"], econ, thresholds, tuple(snapshots), packs, overrides)
+    if not isinstance(payload['cost_prices'], dict): raise ProjectValidationError('Cost prices must be an object.')
+    costs = {}
+    for article, raw in payload['cost_prices'].items():
+        _strict(raw, CostPriceRecord.__slots__, 'cost price')
+        costs[article] = CostPriceRecord(_decimal(raw['cost']), raw['source'], raw['updated_at'], raw['product_name'])
+    project = Project(tuple(tariffs), _meta(payload["tariff_meta"]), tuple(products), _meta(payload["product_economics_meta"]), payload["seller_available_stock"], payload["manual_cluster_mappings"], econ, thresholds, tuple(snapshots), packs, overrides, costs)
     _validate(project); return project
 
 
