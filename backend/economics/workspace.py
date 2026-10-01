@@ -110,11 +110,14 @@ def _aggregate(rows, margin_target, roi_target, goal):
 
 
 def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
-                              per_sku_drr=None):
+                              per_sku_drr=None, modeled_drr=None, per_sku_cost=None):
     margin, roi, goal, planned_drr = validate_targets(margin, roi, goal, planned_drr)
     settings: EconomicsSettings | None = snapshot.economics_settings
     if settings is None:
         raise ValueError("analysis has no economics settings")
+    model_rate = (settings.advertising_rate if modeled_drr is None else
+                  _decimal(modeled_drr, 'modeled_drr', Decimal('.90')))
+    costs = per_sku_cost or {}
     overrides = {}
     for sku, value in (per_sku_drr or {}).items():
         if not isinstance(sku, str) or not sku.strip():
@@ -122,8 +125,7 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
         overrides[sku] = _decimal(value, "planned_drr", Decimal("0.90"))
     unit_by_sku = {}
     for unit in snapshot.unit_economics:
-        if unit.price is not None and unit.cost is not None and unit.commission is not None and unit.price > 0:
-            unit_by_sku.setdefault(unit.sku, unit)
+        unit_by_sku.setdefault(unit.sku, unit)
     identity = {row.sku: (row.article, row.product_name) for row in snapshot.decision_rows}
     by_sku = defaultdict(list)
     covered_route_keys = set()
@@ -132,11 +134,19 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
                                 route.destination_cluster_id))
         unit = unit_by_sku.get(route.sku)
         price = route.price_per_unit
-        cost = unit.cost if unit else None
+        cost = costs.get(route.sku, unit.cost if unit else None)
         logistics = route.route_cost_rub
         profit = route.current_profit_per_unit
-        complete = (unit is not None and price is not None and price > 0 and
-                    cost is not None and logistics is not None and profit is not None)
+        inputs_ready = (unit is not None and unit.price is not None and unit.price > 0
+                        and unit.commission is not None and price is not None and price > 0
+                        and cost is not None and logistics is not None
+                        and settings.tax_system in {'usn_income', 'usn_income_minus_expenses'})
+        if inputs_ready and (modeled_drr is not None or route.sku in costs):
+            with localcontext() as context:
+                context.prec = 40
+                profit = _profit_at_price(price, cost, logistics,
+                    unit.commission / unit.price, settings, model_rate)
+        complete = inputs_ready and profit is not None
         drr = overrides.get(route.sku, planned_drr)
         if complete:
             commission_rate = unit.commission / unit.price
@@ -186,8 +196,10 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
                 for key in keys]
         products.append({"sku": sku, "article": article, "name": name,
                          "price": unit.price if unit else None,
-                         "commission_rate": unit.commission / unit.price if unit else None,
-                         "assumed_drr_rate": settings.advertising_rate,
+                         "cost": costs.get(sku, unit.cost if unit else None),
+                         "commission_rate": (unit.commission / unit.price if unit and
+                                              unit.commission is not None and unit.price else None),
+                         "assumed_drr_rate": model_rate,
                          "planned_drr_rate": overrides.get(sku, planned_drr),
                          **summary, "groups": groups})
     weeks = snapshot.observed_routes.window.included_weeks
@@ -196,6 +208,7 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
     return {"period": period, "evidence": "fulfilled_completed_weeks",
             "target_margin": margin, "target_roi": roi, "goal": goal,
             "planned_drr": planned_drr, "products": products,
+            "modeled_drr": model_rate,
             "modeled_shortfall": (sum((p["modeled_shortfall"] for p in products
                                        if p["modeled_shortfall"] is not None), ZERO)
                                   if any(p["covered_qty"] for p in products) else None),

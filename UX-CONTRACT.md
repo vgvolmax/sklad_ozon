@@ -369,10 +369,13 @@ not additive totals. The separate route list always repeats article, SKU,
 origin and destination. Search, bounded load-more and partial coverage remain
 visible in both views.
 
-Margin and ROI targets, selected pricing goal and planned DRR are local
+Margin and ROI targets, selected pricing goal, modeled and planned DRR are local
 scenario preferences. Python calculates weighted route averages, commission,
 modeled target shortfall and a price at unchanged rates/logistics. Planned DRR
-only affects prospective price; it never rewrites the historical model. A SKU
+only affects prospective price; the shared modeled DRR recalculates current
+margin, ROI and modeled shortfall on the same observed route mix without
+mutating the analysis snapshot. It initially uses 5% and can explicitly be set
+to zero. A SKU
 without observed routes remains visible with an unknown shortfall and price.
 The observed route window contains completed ISO weeks and delivered postings;
 it excludes the current week and is not a confirmed buyout or Ozon payout
@@ -380,6 +383,27 @@ ledger. The UI names the exact window and labels its shortfall as modeled,
 not as actual financial loss for the current month. A tariff step, a new
 price's effect on demand, and individual actual advertising spend are outside
 this scenario. A missing route blocks a universal price recommendation.
+
+Cost is a visible, editable column, including when other economics evidence is
+incomplete. Enter or leaving the field saves the cost atomically to Project
+schema v5 (`data/project.json`); the field shows pending, source and persistent
+failure with retry, retaining the failed draft. The article-level directory
+keeps manual costs ahead of later Unitka imports; consistent imported costs
+are saved only with a successful analysis commit. The next analysis consumes
+these costs. An existing Economics snapshot can immediately show a cost scenario,
+while Plan is marked stale and shipment preparation/export requires recalculation.
+Cost changes during an analysis or shipment check cannot commit an old result.
+Older Project schemas v1–v4 migrate without losing existing mappings or quantities.
+
+Economics has separate downloads for the stored cost directory and a compact
+Excel report. The report uses the active scenario for the entire current snapshot,
+independent of search, filters and load-more. It has one article per row and only
+article, product, current price, planned DRR, margin, ROI, target margin and
+required price. Required price follows the selected margin/ROI goal; target margin
+remains the explicit margin setting. Missing values stay blank, rates/money are
+numeric, and duplicate/missing article identity blocks export instead of merging
+different SKU. Draft cost edits, a failed scenario or pending calculation disable
+report download. No route detail sheets are exported.
 
 ## Responsive/zoom
 

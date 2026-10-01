@@ -117,3 +117,22 @@ def test_margin_and_roi_flags_are_independent_of_selected_pricing_goal():
 def test_invalid_financial_targets_are_rejected(margin, roi, goal, drr):
     with pytest.raises(ValueError):
         validate_targets(margin, roi, goal, drr)
+
+
+def test_shared_model_drr_changes_current_metrics_but_not_original_snapshot():
+    snapshot = sample_snapshot()
+    before = workspace(snapshot)['products'][0]
+    after = workspace(snapshot, modeled_drr='.10')['products'][0]
+    assert abs(after['profit_per_unit'] - before['profit_per_unit'] + Decimal('5')) < Decimal('1e-25')
+    assert after['margin'] < before['margin'] and after['roi'] < before['roi']
+    assert after['target_price_all_routes'] == before['target_price_all_routes']
+    assert snapshot.economics_settings.advertising_rate == Decimal('.05')
+
+
+def test_cost_is_visible_even_when_route_economics_is_incomplete():
+    snapshot = sample_snapshot(partial=True)
+    snapshot.unit_economics[0].commission = None
+    product = workspace(snapshot)['products'][0]
+    assert product['cost'] == Decimal('40')
+    assert product['price'] == Decimal('100')
+    assert product['margin'] is None

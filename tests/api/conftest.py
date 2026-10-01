@@ -41,6 +41,7 @@ def isolated_api_credential_context(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api_module, "OZON_VAULT", vault)
     monkeypatch.setattr(api_module, "OZON_CLIENT", client)
+    monkeypatch.setattr(api_module, "PROJECT_PATH", tmp_path / 'project.json')
     monkeypatch.setattr(
         api_module,
         "DRAFT_VALIDATION_SERVICE",

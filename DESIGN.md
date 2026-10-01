@@ -276,6 +276,13 @@ historical model use separate labels and never substitute a missing value with
 zero. The shortfall is an estimate over delivered completed-week routes, not
 a current-month buyout or payout statement.
 
+Economics keeps modeled and planned DRR together in the existing compact target
+band. Cost uses an inline money editor with a source/status line, and a failed
+save keeps its value and correction text. The table owns horizontal overflow
+after the additional cost column; its expanded product/cluster surface remains
+unchanged. Two neutral download actions below the target controls distinguish
+the compact economics report from the persistent cost directory.
+
 ## Persistent pack-multiplicity directory (PR1)
 
 Pack multiplicity is article-level master data stored in Project. The active resolution is `manual/XLSX override → RTP price → unknown`; Unitka contributes economics and tariffs but never pack multiplicity. The directory is persisted atomically in `data/project.json`.

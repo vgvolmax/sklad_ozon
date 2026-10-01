@@ -39,3 +39,58 @@ def test_local_design_has_a_shared_surface_for_sku_and_cluster_disclosure():
     html = (ROOT / 'frontend/index.html').read_text()
     assert '/assets/js/economics_workspace.js' in html
     assert '/assets/css/workspace.css' in html
+
+
+def test_shared_model_drr_is_sent_as_a_fraction_and_cost_editor_keeps_saved_value():
+    targets = node('SkladOzon.EconomicsWorkspace.validateTargets()')
+    assert targets['modeled_drr'] == '0.05'
+    product = {'sku': 'S', 'article': 'A', 'name': 'Товар', 'cost': '125.5',
+               'cost_source': 'manual', 'qty': 0, 'price': '200', 'groups': {}}
+    markup = node(f'SkladOzon.EconomicsWorkspace.productRows({json.dumps([product])})')
+    assert 'data-econ-cost="S"' in markup and 'value="125.5"' in markup
+    assert 'Ручная' in markup and 'econ-cost-error-0' in markup
+
+
+def test_cost_validation_and_save_failure_restore_focus_with_dom_node_lists():
+    script = f"""
+    const assert=require('node:assert/strict');
+    const calls=[];
+    const input={{dataset:{{econCost:'S',article:'A'}},value:'',focus(){{calls.push('focus');}}}};
+    const retry={{dataset:{{econCostRetry:'S'}}}},form={{}},download={{addEventListener(){{}}}};
+    const list=values=>({{forEach:fn=>values.forEach(fn),[Symbol.iterator]:()=>values[Symbol.iterator]()}});
+    const container={{innerHTML:'',querySelector(selector){{
+      return selector==='#econ-target-form'?form:selector==='#econ-export'?download:null;
+    }},querySelectorAll(selector){{
+      return list(selector==='[data-econ-cost]'?[input]:selector==='[data-econ-cost-retry]'?[retry]:[]);
+    }}}};
+    let markup='',notifyChange=false;
+    Object.defineProperty(container,'innerHTML',{{get(){{return markup;}},set(value){{
+      if(notifyChange){{notifyChange=false;assert.equal(input.onchange(),undefined);}}
+      markup=value;
+    }}}});
+    globalThis.document={{body:{{}},activeElement:null}};
+    document.activeElement=document.body;
+    globalThis.SkladOzon={{escapeHtml:String}};
+    require({json.dumps(str(MODULE))});
+    const product={{sku:'S',article:'A',name:'Товар',qty:0,cost:'100',price:'200',no_observations:true,groups:{{destination:[],origin:[]}}}};
+    const report={{products:[product],goal:'margin',modeled_shortfall:'0',incomplete_sku_count:0,period:null}};
+    const fetch=async url=>url.includes('cost-prices')
+      ?(calls.push('save'),{{ok:false,json:async()=>({{error:{{message:'Диск недоступен'}}}})}})
+      :{{ok:true,json:async()=>({{snapshot_id:'snap',workspace:report}})}};
+    (async()=>{{
+      SkladOzon.EconomicsWorkspace.render(container,{{snapshot_id:'snap'}},fetch);
+      await new Promise(resolve=>setImmediate(resolve));
+      notifyChange=true; // Removing a focused edited input can emit change while rendering.
+      await input.onchange();
+      assert.deepEqual(calls,['focus']);
+      assert.ok(container.innerHTML.includes('Введите себестоимость'));
+      input.value='125.5';
+      await input.onchange();
+      assert.ok(container.innerHTML.includes('Диск недоступен'));
+      assert.ok(container.innerHTML.includes('Повторить сохранение'));
+      await retry.onclick();
+      assert.deepEqual(calls,['focus','save','focus','save','focus']);
+    }})().catch(error=>{{console.error(error);process.exit(1);}});
+    """
+    result = subprocess.run(['node', '-e', script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

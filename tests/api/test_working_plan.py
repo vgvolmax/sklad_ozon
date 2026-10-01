@@ -36,12 +36,14 @@ def test_working_plan_mutation_reset_and_restart_persistence(tmp_path, monkeypat
 def test_invalid_pack_quantity_is_not_persisted_and_stale_base_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(api_module, 'PROJECT_PATH', tmp_path / 'project.json')
     old = _analyze_api_plan(); base = identity(old)
+    original_project = api_module.PROJECT_PATH.read_bytes()
     row = CLIENT.post('/api/working-plan', json=base).json()['working_plan']['lines'][0]
     invalid = CLIENT.put('/api/working-plan/override', json={**base,
         'sku': row['sku'], 'destination_cluster_id': row['destination_cluster_id'],
         'quantity': 1.5})
     assert invalid.status_code == 400
-    assert not api_module.PROJECT_PATH.exists()
+    assert api_module.PROJECT_PATH.read_bytes() == original_project
+    assert load_project(api_module.PROJECT_PATH).working_quantity_overrides == {}
     stored = api_module.ANALYSIS_STORE.get(base['analysis_snapshot_id'])
     newer_plan = replace(stored.shippable_plan, analysis_snapshot_id='as_new', shippable_plan_id='sp_new')
     api_module.ANALYSIS_STORE.put(replace(stored, snapshot_id='as_new', shippable_plan=newer_plan))
@@ -76,6 +78,7 @@ def test_every_mutation_rechecks_base_inside_persistence_lock(
         tmp_path, monkeypatch, path, method, payload):
     monkeypatch.setattr(api_module, 'PROJECT_PATH', tmp_path / 'project.json')
     old = _analyze_api_plan(); base = identity(old)
+    original_project = api_module.PROJECT_PATH.read_bytes()
     row = CLIENT.post('/api/working-plan', json=base).json()['working_plan']['lines'][0]
     stored = api_module.ANALYSIS_STORE.get(base['analysis_snapshot_id'])
     newer_plan = replace(stored.shippable_plan, analysis_snapshot_id='as_race',
@@ -99,4 +102,5 @@ def test_every_mutation_rechecks_base_inside_persistence_lock(
     response = getattr(CLIENT, method)(path, json=request)
     assert response.status_code == 409
     assert response.json()['error']['code'] == 'WORKING_PLAN_BASE_CHANGED'
-    assert not api_module.PROJECT_PATH.exists()
+    assert api_module.PROJECT_PATH.read_bytes() == original_project
+    assert load_project(api_module.PROJECT_PATH).working_quantity_overrides == {}

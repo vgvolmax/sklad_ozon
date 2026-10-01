@@ -18,6 +18,9 @@ from fastapi.responses import JSONResponse, StreamingResponse, Response
 from backend.application import analyze
 from backend.economics import LogisticsContext
 from backend.economics.workspace import build_economics_workspace
+from backend.economics.export import export_cost_prices, export_economics
+from backend.cost_prices import (apply_costs, cost_fingerprint, cost_items,
+                                import_costs, set_cost)
 from backend.decision import (DataQualityFact, DiagnosticView, InputStatusView,
                               ScenarioSettings, assemble_snapshot,
                               build_data_quality_presentation,
@@ -214,6 +217,14 @@ def _require_current_shippable_plan(analysis_snapshot_id, shippable_plan_id):
         raise ShipmentPreparationError(
             'SHIPMENT_INPUT_CHANGED',SHIPMENT_INPUT_CHANGED_MESSAGE,
             'analysis_snapshot_id',409)
+    fingerprint = getattr(snapshot, 'cost_prices_fingerprint', None)
+    if fingerprint is not None:
+        with PROJECT_PERSISTENCE_LOCK:
+            current = load_project_if_exists(PROJECT_PATH)
+        if cost_fingerprint(current) != fingerprint:
+            raise ShipmentPreparationError('COST_PRICES_CHANGED',
+                'Себестоимость изменилась. Пересчитайте план перед подготовкой поставки.',
+                'analysis_snapshot_id', 409)
     return snapshot
 
 def capture_shipment_pack_fingerprint_if_current(
@@ -268,7 +279,8 @@ def commit_shipment_plan_if_current(
 
 def commit_analysis_snapshot_if_current(
         snapshot, *, expected_pack_fingerprint, expected_credential_context_id=None,
-        require_credential_context=False):
+        require_credential_context=False, expected_cost_fingerprint=None,
+        imported_cost_products=()):
     """Atomically guard an analysis commit by credential and pack revisions.
 
     Lock order for the only operation requiring both locks is always Ozon
@@ -281,6 +293,9 @@ def commit_analysis_snapshot_if_current(
                 raise ShipmentPreparationError(
                     'PACK_MULTIPLICITY_CHANGED_DURING_ANALYSIS',
                     PACK_MULTIPLICITY_CHANGED_MESSAGE,None,409)
+            if expected_cost_fingerprint is not None and cost_fingerprint(current) != expected_cost_fingerprint:
+                raise ShipmentPreparationError('COST_PRICES_CHANGED_DURING_ANALYSIS',
+                    'Себестоимость изменилась во время расчёта. Повторите расчёт.', None, 409)
             if snapshot.source_mode is SourceMode.API:
                 latest_source=OZON_SOURCE_STORE.latest()
                 if (latest_source is None or
@@ -289,8 +304,16 @@ def commit_analysis_snapshot_if_current(
                         'OZON_SOURCE_SNAPSHOT_STALE',
                         'Источник Ozon обновился. Повторите расчёт на новых данных.',
                         'source_snapshot_id',409)
+            if imported_cost_products:
+                names = {row.sku: row.product_name for row in snapshot.decision_rows}
+                updated = import_costs(current, imported_cost_products, names)
+                if updated != current:
+                    save_project_atomic(PROJECT_PATH, updated)
+                current = updated
+            committed = replace(snapshot, cost_prices_fingerprint=cost_fingerprint(current))
             OZON_SOURCE_SELECTIONS.clear()
-            return ANALYSIS_STORE.put(snapshot)
+            ANALYSIS_STORE.put(committed)
+            return committed
 
     if require_credential_context:
         return commit_current_credential_context(
@@ -364,29 +387,115 @@ def _find_working_line(plan, identity):
     return next((line for line in plan.lines
                  if (line.sku,line.destination_cluster_id)==identity),None)
 
-@router.post('/api/economics/workspace')
-async def economics_workspace(request: Request):
+async def _economics_report(request):
     body = await json_object(request)
     if body is None:
         return error(400, 'INVALID_ECONOMICS_SCENARIO',
                      'Укажите параметры экономического сценария.', None)
     snapshot_id = body.get('analysis_snapshot_id')
-    snapshot = ANALYSIS_STORE.get(snapshot_id) if isinstance(snapshot_id, str) else None
-    if snapshot is None or ANALYSIS_STORE.latest() is not snapshot:
-        return error(409, 'ANALYSIS_SNAPSHOT_STALE',
-                     'Расчёт устарел. Пересчитайте план.', 'analysis_snapshot_id')
+    with PROJECT_PERSISTENCE_LOCK:
+        snapshot = ANALYSIS_STORE.get(snapshot_id) if isinstance(snapshot_id, str) else None
+        if snapshot is None or ANALYSIS_STORE.latest() is not snapshot:
+            return error(409, 'ANALYSIS_SNAPSHOT_STALE',
+                         'Расчёт устарел. Пересчитайте план.', 'analysis_snapshot_id')
+        project = load_project_if_exists(PROJECT_PATH)
     overrides = body.get('per_sku_drr') or {}
     if not isinstance(overrides, dict) or len(overrides) > 1000:
         return error(400, 'INVALID_ECONOMICS_SCENARIO',
                      'Плановый ДРР по товарам заполнен неверно.', 'per_sku_drr')
     try:
+        snapshot_costs = {unit.sku: unit.cost for unit in snapshot.unit_economics}
+        saved = {row.sku: project.cost_prices[row.article] for row in snapshot.decision_rows
+                 if row.article in project.cost_prices and
+                 (project.cost_prices[row.article].source == 'manual' or
+                  snapshot_costs.get(row.sku) in (None, project.cost_prices[row.article].cost))}
         report = build_economics_workspace(
             snapshot, margin=body.get('target_margin'), roi=body.get('target_roi'),
             goal=body.get('goal'), planned_drr=body.get('planned_drr'),
-            per_sku_drr=overrides)
+            per_sku_drr=overrides, modeled_drr=body.get('modeled_drr'),
+            per_sku_cost={sku: record.cost for sku, record in saved.items()})
+        for product in report['products']:
+            record = saved.get(product['sku'])
+            product['cost_source'] = record.source if record else 'snapshot'
+        report['cost_prices_fingerprint'] = cost_fingerprint(project)
     except ValueError as exc:
         return error(400, 'INVALID_ECONOMICS_SCENARIO', str(exc), None)
+    if not _economics_report_is_current(snapshot, report):
+        return error(409, 'ECONOMICS_INPUT_CHANGED',
+                     'Данные экономики изменились. Обновите расчёт и повторите.', None)
+    return snapshot, report
+
+
+def _economics_report_is_current(snapshot, report):
+    with PROJECT_PERSISTENCE_LOCK:
+        return (ANALYSIS_STORE.latest() is snapshot and
+                cost_fingerprint(load_project_if_exists(PROJECT_PATH)) ==
+                report['cost_prices_fingerprint'])
+
+
+@router.post('/api/economics/workspace')
+async def economics_workspace(request: Request):
+    result = await _economics_report(request)
+    if isinstance(result, Response): return result
+    snapshot, report = result
     return {'api_version': 1, 'snapshot_id': snapshot.snapshot_id, 'workspace': wire(report)}
+
+
+@router.post('/api/economics/export')
+async def economics_report_export(request: Request):
+    result = await _economics_report(request)
+    if isinstance(result, Response): return result
+    snapshot, report = result
+    try:
+        data = export_economics(report)
+    except ValueError as exc:
+        return error(400, 'ECONOMICS_EXPORT_IDENTITY_CONFLICT', str(exc), 'article')
+    if not _economics_report_is_current(snapshot, report):
+        return error(409, 'ECONOMICS_INPUT_CHANGED',
+                     'Данные изменились во время выгрузки. Скачайте отчёт повторно.', None)
+    return Response(data, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    headers={'Content-Disposition': 'attachment; filename="economics.xlsx"'})
+
+
+@router.get('/api/project/cost-prices')
+def get_cost_prices():
+    with PROJECT_PERSISTENCE_LOCK:
+        project = load_project_if_exists(PROJECT_PATH)
+    return {'api_version': 1, 'items': wire(cost_items(project))}
+
+
+@router.get('/api/project/cost-prices/export')
+def cost_prices_export():
+    with PROJECT_PERSISTENCE_LOCK:
+        items = cost_items(load_project_if_exists(PROJECT_PATH))
+    return Response(export_cost_prices(items),
+                    media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    headers={'Content-Disposition': 'attachment; filename="cost-prices.xlsx"'})
+
+
+@router.put('/api/project/cost-prices/{article:path}')
+async def put_cost_price(article: str, request: Request):
+    body = await json_object(request)
+    if body is None or set(body) != {'cost'}:
+        return error(400, 'INVALID_COST_PRICE', 'Укажите себестоимость.', 'cost')
+    try:
+        with PROJECT_PERSISTENCE_LOCK:
+            project = load_project_if_exists(PROJECT_PATH)
+            snapshot = ANALYSIS_STORE.latest()
+            name = next((row.product_name for row in snapshot.decision_rows
+                         if row.article == article), '') if snapshot else ''
+            updated, normalized = set_cost(project, article, body['cost'], product_name=name)
+            changed = cost_fingerprint(project) != cost_fingerprint(updated)
+            if updated != project:
+                save_project_atomic(PROJECT_PATH, updated)
+    except (ValueError, ProjectValidationError) as exc:
+        return error(400, 'INVALID_COST_PRICE', str(exc), 'cost')
+    except OSError:
+        return error(500, 'COST_PRICE_SAVE_FAILED',
+                     'Не удалось сохранить себестоимость. Проверьте доступ к папке приложения и повторите.', 'cost')
+    if changed: SHIPMENT_PLAN_STORE.clear()
+    return {'api_version': 1, 'changed': changed, 'requires_plan_recalculation': changed,
+            'item': wire(next(item for item in cost_items(updated) if item['article'] == normalized))}
 
 
 @router.post('/api/working-plan')
@@ -1555,6 +1664,9 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
                            diagnostics=products.diagnostics + merge_diagnostics)
         products = replace(products, records=_scope_to_current_catalog(
             products.records, current_catalog_skus))
+    imported_cost_products = products.records
+    cost_fingerprint_at_start = cost_fingerprint(project)
+    products = replace(products, records=apply_costs(products.records, project))
     logger.info("[analysis %s] article_join done %.3fs rows=%d",request_id,perf_counter()-join_started,len(products.records))
     logger.info("[analysis %s] reports done %.3fs",request_id,perf_counter()-reports_started)
     imported=[availability,restrictions,orders,tariffs,products]
@@ -1746,10 +1858,12 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         ozon_recommendation_error=(None if source_inputs is None else
                                    source_inputs.ozon_recommendation_error))
     expected_context=provenance[2] if len(provenance)>2 else None
-    commit_analysis_snapshot_if_current(
+    snapshot = commit_analysis_snapshot_if_current(
         snapshot,expected_pack_fingerprint=pack_fingerprint_at_start,
         expected_credential_context_id=expected_context,
-        require_credential_context=snapshot.source_mode is SourceMode.API)
+        require_credential_context=snapshot.source_mode is SourceMode.API,
+        expected_cost_fingerprint=cost_fingerprint_at_start,
+        imported_cost_products=imported_cost_products)
     return {"api_version":1,"complete":complete,"snapshot":wire(snapshot),"as_of":as_of.isoformat(),"metadata":{field:wire(item.meta) for field,item in zip(files,statuses)},"input_statuses":input_statuses,"demand":wire(result.demand),"observed_routes":wire(result.observed_routes),"clean_routes":wire(result.clean_routes),"stockout_signals":wire(result.stockouts),"distortion_signals":wire(result.distortions),"logistics":wire(result.logistics),"economics":wire(result.economics),"placements":wire(result.placements),"allocations":wire(result.allocations),"safe_allocations":wire(result.safe_allocations),"summary":wire(result.summary),"coverage":coverage,"diagnostics":wire(diagnostics)}
 
 
