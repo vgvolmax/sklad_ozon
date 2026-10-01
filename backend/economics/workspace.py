@@ -110,13 +110,13 @@ def _aggregate(rows, margin_target, roi_target, goal):
 
 
 def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
-                              per_sku_drr=None, modeled_drr=None, per_sku_cost=None):
+                              per_sku_drr=None, real_drr=None, per_sku_cost=None):
     margin, roi, goal, planned_drr = validate_targets(margin, roi, goal, planned_drr)
     settings: EconomicsSettings | None = snapshot.economics_settings
     if settings is None:
         raise ValueError("analysis has no economics settings")
-    model_rate = (settings.advertising_rate if modeled_drr is None else
-                  _decimal(modeled_drr, 'modeled_drr', Decimal('.90')))
+    rates = {sku: (None if value is None else _decimal(value, 'real_drr', Decimal('1e24')))
+             for sku, value in (real_drr or {}).items()}
     costs = per_sku_cost or {}
     overrides = {}
     for sku, value in (per_sku_drr or {}).items():
@@ -136,26 +136,37 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
         price = route.price_per_unit
         cost = costs.get(route.sku, unit.cost if unit else None)
         logistics = route.route_cost_rub
-        profit = route.current_profit_per_unit
+        model_rate = rates.get(route.sku)
+        profit = None
         inputs_ready = (unit is not None and unit.price is not None and unit.price > 0
                         and unit.commission is not None and price is not None and price > 0
                         and cost is not None and logistics is not None
                         and settings.tax_system in {'usn_income', 'usn_income_minus_expenses'})
-        if inputs_ready and (modeled_drr is not None or route.sku in costs):
+        # A saved cost can repair MISSING_COST, but cannot certify unknown
+        # route coverage. Local-alternative blockers do not affect this route.
+        if route.current_profit_per_unit is None:
+            cost_repaired = (route.sku in costs and unit is not None and unit.cost is None and
+                'CURRENT_ECONOMICS_INCOMPLETE' in route.reason_codes and
+                not {'CURRENT_ROUTE_INCOMPLETE', 'MISSING_OR_ZERO_REALIZATION'} &
+                    set(route.reason_codes))
+            inputs_ready = inputs_ready and cost_repaired
+        if inputs_ready and model_rate is not None:
             with localcontext() as context:
                 context.prec = 40
                 profit = _profit_at_price(price, cost, logistics,
                     unit.commission / unit.price, settings, model_rate)
         complete = inputs_ready and profit is not None
         drr = overrides.get(route.sku, planned_drr)
-        if complete:
+        if inputs_ready:
             commission_rate = unit.commission / unit.price
             target_price = _target_price(price, cost, logistics, commission_rate,
                                          settings, drr, margin, roi, goal)
+        else:
+            target_price = None
+        if complete:
             required_profit = (margin * price if goal == "margin" else roi * cost)
             gap = max(ZERO, required_profit - profit) * route.observed_qty
         else:
-            target_price = None
             gap = None
         by_sku[route.sku].append({
             "origin": route.origin_cluster_id, "destination": route.destination_cluster_id,
@@ -199,7 +210,8 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
                          "cost": costs.get(sku, unit.cost if unit else None),
                          "commission_rate": (unit.commission / unit.price if unit and
                                               unit.commission is not None and unit.price else None),
-                         "assumed_drr_rate": model_rate,
+                         "real_drr_rate": rates.get(sku),
+                         "assumed_drr_rate": rates.get(sku),
                          "planned_drr_rate": overrides.get(sku, planned_drr),
                          **summary, "groups": groups})
     weeks = snapshot.observed_routes.window.included_weeks
@@ -208,7 +220,6 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
     return {"period": period, "evidence": "fulfilled_completed_weeks",
             "target_margin": margin, "target_roi": roi, "goal": goal,
             "planned_drr": planned_drr, "products": products,
-            "modeled_drr": model_rate,
             "modeled_shortfall": (sum((p["modeled_shortfall"] for p in products
                                        if p["modeled_shortfall"] is not None), ZERO)
                                   if any(p["covered_qty"] for p in products) else None),

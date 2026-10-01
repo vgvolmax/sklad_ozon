@@ -69,10 +69,10 @@ def export_economics(report):
                              'Проверьте товары без артикула и артикулы с несколькими SKU.')
         articles.add(article)
         rows.append([article, product['name'], _number(product['price']),
-                     _number(product['planned_drr_rate']), _number(product['margin']),
+                     _number(product['planned_drr_rate']), _number(product['real_drr_rate']), _number(product['margin']),
                      _number(product['roi']), _number(report['target_margin']),
                      _number(product['target_price_all_routes'])])
     return _workbook('Экономика', ['Артикул', 'Товар', 'Текущая цена, ₽',
-        'ДРР по плану, %', 'Маржа, %', 'ROI, %', 'Плановая маржа, %',
-        'Необходимая цена, ₽'], rows, [18, 58, 22, 20, 16, 16, 22, 24],
-        percentages=(4, 5, 6, 7), freeze='C2')
+        'ДРР по плану, %', 'Реальный ДРР, %', 'Маржа, %', 'ROI, %', 'Плановая маржа, %',
+        'Необходимая цена, ₽'], rows, [18, 58, 22, 20, 20, 16, 16, 22, 24],
+        percentages=(4, 5, 6, 7, 8), freeze='C2')

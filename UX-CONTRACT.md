@@ -507,3 +507,20 @@ Browser acceptance lives in `tests/browser/plan_workspace_smoke.py`: production
 assets with synthetic response contracts, external requests blocked, desktop,
 narrow/reflow, source disclosure, editing/error/retry, exact bulk scope, keyboard
 and modal restoration. Existing backend and Flow tests remain required.
+
+## Economics advertising evidence
+
+The optional advertising batch picker lives only on Economics. Match by SKU;
+article is a display label. The normalized campaign/SKU/day expense directory
+is atomic and persists across restarts. A repeated report is idempotent; a
+corrected report replaces overlapping campaign dates. Different campaigns add
+expense while all-order revenue is counted once per SKU/day. Per-file results
+retain failed files for retry and list unmatched SKU. Failed writes preserve
+the previous directory. Deleting a campaign uses shared AppDialog confirmation.
+
+The row label is `Реальный`, read-only, never a fallback to scenario/local
+preferences. Overall DRR uses all posting states and FBO/FBS seller revenue
+over the expense dates, never attributed sales or averaged vendor percentages.
+Missing complete evidence means `n/a`, unknown current margin/ROI/shortfall.
+Planned DRR remains editable and drives target pricing independently. Ad
+imports do not change Data uploads, source mode, Demand, Need or Plan.

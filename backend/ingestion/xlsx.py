@@ -20,18 +20,23 @@ class WorksheetRows:
     diagnostics: tuple[ImportDiagnostic, ...]
 
 
-def iter_worksheet_rows(stream: BinaryIO, sheet_selector: int | str) -> WorksheetRows:
+def iter_worksheet_rows(stream: BinaryIO, sheet_selector: int | str, *, max_cells: int | None = None) -> WorksheetRows:
     workbook = load_workbook(stream, read_only=True, data_only=True)
     worksheet = workbook.worksheets[sheet_selector] if isinstance(sheet_selector, int) else workbook[sheet_selector]
     suspected_truncated_dimension = worksheet.max_row == 1 and worksheet.max_column == 1
-    if suspected_truncated_dimension:
+    if suspected_truncated_dimension or max_cells is not None:
         worksheet.reset_dimensions()
-    rows = tuple(
-        WorksheetRow(source_row=index, values=tuple(cell.value for cell in cells))
-        for index, cells in enumerate(worksheet.iter_rows(), start=1)
-        if any(cell.value is not None for cell in cells)
-    )
-    workbook.close()
+    rows, visited = [], 0
+    try:
+        for index, cells in enumerate(worksheet.iter_rows(), start=1):
+            visited += len(cells)
+            if max_cells is not None and visited > max_cells:
+                raise ValueError('В отчёте слишком много ячеек. Разделите период на несколько файлов.')
+            if any(cell.value is not None for cell in cells):
+                rows.append(WorksheetRow(source_row=index, values=tuple(cell.value for cell in cells)))
+        rows = tuple(rows)
+    finally:
+        workbook.close()
     diagnostics = ()
     actually_repaired = suspected_truncated_dimension and (
         len(rows) > 1 or (rows and any(value is not None for value in rows[0].values[1:]))

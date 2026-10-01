@@ -1,5 +1,5 @@
 """Stateless multipart HTTP boundary."""
-from dataclasses import asdict, dataclass, is_dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import Enum
@@ -21,6 +21,10 @@ from backend.economics.workspace import build_economics_workspace
 from backend.economics.export import export_cost_prices, export_economics
 from backend.cost_prices import (apply_costs, cost_fingerprint, cost_items,
                                 import_costs, set_cost)
+from backend.advertising_store import (AdvertisingData, apply_report, advertising_fingerprint,
+    campaign_items, load_advertising, save_advertising)
+from backend.ingestion.advertising import import_advertising
+from backend.economics.advertising import build_order_revenue, real_drr_by_sku
 from backend.decision import (DataQualityFact, DiagnosticView, InputStatusView,
                               ScenarioSettings, assemble_snapshot,
                               build_data_quality_presentation,
@@ -113,7 +117,11 @@ def _decimal_string(value: Decimal) -> str:
     return "0" if text in {"", "-0"} else text
 
 def wire(value):
-    if is_dataclass(value): return {f:wire(v) for f,v in asdict(value).items()}
+    if is_dataclass(value):
+        # Daily revenue stays server-side; the Economics endpoint exposes only
+        # the exact period totals required by its consumer.
+        return {f.name:wire(getattr(value, f.name)) for f in fields(value)
+                if f.name != 'order_revenue_evidence'}
     if isinstance(value,Enum): return value.value
     if isinstance(value,Decimal): return _decimal_string(value)
     if isinstance(value,(date,datetime)): return value.isoformat()
@@ -404,6 +412,10 @@ async def _economics_report(request):
         return error(400, 'INVALID_ECONOMICS_SCENARIO',
                      'Плановый ДРР по товарам заполнен неверно.', 'per_sku_drr')
     try:
+        with PROJECT_PERSISTENCE_LOCK:
+            advertising = load_advertising(PROJECT_PATH.with_name('advertising.json'))
+        actual = real_drr_by_sku(advertising, getattr(snapshot, 'order_revenue_evidence', None),
+                                {row.sku for row in snapshot.decision_rows})
         snapshot_costs = {unit.sku: unit.cost for unit in snapshot.unit_economics}
         saved = {row.sku: project.cost_prices[row.article] for row in snapshot.decision_rows
                  if row.article in project.cost_prices and
@@ -412,12 +424,15 @@ async def _economics_report(request):
         report = build_economics_workspace(
             snapshot, margin=body.get('target_margin'), roi=body.get('target_roi'),
             goal=body.get('goal'), planned_drr=body.get('planned_drr'),
-            per_sku_drr=overrides, modeled_drr=body.get('modeled_drr'),
+            per_sku_drr=overrides, real_drr={sku: value['rate'] for sku, value in actual.items()},
             per_sku_cost={sku: record.cost for sku, record in saved.items()})
         for product in report['products']:
             record = saved.get(product['sku'])
             product['cost_source'] = record.source if record else 'snapshot'
+            product['advertising'] = actual.get(product['sku'])
         report['cost_prices_fingerprint'] = cost_fingerprint(project)
+        report['advertising_fingerprint'] = advertising_fingerprint(advertising)
+        report['advertising_campaigns'] = campaign_items(advertising)
     except ValueError as exc:
         return error(400, 'INVALID_ECONOMICS_SCENARIO', str(exc), None)
     if not _economics_report_is_current(snapshot, report):
@@ -430,7 +445,9 @@ def _economics_report_is_current(snapshot, report):
     with PROJECT_PERSISTENCE_LOCK:
         return (ANALYSIS_STORE.latest() is snapshot and
                 cost_fingerprint(load_project_if_exists(PROJECT_PATH)) ==
-                report['cost_prices_fingerprint'])
+                report['cost_prices_fingerprint'] and
+                advertising_fingerprint(load_advertising(PROJECT_PATH.with_name('advertising.json'))) ==
+                report['advertising_fingerprint'])
 
 
 @router.post('/api/economics/workspace')
@@ -439,6 +456,82 @@ async def economics_workspace(request: Request):
     if isinstance(result, Response): return result
     snapshot, report = result
     return {'api_version': 1, 'snapshot_id': snapshot.snapshot_id, 'workspace': wire(report)}
+
+
+def _advertising_snapshot(snapshot_id):
+    snapshot = ANALYSIS_STORE.get(snapshot_id) if isinstance(snapshot_id, str) else None
+    return snapshot if snapshot is not None and ANALYSIS_STORE.latest() is snapshot else None
+
+
+@router.post('/api/economics/advertising/import')
+async def advertising_import(request: Request):
+    try:
+        form = await request.form(max_files=20)
+    except Exception:
+        return error(400, 'INVALID_ADVERTISING_UPLOAD', 'Выберите до 20 файлов XLSX.', 'files')
+    uploads = form.getlist('files')
+    snapshot_id = form.get('analysis_snapshot_id')
+    with PROJECT_PERSISTENCE_LOCK:
+        snapshot = _advertising_snapshot(snapshot_id)
+    if snapshot is None:
+        return error(409, 'ANALYSIS_SNAPSHOT_STALE', 'Пересчитайте план перед загрузкой рекламы.', 'analysis_snapshot_id')
+    if not uploads or len(uploads) > 20:
+        return error(400, 'INVALID_ADVERTISING_UPLOAD', 'Выберите от 1 до 20 файлов XLSX.', 'files')
+    parsed, results = [], []
+    total_bytes = 0
+    for upload in uploads:
+        filename = PurePath(getattr(upload, 'filename', '') or 'файл').name[:200]
+        try:
+            if not filename.casefold().endswith('.xlsx') or not hasattr(upload, 'read'):
+                raise ValueError('Выберите XLSX отчёт Ozon по товарам с группировкой по дням.')
+            content = await upload.read(16 * 1024 * 1024 + 1)
+            total_bytes += len(content)
+            if not content or len(content) > 16 * 1024 * 1024 or total_bytes > 64 * 1024 * 1024:
+                raise ValueError('Лимит: 16 МБ на файл, 64 МБ на одну загрузку.')
+            report = await asyncio.to_thread(import_advertising, content, filename)
+            parsed.append((len(results), report))
+            results.append(None)
+        except ValueError as exc:
+            results.append({'filename': filename, 'status': 'error', 'message': str(exc)})
+        finally:
+            if hasattr(upload, 'close'): await upload.close()
+    try:
+        with PROJECT_PERSISTENCE_LOCK:
+            if _advertising_snapshot(snapshot_id) is not snapshot:
+                return error(409, 'ANALYSIS_SNAPSHOT_STALE', 'План изменился во время загрузки. Повторите загрузку.', 'analysis_snapshot_id')
+            path = PROJECT_PATH.with_name('advertising.json')
+            old = load_advertising(path)
+            updated = old
+            skus = {row.sku for row in snapshot.decision_rows}
+            for index, report in parsed:
+                updated, results[index] = apply_report(updated, report, skus)
+            changed = updated != old
+            if changed: save_advertising(path, updated)
+    except ValueError as exc:
+        return error(422, 'ADVERTISING_DATA_INVALID', str(exc), 'files')
+    except OSError:
+        return error(500, 'ADVERTISING_SAVE_FAILED', 'Не удалось сохранить рекламу. Проверьте доступ к папке приложения и повторите загрузку.', 'files')
+    return {'api_version': 1, 'snapshot_id': snapshot_id, 'changed': changed,
+            'files': wire(results), 'campaigns': wire(campaign_items(updated))}
+
+
+@router.delete('/api/economics/advertising/{campaign_id}')
+async def advertising_remove(campaign_id: str, request: Request):
+    body = await json_object(request)
+    with PROJECT_PERSISTENCE_LOCK:
+        if body is None or _advertising_snapshot(body.get('analysis_snapshot_id')) is None:
+            return error(409, 'ANALYSIS_SNAPSHOT_STALE', 'Пересчитайте план перед изменением рекламы.', 'analysis_snapshot_id')
+        try:
+            path = PROJECT_PATH.with_name('advertising.json')
+            old = load_advertising(path)
+            updated = AdvertisingData(tuple(r for r in old.days if r.campaign_id != campaign_id),
+                                      tuple(c for c in old.campaigns if c.campaign_id != campaign_id))
+            if updated != old: save_advertising(path, updated)
+        except ValueError as exc:
+            return error(422, 'ADVERTISING_DATA_INVALID', str(exc), None)
+        except OSError:
+            return error(500, 'ADVERTISING_SAVE_FAILED', 'Не удалось удалить рекламу. Проверьте доступ к папке приложения и повторите.', None)
+    return {'api_version': 1, 'changed': updated != old, 'campaigns': wire(campaign_items(updated))}
 
 
 @router.post('/api/economics/export')
@@ -1129,6 +1222,7 @@ class PreparedAnalysisInputs:
     ozon_recommendation: object | None = None
     ozon_recommendation_error: str | None = None
     recommendation_import: ImportResult | None = None
+    order_revenue_complete: bool = True
 
 
 def _complete_current_catalog(snapshot) -> frozenset[str] | None:
@@ -1217,6 +1311,9 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
         ),
         tuple(snapshot.product_facts),
         current_catalog_skus,
+        order_revenue_complete=all(e.complete and (e.record_quality is None or
+            e.record_quality.rejected_record_count == 0) for e in snapshot.endpoint_evidence
+            if e.name in {'orders_fbo', 'orders_fbs'}),
     )
 
 
@@ -1853,10 +1950,15 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         blocked_decision_rows=snapshot.decision_rows,
     )
     snapshot=replace(snapshot,shippable_plan=shippable_plan,
+        order_revenue_evidence=build_order_revenue(orders.records, order_coverage,
+            source_coverage=(source_inputs.source_coverage if source_inputs is not None else None),
+            diagnostics=orders.diagnostics),
         ozon_recommendation=recommendation,
         optimizer_thresholds=thresholds,
         ozon_recommendation_error=(None if source_inputs is None else
                                    source_inputs.ozon_recommendation_error))
+    if source_inputs is not None and not source_inputs.order_revenue_complete:
+        snapshot = replace(snapshot, order_revenue_evidence=replace(snapshot.order_revenue_evidence, complete=False))
     expected_context=provenance[2] if len(provenance)>2 else None
     snapshot = commit_analysis_snapshot_if_current(
         snapshot,expected_pack_fingerprint=pack_fingerprint_at_start,

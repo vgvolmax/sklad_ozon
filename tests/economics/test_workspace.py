@@ -30,6 +30,7 @@ def sample_snapshot(*, partial=False):
 
 
 def workspace(snapshot, **kwargs):
+    kwargs.setdefault('real_drr', {'SKU': '.05'})
     return build_economics_workspace(snapshot, margin='0.20', roi='0.40',
                                      goal='margin', planned_drr='0.05', **kwargs)
 
@@ -56,7 +57,7 @@ def test_price_uses_planned_drr_but_historical_gap_uses_original_rates():
     assert after['target_price_all_routes'] > before['target_price_all_routes']
     assert before['target_price_all_routes'] > Decimal('100')
     assert after['modeled_shortfall'] == before['modeled_shortfall'] == 205
-    assert after['assumed_drr_rate'] == Decimal('.05')
+    assert after['real_drr_rate'] == Decimal('.05')
     assert after['planned_drr_rate'] == Decimal('.10')
 
 
@@ -102,7 +103,7 @@ def test_observed_route_without_economics_is_partial_not_absent():
 
 def test_margin_and_roi_flags_are_independent_of_selected_pricing_goal():
     report = build_economics_workspace(sample_snapshot(), margin='0', roi='0.40',
-                                       goal='margin', planned_drr='0.05')
+                                       goal='margin', planned_drr='0.05', real_drr={'SKU': '.05'})
     product = report['products'][0]
     assert product['below_goal'] is False
     assert product['below_margin'] is False and product['below_roi'] is True
@@ -119,10 +120,10 @@ def test_invalid_financial_targets_are_rejected(margin, roi, goal, drr):
         validate_targets(margin, roi, goal, drr)
 
 
-def test_shared_model_drr_changes_current_metrics_but_not_original_snapshot():
+def test_real_drr_changes_current_metrics_but_not_original_snapshot():
     snapshot = sample_snapshot()
     before = workspace(snapshot)['products'][0]
-    after = workspace(snapshot, modeled_drr='.10')['products'][0]
+    after = workspace(snapshot, real_drr={'SKU': '.10'})['products'][0]
     assert abs(after['profit_per_unit'] - before['profit_per_unit'] + Decimal('5')) < Decimal('1e-25')
     assert after['margin'] < before['margin'] and after['roi'] < before['roi']
     assert after['target_price_all_routes'] == before['target_price_all_routes']
@@ -136,3 +137,20 @@ def test_cost_is_visible_even_when_route_economics_is_incomplete():
     assert product['cost'] == Decimal('40')
     assert product['price'] == Decimal('100')
     assert product['margin'] is None
+
+
+def test_saved_cost_repairs_observed_route_even_if_another_placement_lacks_tariffs():
+    snapshot = sample_snapshot()
+    snapshot.unit_economics[0].cost = None
+    snapshot.unit_economics[0].blockers = ('MISSING_COST', 'INCOMPLETE_LOGISTICS_COVERAGE')
+    for route in snapshot.route_economics:
+        route.current_profit_per_unit = None
+        route.reason_codes = ('CURRENT_ECONOMICS_INCOMPLETE',)
+    product = workspace(snapshot, per_sku_cost={'SKU': Decimal('40')})['products'][0]
+    assert product['covered_qty'] == 15
+    assert product['modeled_shortfall'] == 205
+    assert product['target_price_all_routes'] is not None
+    snapshot.route_economics[1].reason_codes += ('CURRENT_ROUTE_INCOMPLETE',)
+    product = workspace(snapshot, per_sku_cost={'SKU': Decimal('40')})['products'][0]
+    assert product['covered_qty'] == 10
+    assert product['target_price_all_routes'] is None
