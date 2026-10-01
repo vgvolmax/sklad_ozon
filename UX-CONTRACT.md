@@ -386,19 +386,33 @@ is joined strictly by SKU; import results disclose matched article/name/SKU.
 A missing route blocks a universal price recommendation.
 
 Commission is displayed as percent with rubles per unit immediately below it.
-Each product row ends with a compact, independently expandable daily SPP/orders
-panel. Both charts use the same calendar for the complete loaded order period;
-they do not inherit the completed-week/delivered route filter. Orders means
-ordered units of all lifecycle states and channels. SPP uses historical seller
-and buyer amounts weighted by quantity. A missing/invalid pair makes that day's
-SPP unknown, retaining its order quantity; incomplete history cannot manufacture
-zero-order days. SPP's bounds are observed min/max, with a centered constant line.
-The expanded view exposes date/SPP/orders on hover, touch and keyboard, with
-arrow/Home/End/Escape support, focus visibility and a popup constrained by the
-visible table viewport. Loading, missing evidence and retryable errors stay local
-to the panel. Only visible SKU histories are requested in bounded batches; old
-snapshot responses cannot overwrite the new snapshot. History prices/records
-stay server-side; only daily aggregates reach the browser.
+Actual evidence uses teal above purple plan/target values, with explicit labels;
+colors alone do not convey the distinction. Necessary price is below seller price,
+margin/ROI above their goals. Below-goal status remains textual. Actual financial
+values are still the existing model based on the immutable snapshot, not a payout
+statement. Advertising amount/period details remain inspectable below DRR.
+
+Each product row ends with a compact, independently expandable daily panel for
+SPP, buyer price and orders. All three charts use the same calendar for the loaded
+order period, without inheriting the completed-week/delivered route filter.
+Orders means ordered units of all lifecycle states and channels. Daily SPP is the
+quantity-weighted average of each order's `(seller-buyer)/seller`; buyer price is
+the quantity-weighted unit price. Price and SPP have independent valid-price
+coverage. A missing pair leaves known daily means visible with covered-unit counts,
+never silently presents them as complete and never manufactures prices. Incomplete
+history cannot manufacture zero-order days. Both lines use observed min/max bounds,
+center constant values and break at missing days. Hover, touch and keyboard expose
+date/mean SPP/mean buyer price/orders, with arrow/Home/End/Escape support, visible
+focus and a popup constrained by the visible table viewport. Loading, missing
+evidence and retryable errors stay local to the panel. Visible SKU histories are
+requested in bounded batches; old snapshot responses cannot overwrite new ones.
+Raw history prices/records stay server-side; only daily aggregates reach the browser.
+
+Each cached API order channel carries an optional price-normalization version.
+Legacy channels refresh their existing loaded history once on normal refresh;
+subsequent complete channels resume the 28-day overlap even if Ozon genuinely
+omits prices. Historical money is joined by canonical SKU; blank canonical fields
+may use explicit matching financial evidence, malformed/non-RUB evidence cannot.
 
 Cost is a visible, editable column, including when other economics evidence is
 incomplete. Enter or leaving the field saves the cost atomically to Project

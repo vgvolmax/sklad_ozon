@@ -21,6 +21,44 @@ def test_financial_buyer_price_matches_sku_not_row_position():
     assert rows[0].buyer_price == 40
 
 
+@pytest.mark.parametrize('blank',[None,'',{'amount':'','currency':'RUB'}])
+def test_blank_product_customer_price_uses_matching_financial_evidence(blank):
+    posting=fbo()
+    posting['products'][0]['customer_price']=blank
+    posting['financial_data']['products']=[{'product_id':999,'customer_price':99},
+        {'product_id':123,'customer_price':{'amount':'40','currency':'RUB'}}]
+    rows,_,_=normalize_fbo_posting(posting)
+    assert rows[0].buyer_price == 40
+
+
+def test_financial_explicit_seller_base_is_matched_by_sku():
+    posting=fbo()
+    posting['products'][0]['price']={'amount':'60','currency':'RUB'}
+    posting['financial_data']['products']=[{'product_id':999,'seller_price':200},
+        {'product_id':123,'seller_price':{'amount':'100','currency':'RUB'},
+         'customer_price':{'amount':'40','currency':'RUB'}}]
+    rows,_,_=normalize_fbo_posting(posting)
+    assert rows[0].seller_price == 60
+    assert rows[0].spp_base_price == 100 and rows[0].buyer_price == 40
+
+
+def test_explicit_foreign_customer_price_is_not_replaced_with_other_evidence():
+    posting=fbo()
+    posting['products'][0]['customer_price']={'amount':'10','currency':'USD'}
+    posting['financial_data']['products']=[{'product_id':123,'customer_price':40}]
+    rows,_,_=normalize_fbo_posting(posting)
+    assert rows[0].buyer_price is None
+
+
+@pytest.mark.parametrize('malformed',[{}, {'value':'40'}, [], True])
+def test_malformed_price_shape_is_not_mistaken_for_blank(malformed):
+    posting=fbo()
+    posting['products'][0]['customer_price']=malformed
+    posting['financial_data']['products']=[{'product_id':123,'customer_price':40}]
+    rows,_,_=normalize_fbo_posting(posting)
+    assert rows[0].buyer_price is None
+
+
 def test_wrong_currency_and_missing_buyer_prices_are_unknown():
     posting=fbo()
     posting['products'][0]['customer_price']={'amount':'10','currency':'USD'}

@@ -29,8 +29,10 @@ def main():
         api.ANALYSIS_STORE.clear()
         files = _analysis_files()
         files['orders_file'] = ('orders.csv', ('SKU;Количество;Цена продавца;Цена покупателя;Кластер отгрузки;Кластер доставки;Статус;Принят в обработку\n'
-            'SKU-1;1;1000;400;Москва;Москва;Доставлен;2026-09-01T10:00:00\n'
-            'SKU-1;1;3000;1500;Москва;Москва;Доставлен;2026-09-02T10:00:00\n').encode())
+            'SKU-1;1;500;100;Москва;Москва;Доставлен;2026-09-01T10:00:00\n'
+            'SKU-1;1;500;300;Москва;Москва;Доставлен;2026-09-01T12:00:00\n'
+            'SKU-1;1;100;;Москва;Москва;Доставлен;2026-09-01T15:00:00\n'
+            'SKU-1;1;2900;1450;Москва;Москва;Доставлен;2026-09-02T10:00:00\n').encode())
         with TestClient(app, base_url='http://127.0.0.1', headers={LOCAL_SESSION_HEADER:current_local_session_token()}) as client:
             response = client.post('/api/analysis', files=files, data=_analysis_data(
                 as_of='2026-09-30', orders_period_from='2026-08-06', orders_period_to='2026-09-30'))
@@ -70,7 +72,13 @@ def main():
                 expect(page.locator('.econ-drr-assumption')).to_have_text('В расчёте 0 %')
                 assert 'Не рассчитано' not in page.locator('.econ-sku-row td').nth(6).inner_text()
                 expect(page.locator('.econ-sku-row td').nth(4)).to_contain_text('₽ / шт.')
-                # Two charts share one calendar; observed SPP range is 50–60%.
+                actual=page.locator('.econ-sku-row td').nth(7).locator('.econ-fact')
+                planned=page.locator('.econ-sku-row td').nth(7).locator('.econ-plan')
+                expect(actual).to_contain_text('Факт')
+                expect(planned).to_contain_text('План')
+                assert actual.bounding_box()['y'] < planned.bounding_box()['y']
+                assert actual.evaluate('(el)=>getComputedStyle(el).color') != planned.evaluate('(el)=>getComputedStyle(el).color')
+                # Three charts share one calendar; first-day means are SPP 60%, buyer 200 RUB.
                 panel=page.locator('[data-daily-sku="SKU-1"]')
                 expect(panel).to_contain_text('Загружаем историю…')
                 panel.locator('[data-daily-toggle]').click()
@@ -83,7 +91,7 @@ def main():
                 expect(panel.locator('[data-daily-toggle]')).to_be_focused()
                 panel.locator('[data-daily-toggle]').click()
                 assert panel.locator('.econ-daily-svg').count()==1
-                expect(panel.locator('.econ-daily-svg')).to_have_css('height','80px')
+                expect(panel.locator('.econ-daily-svg')).to_have_css('height','110px')
                 panel.locator('[data-daily-toggle]').click()
                 expect(panel.locator('[data-daily-toggle]')).to_have_attribute('aria-expanded','true')
                 plot=panel.locator('.econ-daily-plot')
@@ -92,8 +100,13 @@ def main():
                 box=plot.bounding_box()
                 page.mouse.move(box['x']+(64+920*(index+.5)/len(days))/1000*box['width'],box['y']+60)
                 expect(panel.locator('.econ-daily-tooltip')).to_contain_text('СПП 60 %')
-                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('Заказы 1 шт.')
-                plot.focus();page.keyboard.press('Home')
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('Заказы 3 шт.')
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('Цена покупателя 200 ₽')
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('СПП 2 / 3 шт.; покупатель 2 / 3 шт.')
+                expect(panel.locator('.econ-daily-buyer-line')).to_have_count(1)
+                plot.focus()
+                expect(panel.locator('[data-daily-live]')).to_contain_text('СПП 2 / 3 шт.; покупатель 2 / 3 шт.')
+                page.keyboard.press('Home')
                 expect(panel.locator('.econ-daily-tooltip')).to_contain_text('06.08.2026')
                 expect(panel.locator('.econ-daily-tooltip')).to_contain_text('СПП n/a')
                 expect(panel.locator('.econ-daily-tooltip')).to_contain_text('Заказы 0 шт.')
@@ -118,6 +131,7 @@ def main():
                 touch.touchscreen.tap(touch_box['x']+(64+920*(index+1.5)/len(days))/1000*touch_box['width'],touch_box['y']+60)
                 expect(touch_panel.locator('.econ-daily-tooltip')).to_contain_text('02.09.2026')
                 expect(touch_panel.locator('.econ-daily-tooltip')).to_contain_text('СПП 50 %')
+                expect(touch_panel.locator('.econ-daily-tooltip')).to_contain_text('Цена покупателя 1\u00a0450 ₽')
                 context_touch.close()
                 panel.locator('[data-daily-toggle]').click()
                 expect(panel.locator('[data-daily-toggle]')).to_have_attribute('aria-expanded','false')
@@ -197,7 +211,7 @@ def main():
                 assert not errors, errors
                 assert not external, external
                 browser.close()
-                print('Economics browser: DRR-zero, commission, daily charts, delayed error/retry/focus, hover, keyboard, touch, batch, errors, navigation, duplicate, correction, multi-campaign, export, deletion, narrow tooltip passed; no JS errors or external requests.')
+                print('Economics browser: DRR-zero, commission, daily price/SPP averages and coverage, actual/plan colors, delayed error/retry/focus, hover, keyboard, touch, batch, errors, navigation, duplicate, correction, multi-campaign, export, deletion, narrow tooltip passed; no JS errors or external requests.')
         finally:
             server.should_exit = True; thread.join(timeout=5); sock.close()
 

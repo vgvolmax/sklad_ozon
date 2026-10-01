@@ -33,3 +33,21 @@ def test_single_day_zero_and_unknown_order_values_are_distinct():
     assert chart['bars'][0]['height'] == 0
     unknown = geometry([{'spp':None,'orders':None}])
     assert unknown['segments'] == [] and unknown['bars'] == []
+
+
+def test_buyer_price_uses_independent_observed_range_on_same_dates():
+    chart = geometry([{'spp':'.6','orders':2,'buyer_price_mean':'200'},
+        {'spp':'.5','orders':1,'buyer_price_mean':'1500'}],True)
+    assert chart['buyerMinimum']==200 and chart['buyerMaximum']==1500
+    assert chart['buyerPoints'][0]['y']==chart['buyerBottom']
+    assert chart['buyerPoints'][1]['y']==chart['buyerTop']
+    assert [p['x'] for p in chart['buyerPoints']]==[p['x'] for p in chart['points']]
+
+
+def test_constant_buyer_price_zero_and_missing_days_do_not_make_false_lines():
+    chart=geometry([{'spp':None,'orders':1,'buyer_price_mean':0},
+        {'spp':None,'orders':0,'buyer_price_mean':None},
+        {'spp':None,'orders':1,'buyer_price_mean':0}])
+    assert chart['buyerMinimum']==chart['buyerMaximum']==0
+    assert chart['buyerPoints'][0]['y']==(chart['buyerTop']+chart['buyerBottom'])/2
+    assert len(chart['buyerSegments'])==2 and chart['segments']==[]

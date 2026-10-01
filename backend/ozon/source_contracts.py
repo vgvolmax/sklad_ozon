@@ -8,6 +8,7 @@ from backend.ozon.adapters.local_sale import LocalSaleResult
 
 MOSCOW_BUSINESS_TZ = timezone(timedelta(hours=3))
 SOURCE_TIMEZONE = "UTC+03:00"
+ORDER_PRICES_VERSION = 1
 
 
 def source_business_date(synced_at_utc: datetime) -> date:
@@ -46,6 +47,7 @@ class EndpointEvidence:
     diagnostics: tuple[Any, ...] = ()
     api_error: OzonApiErrorEvidence | None = None
     record_quality: OzonRecordQualityEvidence | None = None
+    order_prices_version: int = 0
 
 
 @dataclass(frozen=True, slots=True)

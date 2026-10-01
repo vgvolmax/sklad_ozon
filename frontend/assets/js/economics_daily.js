@@ -9,44 +9,62 @@ let snapshotId=null, container=null, apiFetch=null;
 const cache=new Map(), expanded=new Set();
 
 function geometry(days, large=false){
-  const values=days.map(d=>number(d.spp)).filter(v=>v!==null);
-  const minimum=values.length?Math.min(...values):null, maximum=values.length?Math.max(...values):null;
-  const lineTop=large?18:10, lineBottom=large?100:38;
-  const barTop=large?132:48, barBottom=large?204:72;
+  const lineTop=large?18:8, lineBottom=large?86:30;
+  const buyerTop=large?116:42, buyerBottom=large?184:64;
+  const barTop=large?218:78, barBottom=large?282:100;
   const step=WIDTH/Math.max(1,days.length);
+  function line(field,top,bottom){
+    const values=days.map(d=>number(d[field])).filter(v=>v!==null);
+    const minimum=values.length?Math.min(...values):null, maximum=values.length?Math.max(...values):null;
+    const points=[],segments=[];
+    let segment='';
+    days.forEach((d,index)=>{
+      const x=LEFT+step*(index+.5), value=number(d[field]);
+      const y=value===null?null:minimum===maximum?(top+bottom)/2:
+        bottom-(value-minimum)/(maximum-minimum)*(bottom-top);
+      points.push({x,y});
+      if(y===null){if(segment)segments.push(segment);segment='';}
+      else segment+=`${segment?' L':'M'}${x.toFixed(2)},${y.toFixed(2)}`;
+    });
+    if(segment)segments.push(segment);
+    return {minimum,maximum,points,segments};
+  }
+  const spp=line('spp',lineTop,lineBottom), buyer=line('buyer_price_mean',buyerTop,buyerBottom);
   const maxOrders=Math.max(1,...days.map(d=>number(d.orders)||0));
-  const points=[], bars=[], segments=[];
-  let segment='';
+  const bars=[];
   days.forEach((d,index)=>{
-    const x=LEFT+step*(index+.5), spp=number(d.spp), orders=number(d.orders);
-    const y=spp===null?null:minimum===maximum?(lineTop+lineBottom)/2:
-      lineBottom-(spp-minimum)/(maximum-minimum)*(lineBottom-lineTop);
-    points.push({x,y});
-    if(y===null){if(segment)segments.push(segment);segment='';}
-    else segment+=`${segment?' L':'M'}${x.toFixed(2)},${y.toFixed(2)}`;
-    if(orders!==null)bars.push({x,height:orders/maxOrders*(barBottom-barTop),width:Math.max(.5,step*.65)});
+    const orders=number(d.orders);
+    if(orders!==null)bars.push({x:LEFT+step*(index+.5),height:orders/maxOrders*(barBottom-barTop),width:Math.max(.5,step*.65)});
   });
-  if(segment)segments.push(segment);
-  return {minimum,maximum,points,bars,segments,lineTop,lineBottom,barBottom,maxOrders,height:large?230:80};
+  return {...spp,bars,lineTop,lineBottom,barTop,barBottom,maxOrders,height:large?310:110,
+    buyerMinimum:buyer.minimum,buyerMaximum:buyer.maximum,buyerPoints:buyer.points,
+    buyerSegments:buyer.segments,buyerTop,buyerBottom};
 }
 
+const money=v=>number(v)==null?'n/a':`${format.format(Number(v))} ₽`;
 function chart(series, large){
   const days=series.days||[], g=geometry(days,large);
-  const axis=g.minimum===null?'<text x="4" y="28">СПП n/a</text>':g.minimum===g.maximum?
-    `<text x="4" y="${(g.lineTop+g.lineBottom)/2+4}">${percent(g.minimum)}</text>`:
-    `<text x="4" y="${g.lineTop+4}">${percent(g.maximum)}</text><text x="4" y="${g.lineBottom+4}">${percent(g.minimum)}</text>`;
-  const dates=large&&days.length?`<text x="${LEFT}" y="226">${e(date(days[0].day))}</text><text x="984" y="226" text-anchor="end">${e(date(days.at(-1).day))}</text>`:'';
-  return `<svg class="econ-daily-svg" viewBox="0 0 1000 ${g.height}" role="img" aria-label="Дневная СПП и заказанное количество на общей шкале дат" preserveAspectRatio="none">${axis}<text x="4" y="${large?145:59}">${g.maxOrders} шт.</text><line class="econ-daily-baseline" x1="64" x2="984" y1="${g.barBottom}" y2="${g.barBottom}"/>${g.bars.map(b=>`<rect class="econ-daily-bar" x="${b.x-b.width/2}" y="${g.barBottom-b.height}" width="${b.width}" height="${b.height}"/>`).join('')}${g.segments.map(path=>`<path class="econ-daily-line" d="${path}"/>`).join('')}${g.points.filter(p=>p.y!==null).map(p=>`<circle class="econ-daily-dot" cx="${p.x}" cy="${p.y}" r="${large?2:1.5}"/>`).join('')}${dates}<line data-daily-cursor hidden class="econ-daily-cursor" x1="0" x2="0" y1="${g.lineTop}" y2="${g.barBottom}"/></svg>`;
+  function axis(min,max,top,bottom,formatter,label){
+    if(min===null)return `<text x="4" y="${top+12}">${label} n/a</text>`;
+    if(min===max)return `<text x="4" y="${(top+bottom)/2+4}">${e(formatter(min))}</text>`;
+    return `<text x="4" y="${top+4}">${e(formatter(max))}</text><text x="4" y="${bottom+4}">${e(formatter(min))}</text>`;
+  }
+  function paths(segments,points,kind=''){
+    return segments.map(path=>`<path class="econ-daily-line ${kind}" d="${path}"/>`).join('')+
+      points.filter(p=>p.y!==null).map(p=>`<circle class="econ-daily-dot ${kind?'econ-daily-buyer-dot':''}" cx="${p.x}" cy="${p.y}" r="${large?2:1.5}"/>`).join('');
+  }
+  const dates=large&&days.length?`<text x="${LEFT}" y="306">${e(date(days[0].day))}</text><text x="984" y="306" text-anchor="end">${e(date(days.at(-1).day))}</text>`:'';
+  return `<svg class="econ-daily-svg" viewBox="0 0 1000 ${g.height}" role="img" aria-label="Средняя дневная СПП, средняя цена покупателя и заказанное количество на общей шкале дат" preserveAspectRatio="none">${axis(g.minimum,g.maximum,g.lineTop,g.lineBottom,percent,'СПП')}${axis(g.buyerMinimum,g.buyerMaximum,g.buyerTop,g.buyerBottom,money,'Цена')}<text x="4" y="${g.barTop+12}">${g.maxOrders} шт.</text><line class="econ-daily-baseline" x1="64" x2="984" y1="${g.barBottom}" y2="${g.barBottom}"/>${g.bars.map(b=>`<rect class="econ-daily-bar" x="${b.x-b.width/2}" y="${g.barBottom-b.height}" width="${b.width}" height="${b.height}"/>`).join('')}${paths(g.segments,g.points)}${paths(g.buyerSegments,g.buyerPoints,'econ-daily-buyer-line')}${dates}<line data-daily-cursor hidden class="econ-daily-cursor" x1="0" x2="0" y1="${g.lineTop}" y2="${g.barBottom}"/></svg>`;
 }
 
 function contents(sku){
   const item=cache.get(sku), large=expanded.has(sku), id='econ-daily-'+encodeURIComponent(sku);
-  const header=`<div class="econ-daily-head"><strong>СПП и заказы по дням</strong><span class="econ-daily-legend"><i class="spp"></i> СПП <i class="orders"></i> Заказано, шт.</span><button type="button" data-daily-toggle aria-expanded="${large}" aria-controls="${id}">${large?'Свернуть':'Раскрыть'}</button></div>`;
+  const header=`<div class="econ-daily-head"><strong>СПП, цена покупателя и заказы</strong><span class="econ-daily-legend"><i class="spp"></i> СПП <i class="buyer"></i> Цена покупателя <i class="orders"></i> Заказано, шт.</span><button type="button" data-daily-toggle aria-expanded="${large}" aria-controls="${id}">${large?'Свернуть':'Раскрыть'}</button></div>`;
   if(!item||item.loading)return header+`<p id="${id}" class="econ-daily-status" role="status">Загружаем историю…</p>`;
   if(item.error)return header+`<p id="${id}" class="field-error" role="status">${e(item.error)} <button type="button" data-daily-retry>Повторить</button></p>`;
   const series=item.series, days=series.days||[];
   if(!days.length)return header+`<p id="${id}" class="econ-daily-status">${e(series.reason||'История заказов отсутствует.')}</p>`;
-  return header+`<div id="${id}" class="econ-daily-body ${large?'is-expanded':''}"><div class="econ-daily-period">${e(date(series.period.from))}–${e(date(series.period.to))} · ${series.complete?'Заказано':'Известно заказов'} ${format.format(series.ordered_qty)} шт. · СПП ${series.spp_min==null?'n/a':series.spp_min===series.spp_max?percent(series.spp_min):percent(series.spp_min)+'–'+percent(series.spp_max)}</div><div class="econ-daily-plot" ${large?'tabindex="0" role="group" aria-label="СПП и заказы по дням. Стрелки выбирают день; Escape скрывает подсказку."':''}>${chart(series,large)}<div class="econ-daily-tooltip" hidden></div><span class="sr-only" data-daily-live aria-live="polite"></span></div>${series.reason?`<p class="econ-daily-note">${e(series.reason)}</p>`:''}${large?'<p class="econ-daily-note">СПП = (цена продавца − цена покупателя) / цена продавца, с учётом количества. Наведите на день или используйте ← →.</p>':''}</div>`;
+  return header+`<div id="${id}" class="econ-daily-body ${large?'is-expanded':''}"><div class="econ-daily-period">${e(date(series.period.from))}–${e(date(series.period.to))} · ${series.complete?'Заказано':'Известно заказов'} ${format.format(series.ordered_qty)} шт. · СПП ${series.spp_min==null?'n/a':series.spp_min===series.spp_max?percent(series.spp_min):percent(series.spp_min)+'–'+percent(series.spp_max)}</div><div class="econ-daily-plot" ${large?'tabindex="0" role="group" aria-label="СПП, цена покупателя и заказы. Стрелки выбирают день; Escape скрывает подсказку."':''}>${chart(series,large)}<div class="econ-daily-tooltip" hidden></div><span class="sr-only" data-daily-live aria-live="polite"></span></div>${series.reason?`<p class="econ-daily-note">${e(series.reason)}</p>`:''}${large?'<p class="econ-daily-note">Средние за день по единицам товара. СПП каждого заказа = (цена продавца − цена покупателя) / цена продавца. У СПП и цены покупателя отдельные шкалы от минимума до максимума за период. Наведите на день или используйте ← →.</p>':''}</div>`;
 }
 
 function markup(sku){return `<section class="econ-daily-panel" data-daily-sku="${e(sku)}" aria-label="История СПП и заказов SKU ${e(sku)}">${contents(sku)}</section>`;}
@@ -67,7 +85,9 @@ function bind(panel){
   function show(index,announce=false){
     selected=Math.max(0,Math.min(days.length-1,index));
     const day=days[selected], x=LEFT+WIDTH*(selected+.5)/days.length;
-    tooltip.innerHTML=`<strong>${e(date(day.day))}</strong><span>СПП ${percent(day.spp)}</span><span>Заказы ${day.orders==null?'n/a':format.format(day.orders)+' шт.'}</span>`;
+    tooltip.innerHTML=`<strong>${e(date(day.day))}</strong><span>СПП ${percent(day.spp)}</span><span>Цена покупателя ${money(day.buyer_price_mean)}</span><span>Заказы ${day.orders==null?'n/a':format.format(day.orders)+' шт.'}</span>`;
+    const coverage=day.orders>0&&(day.spp_priced_qty<day.orders||day.buyer_priced_qty<day.orders)?`Цены: СПП ${day.spp_priced_qty} / ${day.orders} шт.; покупатель ${day.buyer_priced_qty} / ${day.orders} шт.`:'';
+    if(coverage)tooltip.innerHTML+=`<span class="econ-daily-coverage">${e(coverage)}</span>`;
     tooltip.hidden=false;cursor.hidden=false;cursor.removeAttribute('hidden');
     cursor.setAttribute('x1',x);cursor.setAttribute('x2',x);
     const width=plot.clientWidth;
@@ -75,7 +95,7 @@ function bind(panel){
     const left=viewport?Math.max(0,viewport.left-rect.left):0;
     const right=viewport?Math.min(width,viewport.right-rect.left):width;
     tooltip.style.left=Math.max(left,Math.min(right-tooltip.offsetWidth,x/1000*width+8))+'px';
-    if(announce)live.textContent=`${date(day.day)}. СПП ${percent(day.spp)}. Заказы ${day.orders==null?'n/a':day.orders+' шт.'}`;
+    if(announce)live.textContent=`${date(day.day)}. СПП ${percent(day.spp)}. Цена покупателя ${money(day.buyer_price_mean)}. Заказы ${day.orders==null?'n/a':day.orders+' шт.'}${coverage?'. '+coverage:''}`;
   }
   function hide(){tooltip.hidden=true;cursor.setAttribute('hidden','');live.textContent='';}
   const pick=event=>{
