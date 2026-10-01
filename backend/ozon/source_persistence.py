@@ -97,11 +97,14 @@ def _evidence(value):
     diagnostics = _tuple(_required(value, "diagnostics", list), _diagnostic)
     raw_error = _object(value).get("api_error")
     raw_quality = value.get("record_quality")
+    prices_version = value.get("order_prices_version", 0)
+    if type(prices_version) is not int or prices_version < 0:
+        raise ValueError("invalid order_prices_version")
     return EndpointEvidence(
         _required(value, "name", str), _required(value, "fetched_at_utc", str),
         _required(value, "record_count", int), _required(value, "complete", bool),
         diagnostics, _api_error(raw_error) if raw_error is not None else None,
-        _quality(raw_quality) if raw_quality is not None else None,
+        _quality(raw_quality) if raw_quality is not None else None, prices_version,
     )
 
 

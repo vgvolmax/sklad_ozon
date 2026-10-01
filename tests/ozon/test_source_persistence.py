@@ -177,3 +177,20 @@ def test_corrupt_warehouse_mapping_is_rejected(mapping):
 
     with pytest.raises(ValueError):
         source_snapshot_from_document(document)
+
+
+def test_order_price_version_restores_and_old_cache_defaults_to_zero():
+    document = source_snapshot_to_document(snapshot())
+    document['snapshot']['endpoint_evidence'][0]['order_prices_version'] = 1
+    restored = source_snapshot_from_document(document)
+    assert getattr(restored.endpoint_evidence[0], 'order_prices_version', 0) == 1
+    del document['snapshot']['endpoint_evidence'][0]['order_prices_version']
+    assert getattr(source_snapshot_from_document(document).endpoint_evidence[0], 'order_prices_version', 0) == 0
+
+
+@pytest.mark.parametrize('version',[True,-1,'1',1.5])
+def test_corrupt_order_price_version_is_rejected(version):
+    document = source_snapshot_to_document(snapshot())
+    document['snapshot']['endpoint_evidence'][0]['order_prices_version'] = version
+    with pytest.raises(ValueError,match='order_prices_version'):
+        source_snapshot_from_document(document)

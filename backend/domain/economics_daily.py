@@ -11,6 +11,9 @@ class DailyOrderMetric:
     day: date
     quantity: int
     spp: Decimal | None
+    buyer_price_mean: Decimal | None = None
+    spp_priced_qty: int = 0
+    buyer_priced_qty: int = 0
 
 
 @dataclass(frozen=True, slots=True)

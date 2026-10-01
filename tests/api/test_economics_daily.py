@@ -28,9 +28,11 @@ def test_series_is_by_sku_and_keeps_price_evidence_server_side(client):
     assert result.status_code==200,result.text
     series=result.json()['series']['SKU']
     assert series['period']=={'from':'2026-09-01','to':'2026-09-03'}
-    assert series['days'][0]=={'day':'2026-09-01','orders':2,'spp':'0.6'}
-    assert series['days'][1]=={'day':'2026-09-02','orders':0,'spp':None}
-    assert 'seller_price' not in result.text and 'buyer_price' not in result.text
+    assert series['days'][0]=={'day':'2026-09-01','orders':2,'spp':'0.6',
+        'buyer_price_mean':'40','spp_priced_qty':2,'buyer_priced_qty':2}
+    assert series['days'][1]=={'day':'2026-09-02','orders':0,'spp':None,
+        'buyer_price_mean':None,'spp_priced_qty':0,'buyer_priced_qty':0}
+    assert all('seller_price' not in day and 'buyer_price' not in day for day in series['days'])
 
 
 @pytest.mark.parametrize('skus',[[],['26572'],[True],['SKU']*101,'SKU'])
@@ -61,4 +63,7 @@ def test_real_file_analysis_uses_all_order_states_and_paid_total(client):
     assert 'daily_order_evidence' not in snapshot
     result=client.post('/api/economics/daily-series',json={'analysis_snapshot_id':snapshot['snapshot_id'],'skus':['SKU-1']})
     assert result.status_code==200,result.text
-    assert result.json()['series']['SKU-1']['days'][0]=={'day':'2026-09-01','orders':3,'spp':'0.6'}
+    day=result.json()['series']['SKU-1']['days'][0]
+    assert day['orders']==3 and day['spp']=='0.6'
+    assert float(day['buyer_price_mean'])==400
+    assert day['spp_priced_qty']==day['buyer_priced_qty']==3

@@ -498,7 +498,8 @@ def _smart_base(now):
     names = ("orders_fbo", "orders_fbs", "clusters", "seller_warehouses",
              "products", "product_prices", "product_attributes", "fbo_stock",
              "seller_stock", "inbound", "placement_zones")
-    evidence = tuple(EndpointEvidence(name, now.isoformat(), 1, True) for name in names)
+    evidence = tuple(EndpointEvidence(name, now.isoformat(), 1, True,
+                    order_prices_version=1 if name in {"orders_fbo", "orders_fbs"} else 0) for name in names)
     return replace(
         snap("smart-base"), synced_at_utc=now.isoformat(), source_as_of=now.date(),
         history_from=date(2026, 6, 1), history_to=date(2026, 9, 21),
@@ -800,3 +801,32 @@ def test_smart_backfill_failure_does_not_reuse_short_channel(monkeypatch):
     assert capability_matrix(candidate)["demand_flow"]["complete"] is False
     assert candidate.history_from == date(2026, 5, 4)
     assert report.history_refresh_from == date(2026, 5, 4)
+
+
+def test_legacy_order_prices_refresh_existing_history_once_per_channel(monkeypatch):
+    import backend.ozon.sync as module
+    from backend.ozon.source_persistence import source_snapshot_from_document, source_snapshot_to_document
+    from backend.ozon.endpoints import FBS_POSTINGS_PATH
+    now = datetime(2026, 9, 22, 9, tzinfo=timezone.utc)
+    _patch_smart_success(monkeypatch, [])
+    monkeypatch.setattr(module, 'fetch_fbo_stock', lambda *_: ((), ()))
+    monkeypatch.setattr(module, 'fetch_inbound', lambda *_: ((), ()))
+    document = source_snapshot_to_document(_smart_base(now))
+    for item in document['snapshot']['endpoint_evidence']:
+        item['order_prices_version'] = 0 if item['name'] == 'orders_fbo' else 1
+    base = source_snapshot_from_document(document)
+    starts = []
+    def postings(_client, path, start, _end):
+        starts.append((path, start))
+        # Even genuine missing buyer prices must not cause repeated full fetches.
+        return (_orders(now.date(), 12, source_channel='fbo')
+                if path == FBO_POSTINGS_PATH else ()), ()
+    monkeypatch.setattr(module, 'fetch_postings', postings)
+    candidate, _ = refresh_ozon_source(object(), base_snapshot=base, now=now)
+    assert dict(starts) == {FBO_POSTINGS_PATH: base.history_from,
+                           FBS_POSTINGS_PATH: date(2026,8,24)}
+    assert all(getattr(x,'order_prices_version',0) == 1 for x in candidate.endpoint_evidence
+               if x.name in {'orders_fbo','orders_fbs'})
+    starts.clear()
+    refresh_ozon_source(object(), base_snapshot=candidate, now=now)
+    assert {start for _,start in starts} == {date(2026,8,25)}

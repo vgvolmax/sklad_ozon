@@ -23,7 +23,7 @@ from backend.ozon.history import (
 )
 from backend.ozon.source_contracts import (
     EndpointEvidence, OzonApiErrorEvidence, OzonRecordQualityEvidence,
-    OzonSourceSnapshot, SOURCE_TIMEZONE,
+    OzonSourceSnapshot, SOURCE_TIMEZONE, ORDER_PRICES_VERSION,
     source_business_date,
 )
 
@@ -167,7 +167,8 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
             complete = not any(item.severity == "error" for item in item_diagnostics)
             evidence.append(EndpointEvidence(
                 name, started, len(records), complete, item_diagnostics,
-                record_quality=record_quality))
+                record_quality=record_quality,
+                order_prices_version=ORDER_PRICES_VERSION if name in {"orders_fbo", "orders_fbs"} else 0))
             progress(name, completed=True)
             return value if name == "clusters" else records
         except OzonClientError as exc:
@@ -359,7 +360,8 @@ def _refresh_order_history(client, *, base_snapshot, as_of, old_evidence,
         unsafe = (old is None or not old.complete or
                   quality is not None and
                   (quality.rejected_record_count > 0 or quality.incomplete_skus))
-        start = base_snapshot.history_from if unsafe else delta_from
+        legacy_prices = old is not None and old.order_prices_version < ORDER_PRICES_VERSION
+        start = base_snapshot.history_from if unsafe or legacy_prices else delta_from
         channel_starts[channel] = start
         fresh_orders.extend(run(
             name,
@@ -483,7 +485,8 @@ def refresh_ozon_source(client, *, mode="smart", base_snapshot=None,
             diagnostics.extend(item_diagnostics)
             complete = not any(x.severity == "error" for x in item_diagnostics)
             evidence.append(EndpointEvidence(name, started, len(records), complete,
-                                             tuple(item_diagnostics), record_quality=quality))
+                                             tuple(item_diagnostics), record_quality=quality,
+                                             order_prices_version=ORDER_PRICES_VERSION if name in {"orders_fbo", "orders_fbs"} else 0))
             progress(name, completed=True)
             return value if name == "clusters" else tuple(records)
         except Exception as exc:
