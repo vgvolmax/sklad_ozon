@@ -28,9 +28,9 @@ def main():
         api.PROJECT_PATH = Path(directory) / 'project.json'
         api.ANALYSIS_STORE.clear()
         files = _analysis_files()
-        files['orders_file'] = ('orders.csv', ('SKU;Количество;Цена продавца;Кластер отгрузки;Кластер доставки;Статус;Принят в обработку\n'
-            'SKU-1;1;1000;Москва;Москва;Доставлен;2026-09-01T10:00:00\n'
-            'SKU-1;1;3000;Москва;Москва;Доставлен;2026-09-02T10:00:00\n').encode())
+        files['orders_file'] = ('orders.csv', ('SKU;Количество;Цена продавца;Цена покупателя;Кластер отгрузки;Кластер доставки;Статус;Принят в обработку\n'
+            'SKU-1;1;1000;400;Москва;Москва;Доставлен;2026-09-01T10:00:00\n'
+            'SKU-1;1;3000;1500;Москва;Москва;Доставлен;2026-09-02T10:00:00\n').encode())
         with TestClient(app, base_url='http://127.0.0.1', headers={LOCAL_SESSION_HEADER:current_local_session_token()}) as client:
             response = client.post('/api/analysis', files=files, data=_analysis_data(
                 as_of='2026-09-30', orders_period_from='2026-08-06', orders_period_to='2026-09-30'))
@@ -63,8 +63,64 @@ def main():
                     else: route.fallback()
                 page.route('**/*', block_external)
                 page.goto(f'http://127.0.0.1:{port}/')
+                pending_series=[]
+                page.route('**/api/economics/daily-series',lambda route:pending_series.append(route),times=1)
                 page.evaluate("""snapshot=>{const S=SkladOzon,base=S.createInitialState();S.__browserEconomics.setState({...base,section:'economics',snapshot});}""", snapshot)
                 expect(page.locator('.econ-real-drr')).to_have_text('Реальный n/a')
+                expect(page.locator('.econ-drr-assumption')).to_have_text('В расчёте 0 %')
+                assert 'Не рассчитано' not in page.locator('.econ-sku-row td').nth(6).inner_text()
+                expect(page.locator('.econ-sku-row td').nth(4)).to_contain_text('₽ / шт.')
+                # Two charts share one calendar; observed SPP range is 50–60%.
+                panel=page.locator('[data-daily-sku="SKU-1"]')
+                expect(panel).to_contain_text('Загружаем историю…')
+                panel.locator('[data-daily-toggle]').click()
+                assert pending_series
+                pending_series.pop().fulfill(status=500,json={'error':{'message':'Проверка повтора истории'}})
+                expect(panel).to_contain_text('Проверка повтора истории')
+                expect(panel.locator('[data-daily-toggle]')).to_be_focused()
+                panel.locator('[data-daily-retry]').click()
+                expect(panel).to_contain_text('СПП 50 %–60 %')
+                expect(panel.locator('[data-daily-toggle]')).to_be_focused()
+                panel.locator('[data-daily-toggle]').click()
+                assert panel.locator('.econ-daily-svg').count()==1
+                expect(panel.locator('.econ-daily-svg')).to_have_css('height','80px')
+                panel.locator('[data-daily-toggle]').click()
+                expect(panel.locator('[data-daily-toggle]')).to_have_attribute('aria-expanded','true')
+                plot=panel.locator('.econ-daily-plot')
+                geometry=api.daily_series(api.ANALYSIS_STORE.latest().daily_order_evidence,'SKU-1')
+                days=geometry['days'];index=next(i for i,d in enumerate(days) if d['day'].isoformat()=='2026-09-01')
+                box=plot.bounding_box()
+                page.mouse.move(box['x']+(64+920*(index+.5)/len(days))/1000*box['width'],box['y']+60)
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('СПП 60 %')
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('Заказы 1 шт.')
+                plot.focus();page.keyboard.press('Home')
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('06.08.2026')
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('СПП n/a')
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('Заказы 0 шт.')
+                page.keyboard.press('End')
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('30.09.2026')
+                page.keyboard.press('Escape')
+                expect(panel.locator('.econ-daily-tooltip')).to_be_hidden()
+                page.screenshot(path=str(ARTIFACTS/'daily-expanded.png'),full_page=True)
+                # Touch chooses the tapped day, rather than the previous selection.
+                context_touch=browser.new_context(viewport={'width':1440,'height':960},has_touch=True,locale='ru-RU')
+                touch=context_touch.new_page()
+                touch.on('pageerror',lambda error:errors.append(str(error)))
+                touch.route('**/assets/js/app.js',lambda route:route.fulfill(body=source,content_type='text/javascript'))
+                touch.route('**/*',block_external)
+                touch.goto(f'http://127.0.0.1:{port}/')
+                touch.evaluate("""snapshot=>{const S=SkladOzon;S.__browserEconomics.setState({...S.createInitialState(),section:'economics',snapshot});}""",snapshot)
+                touch_panel=touch.locator('[data-daily-sku="SKU-1"]')
+                expect(touch_panel).to_contain_text('СПП 50 %–60 %')
+                touch_panel.locator('[data-daily-toggle]').tap()
+                touch_plot=touch_panel.locator('.econ-daily-plot');touch_plot.scroll_into_view_if_needed()
+                touch_box=touch_plot.bounding_box()
+                touch.touchscreen.tap(touch_box['x']+(64+920*(index+1.5)/len(days))/1000*touch_box['width'],touch_box['y']+60)
+                expect(touch_panel.locator('.econ-daily-tooltip')).to_contain_text('02.09.2026')
+                expect(touch_panel.locator('.econ-daily-tooltip')).to_contain_text('СПП 50 %')
+                context_touch.close()
+                panel.locator('[data-daily-toggle]').click()
+                expect(panel.locator('[data-daily-toggle]')).to_have_attribute('aria-expanded','false')
                 assert page.locator('[name=modelDrr]').count() == 0
                 # Selection survives redraws and visiting the other screens.
                 report = advertising_xlsx(rows=[['01.09.2026','SKU-1','Товар',100],['02.09.2026','SKU-1','Товар',300]])
@@ -82,6 +138,9 @@ def main():
                 assert not api.PROJECT_PATH.with_name('advertising.json').exists()
                 page.locator('#econ-ads-upload').click()
                 expect(page.locator('.econ-real-drr')).to_have_text('Реальный 10 %')
+                expect(page.locator('.econ-ads-matches').first).to_contain_text('Сопоставлено по SKU: 1')
+                page.locator('.econ-ads-matches summary').first.click()
+                expect(page.locator('.econ-ads-matches').first).to_contain_text('SKU SKU-1 · ART-1')
                 expect(page.locator('.econ-advertising')).to_contain_text('Не удалось прочитать XLSX')
                 assert not page.evaluate('SkladOzon.__browserEconomics.getState().staleSnapshot')
                 assert api.wire(api.ANALYSIS_STORE.latest()) == immutable_before
@@ -121,17 +180,24 @@ def main():
                 page.locator('[data-econ-ads-delete="123"]').click()
                 page.locator('[data-dialog-confirm]').click()
                 expect(page.locator('.econ-real-drr')).to_have_text('Реальный n/a')
+                expect(page.locator('.econ-drr-assumption')).to_have_text('В расчёте 0 %')
                 # Narrow window, horizontal table overflow stays local.
                 page.locator('#econ-ads-clear-completed').click()
                 assert page.locator('[data-econ-ads-remove-file]').count() == 0
                 page.set_viewport_size({'width':720,'height':900})
                 page.evaluate('window.scrollTo(0,0)')
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                panel.locator('[data-daily-toggle]').click()
+                plot=panel.locator('.econ-daily-plot');box=plot.bounding_box()
+                page.mouse.move(min(690,box['x']+box['width']*.48),box['y']+40)
+                popup=panel.locator('.econ-daily-tooltip');expect(popup).to_be_visible()
+                popup_box=popup.bounding_box()
+                assert popup_box['x']>=0 and popup_box['x']+popup_box['width']<=720
                 page.screenshot(path=str(ARTIFACTS / 'narrow.png'), full_page=True)
                 assert not errors, errors
                 assert not external, external
                 browser.close()
-                print('Economics browser: batch, partial error, navigation, duplicate, correction, multi-campaign, export, deletion, narrow layout passed; no JS errors or external requests.')
+                print('Economics browser: DRR-zero, commission, daily charts, delayed error/retry/focus, hover, keyboard, touch, batch, errors, navigation, duplicate, correction, multi-campaign, export, deletion, narrow tooltip passed; no JS errors or external requests.')
         finally:
             server.should_exit = True; thread.join(timeout=5); sock.close()
 

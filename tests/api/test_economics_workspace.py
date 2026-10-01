@@ -23,7 +23,8 @@ def test_report_is_tied_to_current_snapshot_and_has_no_mock_data(monkeypatch):
     payload = result.json()
     assert payload['snapshot_id'] == 'snap-1'
     assert payload['workspace']['products'][0]['article'] == '26572'
-    assert payload['workspace']['modeled_shortfall'] is None
+    assert payload['workspace']['modeled_shortfall'] == '130'
+    assert payload['workspace']['products'][0]['applied_drr_rate'] == '0'
     assert payload['workspace']['period']['to'] == '2026-09-27'
     store.clear()
     stale = CLIENT.post('/api/economics/workspace', json=BODY)
@@ -55,5 +56,6 @@ def test_completed_file_analysis_drives_workspace_without_client_math(monkeypatc
     assert product['article'] == 'ART-1'
     assert product['real_drr_rate'] is None
     assert 'order_revenue_evidence' not in snapshot
+    assert 'daily_order_evidence' not in snapshot
     assert api.ANALYSIS_STORE.latest().order_revenue_evidence is not None
     assert product['groups']['destination'][0]['routes'][0]['origin'] == 'Москва'

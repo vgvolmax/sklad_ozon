@@ -272,13 +272,15 @@ Economics starts with SKU averages and target settings. Opening a SKU colors
 the whole row and its cluster breakdown as one surface; opening a problem
 cluster adds a nested warm surface. Both origin and destination cuts are
 available with a route table naming both roles. The pricing scenario and
-historical model use separate labels and never substitute a missing value with
-zero. The shortfall is an estimate over delivered completed-week routes, not
+historical model use separate labels. Unknown real DRR retains `n/a` but uses
+an explicitly labeled 0% assumption in this Economics scenario. Other missing
+financial inputs remain unknown. The shortfall is an estimate over delivered completed-week routes, not
 a current-month buyout or payout statement.
 
 Economics keeps target margin, ROI and planned DRR in the compact target
 band. Real DRR is read-only in each SKU row, with uploaded expense, all-order
-revenue and period; unknown values show `n/a` with a reason. The optional
+revenue and period; unknown values show `n/a` with a reason and `В расчёте 0 %`.
+The commission column stacks rubles per unit under its percentage. The optional
 advertising panel on Economics owns batch selection, per-file results/retry,
 and a bounded campaign list. Campaign deletion uses the shared AppDialog.
 The queue survives redraws and navigation. Advertising mutations serialize
@@ -286,7 +288,18 @@ with economics edits/export; they refresh Economics without making Plan stale. C
 save keeps its value and correction text. The table owns horizontal overflow
 after the additional cost column; its expanded product/cluster surface remains
 unchanged. Two neutral download actions below the target controls distinguish
-the compact economics report from the persistent cost directory.
+the compact economics report from the persistent cost directory. Import results
+disclose exact matched SKU with article/name, using native details.
+
+Each product ends with its own daily-history panel, after any open cluster
+detail. Compact and expanded states share a green SPP line and blue ordered-unit
+bars on one calendar. SPP's vertical bounds are the observed minimum/maximum;
+a constant value is centered. Gaps are never connected or filled with discounts.
+The expanded plot supplies one date/SPP/orders popup across both charts, with
+arrow/Home/End/Escape support and visible focus. Popups stay inside the visible
+table viewport. Order history is lazy loaded only for visible products and is
+cached per immutable snapshot; changes to ads/costs do not reload it. The panel
+retains the parent's selected surface, with quiet borders and no new chart library.
 
 ## Persistent pack-multiplicity directory (PR1)
 

@@ -29,7 +29,8 @@ def test_missing_report_is_na_and_does_not_use_previous_manual_model_drr(client)
     report = client.post('/api/economics/workspace', json={**BODY, 'modeled_drr': '.5'}).json()['workspace']
     product = report['products'][0]
     assert product['real_drr_rate'] is None
-    assert product['margin'] is None and product['roi'] is None
+    assert product['margin'] is not None and product['roi'] is not None
+    assert product['applied_drr_rate'] == '0' and product['drr_zero_assumed'] is True
     assert product['target_price_all_routes'] is not None
 
 
@@ -41,6 +42,8 @@ def test_batch_import_is_per_file_and_persists_real_model_and_export(client):
                          files=[('files', ('report.xlsx', report)), ('files', ('bad.xlsx', b'not xlsx'))])
     assert result.status_code == 200, result.text
     assert [r['status'] for r in result.json()['files']] == ['imported', 'error']
+    assert result.json()['files'][0]['matched_products'] == [
+        {'sku':'SKU','article':'26572','name':'Розетка'}]
     assert api.PROJECT_PATH.with_name('advertising.json').exists()
     product = client.post('/api/economics/workspace', json=BODY).json()['workspace']['products'][0]
     assert product['real_drr_rate'] == '0.1'

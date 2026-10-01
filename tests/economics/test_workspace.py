@@ -154,3 +154,13 @@ def test_saved_cost_repairs_observed_route_even_if_another_placement_lacks_tarif
     product = workspace(snapshot, per_sku_cost={'SKU': Decimal('40')})['products'][0]
     assert product['covered_qty'] == 10
     assert product['target_price_all_routes'] is None
+
+
+def test_unknown_real_drr_uses_explicit_zero_and_keeps_current_scenario():
+    product = workspace(sample_snapshot(),real_drr={})['products'][0]
+    assert product['real_drr_rate'] is None
+    assert product['applied_drr_rate'] == 0
+    assert product['drr_zero_assumed'] is True
+    assert product['covered_qty'] == 15
+    assert product['modeled_shortfall'] == 130
+    assert product['commission_per_unit'] == Decimal('25')

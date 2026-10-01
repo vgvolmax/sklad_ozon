@@ -88,14 +88,16 @@ def test_economics_excel_has_one_product_row_and_numeric_rates(tmp_path, monkeyp
     sheet = load_workbook(BytesIO(result.content)).active
     assert sheet.max_row == 2
     assert [c.value for c in sheet[1]] == ['Артикул', 'Товар', 'Текущая цена, ₽',
-        'ДРР по плану, %', 'Реальный ДРР, %', 'Маржа, %', 'ROI, %', 'Плановая маржа, %', 'Необходимая цена, ₽']
+        'ДРР по плану, %', 'Реальный ДРР, %', 'Маржа, %', 'ROI, %', 'Плановая маржа, %', 'Необходимая цена, ₽',
+        'ДРР в расчёте, %', 'Комиссия Ozon, ₽ / шт.']
     assert sheet.cell(2, 1).value == '26572'
     assert sheet.cell(2, 3).value == 100
     assert sheet.cell(2, 4).value == .05
     assert sheet.cell(2, 8).value == .20
-    assert sheet.cell(2, 5).value is None and sheet.cell(2, 6).value is None
+    assert sheet.cell(2, 5).value is None and sheet.cell(2, 6).value is not None
+    assert sheet.cell(2, 10).value == 0 and sheet.cell(2, 11).value == 25
     assert sheet.cell(2, 4).number_format == '0.0%'
-    assert sheet.freeze_panes == 'C2' and sheet.auto_filter.ref == 'A1:I2'
+    assert sheet.freeze_panes == 'C2' and sheet.auto_filter.ref == 'A1:K2'
     api.ANALYSIS_STORE.clear()
     assert client.post('/api/economics/export', json=BODY).status_code == 409
 
