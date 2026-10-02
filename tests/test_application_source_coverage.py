@@ -49,8 +49,11 @@ def test_canonical_posting_wire_contract_reaches_complete_analysis_coverage(monk
     }
 
     class CanonicalOrdersClient:
-        def post_json(self, path, _payload, **_kwargs):
-            return responses[path]
+        def post_json(self, path, payload, **_kwargs):
+            if path in responses:
+                return responses[path]
+            return {'result': {'posting_number': payload['posting_number'],
+                               'financial_data': {'products': []}}}
 
     monkeypatch.setattr(sync_module, "next_backfill", lambda _window: None)
     monkeypatch.setattr(sync_module, "fetch_clusters", lambda _client: ClusterCatalogResult(

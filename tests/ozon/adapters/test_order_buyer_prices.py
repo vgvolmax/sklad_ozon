@@ -118,3 +118,13 @@ def test_legacy_scalar_base_checks_sibling_currency_code():
     posting['products'][0].update(price='100',currency_code='USD',customer_price={'amount':'40','currency':'RUB'})
     rows,_,_=normalize_fbo_posting(posting)
     assert rows[0].spp_base_price==0 and rows[0].buyer_price==40
+
+
+@pytest.mark.parametrize('value', [None, '', {'amount': '', 'currency': 'USD'}])
+def test_blank_customer_price_currency_does_not_hide_valid_financial_price(value):
+    posting = fbo()
+    posting['products'][0].update(customer_price=value, customer_currency_code='USD')
+    posting['financial_data']['products'] = [
+        {'product_id': 123, 'customer_price': 40, 'customer_currency_code': 'RUB'}]
+    rows, _, _ = normalize_fbo_posting(posting)
+    assert rows[0].buyer_price == 40

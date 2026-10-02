@@ -1,0 +1,139 @@
+"""Selected Economics intervals and lower-article edits in the production UI."""
+from io import BytesIO
+from pathlib import Path
+import socket
+import tempfile
+import threading
+import time
+
+from fastapi.testclient import TestClient
+from openpyxl import load_workbook
+from playwright.sync_api import sync_playwright, expect
+import uvicorn
+
+import backend.api as api
+from backend.main import app
+from backend.security import LOCAL_SESSION_HEADER, current_local_session_token
+from tests.api.test_analysis import _analysis_files, _analysis_data, PRODUCT_HEADERS
+from tests.helpers.xlsx_fixtures import make_xlsx
+
+ROOT = Path(__file__).parents[2]
+ARTIFACTS = ROOT / 'test-artifacts/economics-periods'
+
+
+def main():
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as directory:
+        api.PROJECT_PATH = Path(directory) / 'project.json'
+        api.ANALYSIS_STORE.clear()
+        files = _analysis_files()
+        files['product_economics_file'] = ('products.xlsx', make_xlsx(headers=PRODUCT_HEADERS,
+            rows=[[f'SKU-{i}', f'ART-{i}', 100, 20, 1000, '10%', 1] for i in range(1, 4)]))
+        files['orders_file'] = ('orders.csv', ('SKU;Количество;Цена продавца;Цена покупателя;Кластер отгрузки;Кластер доставки;Статус;Принят в обработку\n' +
+            ''.join(f'SKU-{i};1;1000;200;Москва;Москва;Доставлен;2026-09-01T10:00:00\n'
+                    f'SKU-{i};3;1000;800;Москва;Москва;Доставлен;2026-09-02T12:00:00\n'
+                    f'SKU-{i};2;1000;500;Москва;Москва;Доставлен;2026-09-07T15:00:00\n'
+                    f'SKU-{i};7;1000;600;Москва;Москва;Доставлен;2026-09-30T10:00:00\n'
+                    for i in range(1, 4))).encode())
+        with TestClient(app, base_url='http://127.0.0.1', headers={LOCAL_SESSION_HEADER: current_local_session_token()}) as client:
+            response = client.post('/api/analysis', files=files, data=_analysis_data(
+                as_of='2026-09-30', orders_period_from='2026-09-01', orders_period_to='2026-09-30'))
+            assert response.status_code == 200, response.text
+            snapshot = response.json()['snapshot']
+        before = api.wire(api.ANALYSIS_STORE.latest())
+        sock = socket.socket(); sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+        server = uvicorn.Server(uvicorn.Config(app, log_level='error'))
+        thread = threading.Thread(target=server.run, kwargs={'sockets': [sock]}, daemon=True); thread.start()
+        for _ in range(100):
+            if server.started: break
+            time.sleep(.05)
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                context = browser.new_context(viewport={'width': 1440, 'height': 900}, locale='ru-RU', accept_downloads=True)
+                page = context.new_page(); page.set_default_timeout(5000)
+                errors = []; page.on('pageerror', lambda error: errors.append(str(error)))
+                source = (ROOT / 'frontend/assets/js/app.js').read_text()
+                hook = "if(root.document)document.addEventListener('DOMContentLoaded',S.boot);"
+                source = source.replace(hook, "S.__periodTest={setState(value){setState(value);}};")
+                page.route('**/assets/js/app.js', lambda route: route.fulfill(body=source, content_type='text/javascript'))
+                page.goto(f'http://127.0.0.1:{port}/')
+                page.evaluate("snapshot=>{const S=SkladOzon;S.__periodTest.setState({...S.createInitialState(),section:'economics',snapshot});}", snapshot)
+                expect(page.locator('.econ-sku-row')).to_have_count(3)
+                # Capture the final editable article, with earlier expanded blocks.
+                for sku in ('SKU-1', 'SKU-2', 'SKU-3'):
+                    page.locator(f'[data-econ-sku="{sku}"]').click()
+                    page.locator(f'[data-daily-sku="{sku}"] [data-daily-toggle]').click()
+                drr = page.locator('[data-econ-drr="SKU-3"]')
+                drr.scroll_into_view_if_needed(); drr.focus()
+                position = drr.bounding_box()['y']; scroll = page.evaluate('scrollY')
+                table_scroll = page.locator('.econ-table-scroll').evaluate('el=>el.scrollTop')
+                assert scroll > 500
+                pending = []
+                page.route('**/api/economics/workspace', lambda route: pending.append(route), times=1)
+                drr.fill('11'); drr.dispatch_event('change')
+                expect(drr).to_be_focused()
+                assert abs(drr.bounding_box()['y'] - position) < 3, (position, drr.bounding_box()['y'], scroll, page.evaluate('scrollY'))
+                assert abs(page.locator('.econ-table-scroll').evaluate('el=>el.scrollTop') - table_scroll) < 3
+                # Move while awaiting the response: preserve the user's new position.
+                page.mouse.wheel(0, 100); page.wait_for_timeout(250)
+                shifted = page.evaluate('scrollY')
+                shifted_table = page.locator('.econ-table-scroll').evaluate('el=>el.scrollTop')
+                pending.pop().continue_()
+                expect(page.locator('.econ-page')).to_have_attribute('aria-busy', 'false')
+                assert abs(page.evaluate('scrollY') - shifted) < 3
+                assert abs(page.locator('.econ-table-scroll').evaluate('el=>el.scrollTop') - shifted_table) < 3
+                expect(page.locator('[data-econ-sku="SKU-3"]')).to_have_attribute('aria-expanded', 'true')
+                assert page.locator('.econ-sku-row').nth(1).evaluate("el=>parseFloat(getComputedStyle(el.cells[0]).borderTopWidth)") >= 3
+                page.locator('#econ-period-from').fill('2026-09-02')
+                page.locator('#econ-period-to').fill('2026-09-07')
+                page.locator('#econ-period-apply').click()
+                expect(page.locator('.econ-page')).to_have_attribute('aria-busy', 'false')
+                row = page.locator('.econ-sku-row').nth(2)
+                expect(row.locator('td').nth(1)).to_contain_text('5 шт.')
+                expect(page.locator('[data-econ-period-summary]')).to_contain_text('2026-09-02–2026-09-07')
+                page.locator('[data-econ-granularity="week"]').click()
+                panel = page.locator('[data-daily-sku="SKU-3"]')
+                expect(panel.locator('.econ-daily-period')).to_contain_text('По неделям')
+                plot = panel.locator('.econ-daily-plot'); plot.focus(); plot.press('Home')
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('02.09.2026–06.09.2026')
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('СПП 20 %')
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('Цена покупателя 800 ₽')
+                expect(panel.locator('.econ-daily-tooltip')).to_contain_text('Заказы 3 шт.')
+                with page.expect_download() as downloaded:
+                    page.locator('#econ-export').click()
+                sheet = load_workbook(BytesIO(Path(downloaded.value.path()).read_bytes())).active
+                assert sheet['L2'].value.strftime('%Y-%m-%d') == '2026-09-02'
+                assert sheet['M2'].value.strftime('%Y-%m-%d') == '2026-09-07'
+                assert sheet['N2'].value == 5
+                page.screenshot(path=str(ARTIFACTS / 'weekly-selected.png'), full_page=True)
+                page.locator('#econ-period-reset').click()
+                expect(page.locator('.econ-sku-row').nth(2).locator('td').nth(1)).to_contain_text('13 шт.')
+                # A pending background-price response is refreshed automatically.
+                def pending_prices(route):
+                    response = route.fetch(); payload = response.json()
+                    for series in payload['series'].values():
+                        series['price_pending'] = True
+                        for day in series['days']:
+                            day['spp'] = day['buyer_price_mean'] = None
+                            day['spp_priced_qty'] = day['buyer_priced_qty'] = 0
+                    route.fulfill(response=response, json=payload)
+                page.route('**/api/economics/daily-series', pending_prices, times=1)
+                page.locator('[data-econ-granularity="day"]').click()
+                expect(panel.locator('.econ-daily-buyer-line')).to_have_count(0)
+                expect(panel.locator('.econ-daily-buyer-line')).to_have_count(3, timeout=12000)
+                page.set_viewport_size({'width': 390, 'height': 844})
+                page.locator('#econ-period-from').scroll_into_view_if_needed()
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+                page.screenshot(path=str(ARTIFACTS / 'narrow-period.png'))
+                assert not errors, errors
+                assert api.wire(api.ANALYSIS_STORE.latest()) == before
+                browser.close()
+                print('Economics periods browser: stable lower-SKU edit, delayed scroll, selected quantities, weighted weeks, popup, export, reset, separators and narrow layout passed.')
+        finally:
+            server.should_exit = True; thread.join(timeout=10); sock.close()
+
+
+if __name__ == '__main__':
+    main()

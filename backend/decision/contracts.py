@@ -12,7 +12,7 @@ from backend.analytics.demand_estimate import DemandEstimate
 from backend.analytics.routes import RouteProfile
 from backend.domain.contracts import ReportMeta, SourceMode
 from backend.domain.advertising import OrderRevenueEvidence
-from backend.domain.economics_daily import DailyOrderEvidence
+from backend.domain.economics_daily import DailyOrderEvidence, EconomicsPeriodEvidence
 from backend.domain.signals import RecommendationDistortionSignal, SignalConfidence, StockoutSignal
 from backend.economics import RouteOpportunity, UnitEconomicsResult
 from backend.project import EconomicsSettings, OptimizerThresholds
@@ -359,3 +359,4 @@ class AnalysisSnapshot:
     cost_prices_fingerprint: str | None = None
     order_revenue_evidence: OrderRevenueEvidence | None = None
     daily_order_evidence: DailyOrderEvidence | None = None
+    economics_period_evidence: EconomicsPeriodEvidence | None = None

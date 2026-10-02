@@ -107,7 +107,7 @@ def source_refresh_regresses(base: OzonSourceSnapshot,
 
 
 def sync_ozon_source(client, *, credential_context_id: str | None = None,
-                     progress_callback=None) -> OzonSourceSnapshot:
+                     progress_callback=None, price_requests=None, price_cache=None) -> OzonSourceSnapshot:
     now = datetime.now(timezone.utc)
     as_of = source_business_date(now)
     window = history_window(as_of)
@@ -115,6 +115,7 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
     diagnostics: list[ImportDiagnostic] = []
     highest_stage_index = 0
     stage_progress: dict[str, dict[str, object]] = {}
+    order_price_cache = {} if price_cache is None else price_cache
 
     def progress(stage, *, detail=None, current=None, total=None, unit=None,
                  completed=False):
@@ -142,10 +143,17 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
     def call_with_progress(function, *args, stage):
         callback = lambda **values: progress(stage, **values)
         try:
-            supports_progress = "progress_callback" in inspect.signature(function).parameters
+            parameters = inspect.signature(function).parameters
         except (TypeError, ValueError):
-            supports_progress = False
-        return function(*args, progress_callback=callback) if supports_progress else function(*args)
+            parameters = {}
+        kwargs = {}
+        if "progress_callback" in parameters:
+            kwargs["progress_callback"] = callback
+        if "price_cache" in parameters:
+            kwargs["price_cache"] = order_price_cache
+        if 'price_requests' in parameters:
+            kwargs['price_requests'] = price_requests
+        return function(*args, **kwargs)
 
     def run(name, function, default):
         progress(name)
@@ -168,7 +176,7 @@ def sync_ozon_source(client, *, credential_context_id: str | None = None,
             evidence.append(EndpointEvidence(
                 name, started, len(records), complete, item_diagnostics,
                 record_quality=record_quality,
-                order_prices_version=ORDER_PRICES_VERSION if name in {"orders_fbo", "orders_fbs"} else 0))
+                order_prices_version=_order_price_version(name, records, price_requests, as_of)))
             progress(name, completed=True)
             return value if name == "clusters" else records
         except OzonClientError as exc:
@@ -419,16 +427,29 @@ def _order_evidence_complete(evidence):
                for name in ("orders_fbo", "orders_fbs"))
 
 
+def _order_price_version(name, records, requests, as_of):
+    if name not in {'orders_fbo', 'orders_fbs'}:
+        return 0
+    pending = {(r.key, r.lifecycle, sku) for r in requests or () for sku in r.skus}
+    # Deferred/failed work needs a resumable history sweep next refresh. Known
+    # and genuinely absent detail results are cached, so the sweep skips them.
+    cutoff = as_of - timedelta(days=ORDER_REFRESH_OVERLAP_DAYS)
+    return (ORDER_PRICES_VERSION - 1 if any(_order_day(row) < cutoff and
+            (getattr(row, 'buyer_price_key', None), row.lifecycle, row.sku) in pending
+            for row in records) else ORDER_PRICES_VERSION)
+
+
 def refresh_ozon_source(client, *, mode="smart", base_snapshot=None,
                         credential_context_id=None, progress_callback=None,
-                        now=None):
+                        now=None, price_requests=None, price_cache=None):
     """Refresh a source, reusing only explicit fresh and complete evidence."""
     if mode not in {"smart", "full"}:
         raise ValueError("mode must be smart or full")
     requested = mode
     if mode == "full" or base_snapshot is None:
         snapshot = sync_ozon_source(client, credential_context_id=credential_context_id,
-                                    progress_callback=progress_callback)
+                                    progress_callback=progress_callback,
+                                    price_requests=price_requests, price_cache=price_cache)
         failed = tuple(x.name for x in snapshot.endpoint_evidence if not x.complete)
         return snapshot, OzonRefreshReport(
             requested, "full", getattr(base_snapshot, "source_snapshot_id", None),
@@ -443,6 +464,10 @@ def refresh_ozon_source(client, *, mode="smart", base_snapshot=None,
     diagnostics = []
     refreshed = []
     reused = []
+    from backend.ozon.adapters.orders import seed_order_price_cache
+    order_price_cache = seed_order_price_cache(base_snapshot.orders)
+    if price_cache is not None:
+        order_price_cache.update(price_cache)
 
     def progress(name, *, reused_stage=False, **values):
         if not progress_callback:
@@ -457,11 +482,18 @@ def refresh_ozon_source(client, *, mode="smart", base_snapshot=None,
 
     def call(function, *args, stage):
         try:
-            supports = "progress_callback" in inspect.signature(function).parameters
+            parameters = inspect.signature(function).parameters
         except (TypeError, ValueError):
-            supports = False
+            parameters = {}
         callback = lambda **kw: progress(stage, **kw)
-        return function(*args, progress_callback=callback) if supports else function(*args)
+        kwargs = {}
+        if "progress_callback" in parameters:
+            kwargs["progress_callback"] = callback
+        if "price_cache" in parameters:
+            kwargs["price_cache"] = order_price_cache
+        if 'price_requests' in parameters:
+            kwargs['price_requests'] = price_requests
+        return function(*args, **kwargs)
 
     def run(name, function, default):
         progress(name)
@@ -486,7 +518,7 @@ def refresh_ozon_source(client, *, mode="smart", base_snapshot=None,
             complete = not any(x.severity == "error" for x in item_diagnostics)
             evidence.append(EndpointEvidence(name, started, len(records), complete,
                                              tuple(item_diagnostics), record_quality=quality,
-                                             order_prices_version=ORDER_PRICES_VERSION if name in {"orders_fbo", "orders_fbs"} else 0))
+                                             order_prices_version=_order_price_version(name, records, price_requests, as_of)))
             progress(name, completed=True)
             return value if name == "clusters" else tuple(records)
         except Exception as exc:

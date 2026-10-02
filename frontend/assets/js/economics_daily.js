@@ -6,6 +6,8 @@ const percent=v=>number(v)==null?'n/a':`${format.format(Number(v)*100)} %`;
 const date=v=>String(v||'').split('-').reverse().join('.');
 const LEFT=64, WIDTH=920;
 let snapshotId=null, container=null, apiFetch=null;
+let selectionKey='',selection={granularity:'day'},generation=0;
+let refreshTimer=null;
 const cache=new Map(), expanded=new Set();
 
 function geometry(days, large=false){
@@ -53,8 +55,8 @@ function chart(series, large){
     return segments.map(path=>`<path class="econ-daily-line ${kind}" d="${path}"/>`).join('')+
       points.filter(p=>p.y!==null).map(p=>`<circle class="econ-daily-dot ${kind?'econ-daily-buyer-dot':''}" cx="${p.x}" cy="${p.y}" r="${large?2:1.5}"/>`).join('');
   }
-  const dates=large&&days.length?`<text x="${LEFT}" y="306">${e(date(days[0].day))}</text><text x="984" y="306" text-anchor="end">${e(date(days.at(-1).day))}</text>`:'';
-  return `<svg class="econ-daily-svg" viewBox="0 0 1000 ${g.height}" role="img" aria-label="Средняя дневная СПП, средняя цена покупателя и заказанное количество на общей шкале дат" preserveAspectRatio="none">${axis(g.minimum,g.maximum,g.lineTop,g.lineBottom,percent,'СПП')}${axis(g.buyerMinimum,g.buyerMaximum,g.buyerTop,g.buyerBottom,money,'Цена')}<text x="4" y="${g.barTop+12}">${g.maxOrders} шт.</text><line class="econ-daily-baseline" x1="64" x2="984" y1="${g.barBottom}" y2="${g.barBottom}"/>${g.bars.map(b=>`<rect class="econ-daily-bar" x="${b.x-b.width/2}" y="${g.barBottom-b.height}" width="${b.width}" height="${b.height}"/>`).join('')}${paths(g.segments,g.points)}${paths(g.buyerSegments,g.buyerPoints,'econ-daily-buyer-line')}${dates}<line data-daily-cursor hidden class="econ-daily-cursor" x1="0" x2="0" y1="${g.lineTop}" y2="${g.barBottom}"/></svg>`;
+  const dates=large&&days.length?`<text x="${LEFT}" y="306">${e(date(days[0].day))}</text><text x="984" y="306" text-anchor="end">${e(date(days.at(-1).to||days.at(-1).day))}</text>`:'';
+  return `<svg class="econ-daily-svg" viewBox="0 0 1000 ${g.height}" role="img" aria-label="Средняя СПП, средняя цена покупателя и заказанное количество на общей шкале дат" preserveAspectRatio="none">${axis(g.minimum,g.maximum,g.lineTop,g.lineBottom,percent,'СПП')}${axis(g.buyerMinimum,g.buyerMaximum,g.buyerTop,g.buyerBottom,money,'Цена')}<text x="4" y="${g.barTop+12}">${g.maxOrders} шт.</text><line class="econ-daily-baseline" x1="64" x2="984" y1="${g.barBottom}" y2="${g.barBottom}"/>${g.bars.map(b=>`<rect class="econ-daily-bar" x="${b.x-b.width/2}" y="${g.barBottom-b.height}" width="${b.width}" height="${b.height}"/>`).join('')}${paths(g.segments,g.points)}${paths(g.buyerSegments,g.buyerPoints,'econ-daily-buyer-line')}${dates}<line data-daily-cursor hidden class="econ-daily-cursor" x1="0" x2="0" y1="${g.lineTop}" y2="${g.barBottom}"/></svg>`;
 }
 
 function contents(sku){
@@ -64,7 +66,7 @@ function contents(sku){
   if(item.error)return header+`<p id="${id}" class="field-error" role="status">${e(item.error)} <button type="button" data-daily-retry>Повторить</button></p>`;
   const series=item.series, days=series.days||[];
   if(!days.length)return header+`<p id="${id}" class="econ-daily-status">${e(series.reason||'История заказов отсутствует.')}</p>`;
-  return header+`<div id="${id}" class="econ-daily-body ${large?'is-expanded':''}"><div class="econ-daily-period">${e(date(series.period.from))}–${e(date(series.period.to))} · ${series.complete?'Заказано':'Известно заказов'} ${format.format(series.ordered_qty)} шт. · СПП ${series.spp_min==null?'n/a':series.spp_min===series.spp_max?percent(series.spp_min):percent(series.spp_min)+'–'+percent(series.spp_max)}</div><div class="econ-daily-plot" ${large?'tabindex="0" role="group" aria-label="СПП, цена покупателя и заказы. Стрелки выбирают день; Escape скрывает подсказку."':''}>${chart(series,large)}<div class="econ-daily-tooltip" hidden></div><span class="sr-only" data-daily-live aria-live="polite"></span></div>${series.reason?`<p class="econ-daily-note">${e(series.reason)}</p>`:''}${large?'<p class="econ-daily-note">Средние за день по единицам товара. СПП каждого заказа = (цена продавца − цена покупателя) / цена продавца. У СПП и цены покупателя отдельные шкалы от минимума до максимума за период. Наведите на день или используйте ← →.</p>':''}</div>`;
+  return header+`<div id="${id}" class="econ-daily-body ${large?'is-expanded':''}"><div class="econ-daily-period">${series.granularity==='week'?'По неделям':'По дням'} · ${e(date(series.period.from))}–${e(date(series.period.to))} · ${series.complete?'Заказано':'Известно заказов'} ${format.format(series.ordered_qty)} шт. · СПП ${series.spp_min==null?'n/a':series.spp_min===series.spp_max?percent(series.spp_min):percent(series.spp_min)+'–'+percent(series.spp_max)}</div><div class="econ-daily-plot" ${large?'tabindex="0" role="group" aria-label="СПП, цена покупателя и заказы. Стрелки выбирают период; Escape скрывает подсказку."':''}>${chart(series,large)}<div class="econ-daily-tooltip" hidden></div><span class="sr-only" data-daily-live aria-live="polite"></span></div>${series.reason?`<p class="econ-daily-note">${e(series.reason)}</p>`:''}${large?`<p class="econ-daily-note">Средние за ${series.granularity==='week'?'неделю':'день'} по единицам товара. ${series.granularity==='week'?'Недели с понедельника по воскресенье; крайние ограничены выбранными датами.':''} СПП каждого заказа = (цена продавца − цена покупателя) / цена продавца. У СПП и цены покупателя отдельные шкалы от минимума до максимума за период. Наведите на период или используйте ← →.</p>`:''}</div>`;
 }
 
 function markup(sku){return `<section class="econ-daily-panel" data-daily-sku="${e(sku)}" aria-label="История СПП и заказов SKU ${e(sku)}">${contents(sku)}</section>`;}
@@ -76,7 +78,7 @@ function bind(panel){
     panel.innerHTML=contents(sku);bind(panel);
     panel.querySelector('[data-daily-toggle]').focus({preventScroll:true});
   };
-  panel.querySelector('[data-daily-retry]')?.addEventListener('click',()=>{cache.delete(sku);mount(container,snapshotId,apiFetch);});
+  panel.querySelector('[data-daily-retry]')?.addEventListener('click',()=>{cache.delete(sku);mount(container,snapshotId,apiFetch,{period:cachePeriod(),granularity:selection.granularity});});
   const plot=panel.querySelector('.is-expanded .econ-daily-plot'), days=cache.get(sku)?.series?.days;
   if(!plot||!days?.length)return;
   const tooltip=plot.querySelector('.econ-daily-tooltip'), cursor=plot.querySelector('[data-daily-cursor]');
@@ -85,7 +87,8 @@ function bind(panel){
   function show(index,announce=false){
     selected=Math.max(0,Math.min(days.length-1,index));
     const day=days[selected], x=LEFT+WIDTH*(selected+.5)/days.length;
-    tooltip.innerHTML=`<strong>${e(date(day.day))}</strong><span>СПП ${percent(day.spp)}</span><span>Цена покупателя ${money(day.buyer_price_mean)}</span><span>Заказы ${day.orders==null?'n/a':format.format(day.orders)+' шт.'}</span>`;
+    const label=date(day.day)+(day.to&&day.to!==day.day?'–'+date(day.to):'');
+    tooltip.innerHTML=`<strong>${e(label)}</strong><span>СПП ${percent(day.spp)}</span><span>Цена покупателя ${money(day.buyer_price_mean)}</span><span>Заказы ${day.orders==null?'n/a':format.format(day.orders)+' шт.'}</span>`;
     const coverage=day.orders>0&&(day.spp_priced_qty<day.orders||day.buyer_priced_qty<day.orders)?`Цены: СПП ${day.spp_priced_qty} / ${day.orders} шт.; покупатель ${day.buyer_priced_qty} / ${day.orders} шт.`:'';
     if(coverage)tooltip.innerHTML+=`<span class="econ-daily-coverage">${e(coverage)}</span>`;
     tooltip.hidden=false;cursor.hidden=false;cursor.removeAttribute('hidden');
@@ -95,7 +98,7 @@ function bind(panel){
     const left=viewport?Math.max(0,viewport.left-rect.left):0;
     const right=viewport?Math.min(width,viewport.right-rect.left):width;
     tooltip.style.left=Math.max(left,Math.min(right-tooltip.offsetWidth,x/1000*width+8))+'px';
-    if(announce)live.textContent=`${date(day.day)}. СПП ${percent(day.spp)}. Цена покупателя ${money(day.buyer_price_mean)}. Заказы ${day.orders==null?'n/a':day.orders+' шт.'}${coverage?'. '+coverage:''}`;
+    if(announce)live.textContent=`${label}. СПП ${percent(day.spp)}. Цена покупателя ${money(day.buyer_price_mean)}. Заказы ${day.orders==null?'n/a':day.orders+' шт.'}${coverage?'. '+coverage:''}`;
   }
   function hide(){tooltip.hidden=true;cursor.setAttribute('hidden','');live.textContent='';}
   const pick=event=>{
@@ -123,23 +126,44 @@ function update(skus){
   });
 }
 
-async function load(skus,id,fetch){
+async function load(skus,id,fetch,options,run){
+  if(snapshotId!==id||run!==generation)return;
   for(let start=0;start<skus.length;start+=100){
     const batch=skus.slice(start,start+100);
     try{
-      const response=await fetch('/api/economics/daily-series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({analysis_snapshot_id:id,skus:batch})});
+      const response=await fetch('/api/economics/daily-series',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({analysis_snapshot_id:id,skus:batch,...options})});
       const payload=await response.json();
-      if(snapshotId!==id)return;
+      if(snapshotId!==id||run!==generation)return;
       if(!response.ok)throw Error(payload.error?.message||'Не удалось загрузить историю.');
       if(payload.snapshot_id!==id||batch.some(sku=>!payload.series?.[sku]))throw Error('Не удалось подтвердить историю заказов.');
       batch.forEach(sku=>cache.set(sku,{series:payload.series[sku]}));
-    }catch(error){if(snapshotId!==id)return;batch.forEach(sku=>cache.set(sku,{error:error.message||'Не удалось загрузить историю.'}));}
+    }catch(error){if(snapshotId!==id||run!==generation)return;batch.forEach(sku=>cache.set(sku,{error:error.message||'Не удалось загрузить историю.'}));}
     update(batch);
   }
+  scheduleRefresh();
 }
 
-function mount(element,id,fetch){
-  if(snapshotId!==id){snapshotId=id;cache.clear();expanded.clear();}
+function scheduleRefresh(){
+  if(refreshTimer||!container)return;
+  const visible=[...container.querySelectorAll('[data-daily-sku]')].map(panel=>panel.dataset.dailySku);
+  if(!visible.some(sku=>cache.get(sku)?.series?.price_pending))return;
+  const id=snapshotId,run=generation,fetch=apiFetch,options={...selection};
+  refreshTimer=root.setTimeout(()=>{
+    refreshTimer=null;
+    if(id!==snapshotId||run!==generation||container.closest('[data-section]')?.hidden)return;
+    const skus=[...container.querySelectorAll('[data-daily-sku]')].map(panel=>panel.dataset.dailySku);
+    load(skus,id,fetch,options,run);
+  },5000);
+}
+
+function cachePeriod(){return selection.period_from?{from:selection.period_from,to:selection.period_to}:null;}
+function mount(element,id,fetch,{period=null,granularity='day'}={}){
+  const next={granularity,...(period?{period_from:period.from,period_to:period.to}:{})},key=JSON.stringify(next);
+  if(snapshotId!==id||selectionKey!==key){
+    if(refreshTimer){root.clearTimeout(refreshTimer);refreshTimer=null;}
+    if(snapshotId!==id)expanded.clear();
+    snapshotId=id;selectionKey=key;selection=next;generation++;cache.clear();
+  }
   container=element;apiFetch=fetch;
   const missing=[];
   container.querySelectorAll('[data-daily-sku]').forEach(panel=>{
@@ -147,7 +171,8 @@ function mount(element,id,fetch){
     if(!cache.has(sku)){cache.set(sku,{loading:true});missing.push(sku);}
     bind(panel);
   });
-  if(missing.length){update(missing);load(missing,id,fetch);}
+  if(missing.length){update(missing);load(missing,id,fetch,{...selection},generation);}
+  else scheduleRefresh();
 }
 S.EconomicsDaily={geometry,markup,mount};
 })(globalThis);

@@ -103,6 +103,8 @@ class OrderRecord:
     buyer_price: float | None = None
     # SPP-only base. Explicit modern seller_price need not equal legacy price.
     spp_base_price: float | None = None
+    # Account-scoped cache uses this digest; raw posting identifiers stay ephemeral.
+    buyer_price_key: str | None = None
 
 
 RecordT = TypeVar("RecordT")

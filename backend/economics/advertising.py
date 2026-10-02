@@ -42,10 +42,12 @@ def _periods(days):
     return result
 
 
-def real_drr_by_sku(data, evidence, skus):
+def real_drr_by_sku(data, evidence, skus, *, period_from=None, period_to=None):
     by_sku = defaultdict(list)
     for row in data.days:
-        if row.sku in skus: by_sku[row.sku].append(row)
+        if (row.sku in skus and (period_from is None or row.day >= period_from)
+                and (period_to is None or row.day <= period_to)):
+            by_sku[row.sku].append(row)
     revenue = {(r.sku, r.day): r.revenue for r in evidence.days} if evidence else {}
     result = {}
     for sku in skus:
@@ -55,7 +57,7 @@ def real_drr_by_sku(data, evidence, skus):
         reason = None
         order_revenue = None
         rate = None
-        if not rows: reason = 'Загрузите рекламный отчёт для товара.'
+        if not rows: reason = 'Нет рекламного отчёта для товара за выбранный период.'
         elif evidence is None: reason = 'Пересчитайте план, чтобы получить сумму всех заказов.'
         elif not evidence.complete or sku in evidence.incomplete_skus:
             reason = 'История или цены заказов неполные. Обновите данные и пересчитайте план.'

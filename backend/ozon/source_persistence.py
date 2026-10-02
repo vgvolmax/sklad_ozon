@@ -122,6 +122,9 @@ def _order(value):
     if base is not None and (isinstance(base, bool) or not isinstance(base, (int, float))
                              or not isfinite(base) or base < 0):
         raise ValueError("invalid spp_base_price")
+    price_key = _optional(item, 'buyer_price_key', str)
+    if price_key is not None and (len(price_key) != 64 or any(c not in '0123456789abcdef' for c in price_key)):
+        raise ValueError('invalid buyer_price_key')
     return OrderRecord(
         sku=_required(item, "sku", str), quantity=_required(item, "quantity", int),
         origin_cluster=_required(item, "origin_cluster", str),
@@ -137,6 +140,7 @@ def _order(value):
         source_channel=item.get("source_channel", "") if isinstance(item.get("source_channel", ""), str) else (_ for _ in ()).throw(ValueError("invalid source_channel")),
         buyer_price=float(buyer) if buyer is not None else None,
         spp_base_price=float(base) if base is not None else None,
+        buyer_price_key=price_key,
     )
 
 
