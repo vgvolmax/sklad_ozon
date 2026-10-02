@@ -22,6 +22,7 @@ jobs:
       - run: node --check frontend/assets/js/flow_timeline.js
       - run: node --check frontend/assets/js/flow.js
       - run: node --check frontend/assets/js/economics_workspace.js
+      - run: node --check frontend/assets/js/economics_buyouts.js
       - run: node --check frontend/assets/js/economics_daily.js
       - run: node --check frontend/assets/js/app.js
       - run: node --check frontend/assets/js/plan_workspace.js
@@ -45,6 +46,8 @@ jobs:
         run: python -m tests.browser.economics_periods_smoke
       - name: Exercise Economics exports, profit, focused clusters and clipboard
         run: python -m tests.browser.economics_focus_smoke
+      - name: Exercise buyout profit with financial accruals and filtered Excel
+        run: python -m tests.browser.economics_buyouts_smoke
       - name: Upload Plan browser screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -69,6 +72,12 @@ jobs:
         with:
           name: economics-focus-screenshots
           path: test-artifacts/economics-focus/
+      - name: Upload Economics buyout screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: economics-buyout-screenshots
+          path: test-artifacts/economics-buyouts/
 
   windows-portable-smoke:
     runs-on: windows-latest

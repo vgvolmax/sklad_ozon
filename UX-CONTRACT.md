@@ -596,3 +596,31 @@ Missing complete evidence means `n/a`; the current Economics model applies
 all other route inputs are complete. Unknown source expense remains unknown.
 Planned DRR remains editable and drives target pricing independently. Ad
 imports do not change Data uploads, source mode, Demand, Need or Plan.
+
+## Economics: explicit financial period
+
+Source: `docs/superpowers/specs/2026-10-02-economics-buyouts-design.md`.
+
+- `По выкупам` explicitly loads Seller finance accruals for inclusive dates;
+  it does not change the source or mathematics of Plan, Demand, Flow or the
+  order pricing model. Finance may accompany FILES analysis because it is an
+  independent reporting source, never live shipment validation.
+- Current uploaded SKU costs are used before saved article overrides. No
+  historical or monthly costs are added. Missing cost/quantity yields a visible
+  partial result, with no invented cost or original full-return quantity.
+- Common costs and the final profit card always cover the whole store. Search
+  and filters affect the product subtotal and product Excel sheet. The summary
+  and expense sheets explicitly cover the whole store.
+- Dates are draft values until an explicit load succeeds. The previously loaded
+  period remains visible after a failed refresh. Account/session changes reject
+  stale finance; cached views are revalidated on outer app renders. Long loading
+  has progress and cancel; no overlapping submission or stale response overwrite.
+- Date controls reuse native date inputs with platform-owned calendars and
+  application validation, inclusive ranges, and Moscow business-date limits.
+  Search follows the existing 300ms debounce, IME, clear, and stale-result policy.
+- Tables reuse committed native table markup and global scrollbars. Financial
+  periods are a named bounded table variant; summary/form panels stay in document
+  flow. Copy reuses `EconomicsWorkspace.copySku`, no hover tooltip, real clipboard
+  success popup only. Money reuses `EconomicsWorkspace.formatMoney`.
+- XLSX remains backend-built, literal-string safe, retryable, and disabled during
+  unsettled selection. Download creates no remote accounting action.

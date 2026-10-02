@@ -7,9 +7,8 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 
-def _workbook(title, headers, rows, widths, *, percentages=(), freeze='A2'):
-    book = Workbook()
-    sheet = book.active
+def _sheet(book, title, headers, rows, widths, *, percentages=(), freeze='A2'):
+    sheet = book.create_sheet()
     sheet.title = title
     sheet.append(headers)
     for row in rows:
@@ -42,6 +41,13 @@ def _workbook(title, headers, rows, widths, *, percentages=(), freeze='A2'):
     sheet.page_setup.fitToWidth = 1
     sheet.page_setup.fitToHeight = 0
     sheet.print_title_rows = '1:1'
+    return sheet
+
+
+def _workbook(title, headers, rows, widths, *, percentages=(), freeze='A2'):
+    book = Workbook()
+    book.remove(book.active)
+    _sheet(book, title, headers, rows, widths, percentages=percentages, freeze=freeze)
     stream = BytesIO()
     book.save(stream)
     return stream.getvalue()
@@ -49,6 +55,40 @@ def _workbook(title, headers, rows, widths, *, percentages=(), freeze='A2'):
 
 def _number(value):
     return None if value is None else float(value)
+
+
+def export_buyouts(report):
+    book = Workbook()
+    book.remove(book.active)
+    rows = [[p['sku'], p['article'], p['name'], p['purchased_qty'], p['returned_qty'],
+             p['qty'] if p['quantity_known'] else None, _number(p['cost']),
+             _number(p['cost_total']), _number(p['revenue']), _number(p['net_proceeds']),
+             _number(p['known_expenses']), _number(p['profit'])] for p in report['products']]
+    _sheet(book, 'Выкупы', ['SKU', 'Артикул', 'Товар', 'Выкуплено, шт.', 'Возвращено, шт.',
+        'Выкупы минус возвраты, шт.', 'Текущая себестоимость, ₽ / шт.', 'Себестоимость всего, ₽',
+        'Выручка продавца, ₽', 'Начислено за товары после расходов Ozon, ₽',
+        'Расходы и корректировки в товарах, ₽', 'Прибыль по товарам, ₽'], rows,
+        [24, 22, 54, 20, 20, 24, 26, 24, 24, 32, 32, 26])
+    totals = report['totals']
+    _sheet(book, 'Итог периода', ['Показатель', 'Значение'], [
+        ['Период с', report['period']['from'].isoformat()], ['Период по', report['period']['to'].isoformat()],
+        ['Себестоимость', 'Из текущей загрузки пользователя'],
+        ['Прибыль по отфильтрованным товарам', _number(report['selected_totals']['profit'])],
+        ['Прибыль по товарам всего магазина', _number(totals['profit_before_common'])],
+        ['Общие расходы всего магазина', _number(totals['common_expenses'])],
+        ['Реклама всего (уже учтена в расходах)', _number(totals['advertising_spend'])],
+        ['Прибыль магазина после известных расходов', _number(totals['profit_after_known_expenses'])],
+        ['Полнота расчёта', 'Частичный' if totals['partial'] else 'Полный по известным расходам'],
+        ['SKU с рассчитанной прибылью', totals['covered_sku_count']],
+        ['SKU всего', totals['sku_count']],
+        ['Налоги вне Ozon', 'Не учтены'] ], [52, 44])
+    _sheet(book, 'Расходы', ['Категория', 'Расходы всего магазина, ₽',
+        'Уже в прибыли товаров, ₽', 'Вычитаются из общего итога, ₽'],
+        [[e['label'], _number(e['amount']), _number(e['product_amount']), _number(e['common_amount'])]
+         for e in report['expenses']], [60, 28, 30, 34])
+    stream = BytesIO()
+    book.save(stream)
+    return stream.getvalue()
 
 
 def export_cost_prices(items):
