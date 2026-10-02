@@ -1,11 +1,14 @@
 """Coverage-aware expected logistics over an explicitly selected route profile."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
-from typing import Iterable
+from typing import Iterable, TYPE_CHECKING
 
-from backend.analytics.clean_routes import RouteDistributionCell
+if TYPE_CHECKING:
+    from backend.analytics.clean_routes import RouteDistributionCell
 from backend.domain.contracts import ImportResult, TariffRow
 
 

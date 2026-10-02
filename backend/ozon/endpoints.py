@@ -27,3 +27,5 @@ DRAFT_DIRECT_CREATE = "/v1/draft/direct/create"
 DRAFT_MULTI_CLUSTER_CREATE = "/v1/draft/multi-cluster/create"
 DRAFT_CREATE_INFO = "/v2/draft/create/info"
 DRAFT_TIMESLOT_INFO = "/v2/draft/timeslot/info"
+FINANCE_ACCRUAL_TYPES_PATH = '/v1/finance/accrual/types'
+FINANCE_ACCRUAL_BY_DAY_PATH = '/v1/finance/accrual/by-day'

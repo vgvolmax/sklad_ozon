@@ -401,3 +401,23 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .econ-period-controls input{min-width:9.2rem;max-width:100%}
 @media(max-width:600px){.econ-period-controls form>div{flex-basis:100%}.econ-period-controls label{flex:1 1 8rem;min-width:0}.econ-period-controls input{min-width:0;width:100%}}
 @media(forced-colors:active){.econ-daily-buyer-dot{fill:Canvas;stroke:CanvasText}}
+
+/* Explicit financial period, separate from the order pricing model. */
+.econ-calculation{margin-bottom:var(--space-md)}
+.buyout-page{grid-template-columns:minmax(0,1fr)}
+.buyout-page>*,.buyout-table-scroll{min-width:0}
+.buyout-totals{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-md)}
+.buyout-totals>div{display:grid;gap:var(--space-xs);padding:var(--space-md);border-left:3px solid var(--color-ozon);background:var(--color-surface-muted)}
+.buyout-totals strong{font-size:1.25rem;color:var(--color-ozon);font-variant-numeric:tabular-nums}
+.buyout-totals small{color:var(--color-text-muted)}
+.buyout-filters{display:flex;flex-wrap:wrap;align-items:end;gap:var(--space-sm);margin:var(--space-md) 0}
+.buyout-filters label{display:grid;gap:var(--space-xs)}
+.buyout-table-scroll{overflow:auto;max-height:36rem;border:1px solid var(--color-border);scrollbar-gutter:stable}
+.buyout-table{min-width:74rem}
+.buyout-table td:first-child{min-width:18rem;max-width:24rem;white-space:normal;overflow-wrap:anywhere}
+.buyout-table small{display:block;color:var(--color-text-muted)}
+.buyout-table td:last-child{color:var(--color-ozon)}
+.buyout-table tbody tr+tr{border-top:2px solid var(--color-border)}
+.buyout-expenses table{min-width:40rem}
+.buyout-page progress{width:100%;accent-color:var(--color-ozon)}
+@media(max-width:50rem){.buyout-totals{grid-template-columns:minmax(0,1fr)}.buyout-filters{align-items:stretch}.buyout-filters input{max-width:100%}}

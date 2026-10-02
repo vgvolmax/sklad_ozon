@@ -348,3 +348,15 @@ round upward. No cross-cluster donor rebalance is performed. Examples:
 The immutable `ShippablePlan` is the system recommendation. The separately materialized Working Plan is the operator's current decision and is keyed by `SKU × destination_cluster_id`. Project schema v3 persists only manual exceptions, including their base recommendation and pack evidence; absent exceptions automatically follow a newly calculated recommendation. Working quantities are validated server-side for whole packs, known physical capacity, and aggregate seller stock. Unknown capacity permits an increase only with an explicit Ozon-validation warning.
 
 The product and cluster perspectives render the same server-returned Working Plan. `Рекомендация` always means the immutable system quantity; `К поставке` is editable using whole-pack steps or an exact integer entry. Volume is derived from the working quantity. Until shipment candidates consume `working_plan_id`, any active current override blocks the legacy shipment flow.
+
+### Economics: bought-out period variant
+
+`По заказам / По выкупам` is a separate calculation selector, using the existing
+segmented-button group and `aria-pressed`. The order pricing model and its
+actual/plan colors retain their established presentation. The financial view uses
+Ozon blue for observed finance amounts and explicit text for incomplete totals.
+It retains the existing panel, date, table and clipboard owners; no new visual
+tokens or framework. Its grid uses `minmax(0, 1fr)` so only the table region owns
+horizontal overflow. Summary panels use natural document height; the table alone
+has bounded internal scrolling. Native date pickers retain platform ownership.
+Source: `docs/superpowers/specs/2026-10-02-economics-buyouts-design.md`.

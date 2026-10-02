@@ -90,6 +90,7 @@ from backend.shipment.api_context import (ShipmentPreparationError,
                                           CREDENTIAL_CONTEXT_MESSAGE,
                                           prepare_shipment_validation,
                                           require_source_credential_context)
+from backend.ozon.finance_store import FinanceSnapshotStore
 MAX_UPLOAD_BYTES=64*1024*1024
 router=APIRouter()
 logger=logging.getLogger(__name__)
@@ -101,6 +102,7 @@ HANDOFF_STORE=HandoffPointStore()
 OZON_SOURCE_STORE=OzonSourceSnapshotStore()
 ORDER_PRICE_ENRICHMENT=OrderPriceEnrichment(OZON_SOURCE_PATH.with_name('order-prices.json'))
 ANALYSIS_STORE=AnalysisSnapshotStore()
+FINANCE_STORE=FinanceSnapshotStore()
 DRAFT_VALIDATION_SERVICE=DraftValidationService(OZON_CLIENT)
 SHIPMENT_PLAN_STORE=ShipmentPlanStore()
 OZON_SOURCE_SELECTIONS: dict[str, set[tuple[str, str]]] = {}
@@ -127,7 +129,7 @@ def wire(value):
         # Daily revenue stays server-side; the Economics endpoint exposes only
         # the exact period totals required by its consumer.
         return {f.name:wire(getattr(value, f.name)) for f in fields(value)
-                if f.name not in {'order_revenue_evidence', 'daily_order_evidence', 'economics_period_evidence'}}
+                if f.name not in {'order_revenue_evidence', 'daily_order_evidence', 'economics_period_evidence', 'buyout_cost_inputs'}}
     if isinstance(value,Enum): return value.value
     if isinstance(value,Decimal): return _decimal_string(value)
     if isinstance(value,(date,datetime)): return value.isoformat()
@@ -160,6 +162,7 @@ def invalidate_ozon_account_context_state():
     delete_source_snapshot(OZON_SOURCE_PATH)
     HANDOFF_STORE.clear()
     ANALYSIS_STORE.clear_api()
+    FINANCE_STORE.clear()
     SHIPMENT_PLAN_STORE.clear()
     OZON_SOURCE_SELECTIONS.clear()
 
@@ -2047,6 +2050,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
                                    source_inputs.ozon_recommendation_error))
     if source_inputs is not None and not source_inputs.order_revenue_complete:
         snapshot = replace(snapshot, order_revenue_evidence=replace(snapshot.order_revenue_evidence, complete=False))
+    snapshot = replace(snapshot, buyout_cost_inputs=tuple(imported_cost_products))
     expected_context=provenance[2] if len(provenance)>2 else None
     snapshot = commit_analysis_snapshot_if_current(
         snapshot,expected_pack_fingerprint=pack_fingerprint_at_start,
@@ -2171,3 +2175,7 @@ def export_pack_multiplicity():
     with PROJECT_PERSISTENCE_LOCK: items=_pack_items(load_project_if_exists(PROJECT_PATH))
     return Response(export_xlsx(items),media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition":"attachment; filename*=UTF-8''%D0%9A%D1%80%D0%B0%D1%82%D0%BD%D0%BE%D1%81%D1%82%D1%8C_%D1%83%D0%BF%D0%B0%D0%BA%D0%BE%D0%B2%D0%BA%D0%B8.xlsx"})
+
+
+from backend.economics.buyout_api import router as buyout_router
+router.include_router(buyout_router)
