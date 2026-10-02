@@ -26,6 +26,8 @@ from backend.advertising_store import (AdvertisingData, apply_report, advertisin
 from backend.ingestion.advertising import import_advertising
 from backend.economics.advertising import build_order_revenue, real_drr_by_sku
 from backend.economics.daily_series import build_daily_evidence, daily_series
+from backend.economics.period import build_period_evidence, resolve_period
+from backend.ozon.price_enrichment import OrderPriceEnrichment
 from backend.decision import (DataQualityFact, DiagnosticView, InputStatusView,
                               ScenarioSettings, assemble_snapshot,
                               build_data_quality_presentation,
@@ -95,6 +97,7 @@ OZON_VAULT=CredentialVault(Path(__file__).resolve().parents[1]/"data"/"ozon-cred
 OZON_CLIENT=OzonClient(OZON_VAULT)
 HANDOFF_STORE=HandoffPointStore()
 OZON_SOURCE_STORE=OzonSourceSnapshotStore()
+ORDER_PRICE_ENRICHMENT=OrderPriceEnrichment(OZON_SOURCE_PATH.with_name('order-prices.json'))
 ANALYSIS_STORE=AnalysisSnapshotStore()
 DRAFT_VALIDATION_SERVICE=DraftValidationService(OZON_CLIENT)
 SHIPMENT_PLAN_STORE=ShipmentPlanStore()
@@ -122,7 +125,7 @@ def wire(value):
         # Daily revenue stays server-side; the Economics endpoint exposes only
         # the exact period totals required by its consumer.
         return {f.name:wire(getattr(value, f.name)) for f in fields(value)
-                if f.name not in {'order_revenue_evidence', 'daily_order_evidence'}}
+                if f.name not in {'order_revenue_evidence', 'daily_order_evidence', 'economics_period_evidence'}}
     if isinstance(value,Enum): return value.value
     if isinstance(value,Decimal): return _decimal_string(value)
     if isinstance(value,(date,datetime)): return value.isoformat()
@@ -150,6 +153,7 @@ def response(kind,result): return {"api_version":1,"kind":kind,**wire(result)}
 def vault_response(status): return wire(status)
 
 def invalidate_ozon_account_context_state():
+    ORDER_PRICE_ENRICHMENT.cancel(clear=True)
     OZON_SOURCE_STORE.clear()
     delete_source_snapshot(OZON_SOURCE_PATH)
     HANDOFF_STORE.clear()
@@ -170,6 +174,7 @@ def source_status_view(snapshot):
         'seller_warehouses':wire(snapshot.seller_warehouses),
         'endpoint_evidence':wire(snapshot.endpoint_evidence),
         'diagnostics':wire(snapshot.diagnostics),
+        'order_prices':ORDER_PRICE_ENRICHMENT.status(snapshot.source_snapshot_id),
     }
 
 
@@ -178,6 +183,7 @@ def _restore_persisted_source():
         snapshot=load_source_snapshot_if_exists(OZON_SOURCE_PATH)
         if snapshot is not None and snapshot.credential_context_id==OZON_VAULT.credential_context_id():
             OZON_SOURCE_STORE.put(snapshot)
+            ORDER_PRICE_ENRICHMENT.start(snapshot, [], None, is_current=lambda: True)
     except (OSError,ValueError,TypeError,json.JSONDecodeError):
         logger.warning('Ignoring invalid persisted Ozon source snapshot',exc_info=True)
 
@@ -415,8 +421,12 @@ async def _economics_report(request):
     try:
         with PROJECT_PERSISTENCE_LOCK:
             advertising = load_advertising(PROJECT_PATH.with_name('advertising.json'))
+        period = resolve_period(getattr(snapshot, 'economics_period_evidence', None),
+                                body.get('period_from'), body.get('period_to'))
         actual = real_drr_by_sku(advertising, getattr(snapshot, 'order_revenue_evidence', None),
-                                {row.sku for row in snapshot.decision_rows})
+                                {row.sku for row in snapshot.decision_rows},
+                                period_from=period['from'] if period else None,
+                                period_to=period['to'] if period else None)
         snapshot_costs = {unit.sku: unit.cost for unit in snapshot.unit_economics}
         saved = {row.sku: project.cost_prices[row.article] for row in snapshot.decision_rows
                  if row.article in project.cost_prices and
@@ -426,7 +436,8 @@ async def _economics_report(request):
             snapshot, margin=body.get('target_margin'), roi=body.get('target_roi'),
             goal=body.get('goal'), planned_drr=body.get('planned_drr'),
             per_sku_drr=overrides, real_drr={sku: value['rate'] for sku, value in actual.items()},
-            per_sku_cost={sku: record.cost for sku, record in saved.items()})
+            per_sku_cost={sku: record.cost for sku, record in saved.items()},
+            period_from=body.get('period_from'), period_to=body.get('period_to'))
         for product in report['products']:
             record = saved.get(product['sku'])
             product['cost_source'] = record.source if record else 'snapshot'
@@ -480,8 +491,25 @@ async def economics_daily_series(request: Request):
     known = {row.sku for row in snapshot.decision_rows}
     if set(skus) - known:
         return error(400, 'UNKNOWN_SKU', 'SKU не найден в текущем ассортименте.', 'skus')
-    series = {sku: daily_series(getattr(snapshot, 'daily_order_evidence', None), sku)
-              for sku in dict.fromkeys(skus)}
+    try:
+        ORDER_PRICE_ENRICHMENT.prioritize(getattr(snapshot, 'source_snapshot_id', None), skus)
+        evidence, prices = ORDER_PRICE_ENRICHMENT.evidence(getattr(snapshot, 'source_snapshot_id', None),
+                                                        getattr(snapshot, 'daily_order_evidence', None))
+        series = {sku: daily_series(evidence, sku,
+                    period_from=body.get('period_from'), period_to=body.get('period_to'),
+                    granularity=body.get('granularity', 'day')) for sku in dict.fromkeys(skus)}
+    except ValueError as exc:
+        return error(400, 'INVALID_DAILY_SERIES', str(exc), 'period')
+    for value in series.values():
+        pending = prices['pending'] and any((day['orders'] or 0) > day['buyer_priced_qty'] for day in value['days'])
+        value['price_pending'] = pending
+        if pending:
+            value['reason'] = (f"Цены покупателей уточняются в фоне: {prices['completed']} из {prices['total']} отправлений. "
+                               'График обновится автоматически; известные цены уже показаны.')
+        elif prices.get('failures'):
+            value['reason'] += ' Часть цен не удалось получить из Ozon; обновите данные для повторной попытки.'
+        if prices.get('persistence_error'):
+            value['reason'] += ' Кэш цен не удалось сохранить; полученные цены доступны до закрытия приложения.'
     with PROJECT_PERSISTENCE_LOCK:
         if _advertising_snapshot(snapshot.snapshot_id) is not snapshot:
             return error(409, 'ANALYSIS_SNAPSHOT_STALE', 'План изменился. Повторите загрузку.', None)
@@ -933,6 +961,8 @@ async def ozon_handoff_search(request:Request):
 
 def _refresh_response(context, mode, progress_callback=None):
     base=OZON_SOURCE_STORE.latest()
+    ORDER_PRICE_ENRICHMENT.cancel()
+    price_requests=[]
     # Preserve the established injection seam used by transport/concurrency tests.
     if sync_ozon_source is not _ORIGINAL_SYNC_OZON_SOURCE:
         kwargs={'credential_context_id':context.context_id}
@@ -945,7 +975,9 @@ def _refresh_response(context, mode, progress_callback=None):
     else:
         candidate,report=refresh_ozon_source(
             OZON_CLIENT.bind_context(context),mode=mode,base_snapshot=base,
-            credential_context_id=context.context_id,progress_callback=progress_callback)
+            credential_context_id=context.context_id,progress_callback=progress_callback,
+            price_requests=price_requests,
+            price_cache=ORDER_PRICE_ENRICHMENT.cache(context.context_id) if mode=='smart' else {})
 
     # The recommendation now belongs to the analysis upload, not the API source.
     # Old persisted snapshots can still contain the former endpoint evidence.
@@ -966,6 +998,12 @@ def _refresh_response(context, mode, progress_callback=None):
                 OZON_SOURCE_SELECTIONS.clear()
                 SHIPMENT_PLAN_STORE.clear()
             active=candidate
+            def price_commit(action):
+                return commit_active_credential_context(context,
+                    lambda:action() if OZON_SOURCE_STORE.latest() is candidate else None)
+            ORDER_PRICE_ENRICHMENT.start(candidate,price_requests,OZON_CLIENT.bind_context(context),
+                is_current=lambda:(OZON_SOURCE_STORE.latest() is candidate and OZON_VAULT.is_context_active(context)),
+                commit=price_commit,reset=mode=='full')
         authoritative_report=replace(report,activated=activated)
         result={'api_version':1,'source':source_status_view(active),
                 'capabilities':capability_matrix(active),'refresh':wire(authoritative_report)}
@@ -1980,6 +2018,9 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         blocked_decision_rows=snapshot.decision_rows,
     )
     snapshot=replace(snapshot,shippable_plan=shippable_plan,
+        economics_period_evidence=build_period_evidence(orders.records, order_coverage,
+            products.records, analysis_tariffs, settings,
+            complete=(source_inputs is None or source_inputs.order_revenue_complete)),
         daily_order_evidence=build_daily_evidence(orders.records, order_coverage,
             orders_complete=(source_inputs is None or source_inputs.order_revenue_complete),
             source_coverage=(source_inputs.source_coverage if source_inputs is not None else None),

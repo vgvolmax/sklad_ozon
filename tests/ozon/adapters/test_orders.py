@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 from backend.ozon.adapters.orders import fetch_postings, normalize_fbo_posting, normalize_fbs_posting
-from backend.ozon.endpoints import FBO_POSTINGS_PATH, FBS_POSTINGS_PATH
+from backend.ozon.endpoints import (
+    FBO_POSTINGS_PATH, FBS_POSTINGS_PATH, FBO_POSTING_GET_PATH, FBS_POSTING_GET_PATH,
+)
 
 
 def fbo(number="1", destination="Москва", status="delivered"):
@@ -33,7 +35,18 @@ def fixture(name):
 
 class Client:
     def __init__(self, responses): self.responses=iter(responses); self.calls=[]
-    def post_json(self,path,payload,**kwargs): self.calls.append((path,payload)); return next(self.responses)
+    def post_json(self,path,payload,**kwargs):
+        self.calls.append((path,payload))
+        if path in {FBO_POSTING_GET_PATH, FBS_POSTING_GET_PATH}:
+            sku = 123 if path == FBO_POSTING_GET_PATH else 456
+            return {"result": {"posting_number": payload["posting_number"],
+                               "financial_data": {"products": [
+                                   {"product_id": sku, "customer_price": 40}]}}}
+        return next(self.responses)
+
+    @property
+    def list_calls(self):
+        return [call for call in self.calls if call[0] in {FBO_POSTINGS_PATH, FBS_POSTINGS_PATH}]
 
 
 @pytest.mark.parametrize(("path", "factory"), [(FBO_POSTINGS_PATH, fbo), (FBS_POSTINGS_PATH, fbs)])
@@ -45,9 +58,9 @@ def test_real_cursor_contract_and_financial_data_request(path, factory):
     assert client.calls[0][1]["with"]=={"analytics_data":True,"financial_data":True}
     assert client.calls[0][1]["limit"] == 100
     assert client.calls[0][1]["limit"] <= 100
-    assert client.calls[1][1]["limit"] == 100
+    assert client.list_calls[1][1]["limit"] == 100
     assert "legal_info" not in client.calls[0][1]["with"]
-    assert client.calls[1][1]["cursor"]=="next"
+    assert client.list_calls[1][1]["cursor"]=="next"
 
 
 def test_endpoint_specific_wire_fields_and_pii_are_discarded():
@@ -78,7 +91,7 @@ def test_unknown_lifecycle_quarantines_affected_sku():
 def test_repeated_cursor_stops():
     client=Client([{"result":{"postings":[fbo()],"has_next":True,"cursor":"same"}}]*2)
     rows, diagnostics, quality=fetch_postings(client,FBO_POSTINGS_PATH,date(2026,7,1),date(2026,8,1))
-    assert len(rows)==2 and len(client.calls)==2 and diagnostics[-1].code=="NON_PROGRESSING_POSTINGS_CURSOR"
+    assert len(rows)==2 and len(client.list_calls)==2 and diagnostics[-1].code=="NON_PROGRESSING_POSTINGS_CURSOR"
 
 
 def test_business_calendar_normalizes_event_instants_across_sunday_boundary():

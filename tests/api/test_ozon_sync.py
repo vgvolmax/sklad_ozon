@@ -14,7 +14,7 @@ from backend.ozon.adapters.catalog import ClusterCatalogResult
 from backend.ozon.adapters.product_facts import ProductApiFacts
 from backend.ozon.adapters.products import ProductCatalogItem
 from backend.ozon.source_contracts import (
-    Cluster, EndpointEvidence, OzonRecordQualityEvidence, SellerWarehouse,
+    Cluster, EndpointEvidence, OzonRecordQualityEvidence, SellerWarehouse, ORDER_PRICES_VERSION,
 )
 from backend.ozon.sync import (capability_matrix, refresh_ozon_source,
                                source_refresh_regresses, sync_ozon_source)
@@ -499,7 +499,7 @@ def _smart_base(now):
              "products", "product_prices", "product_attributes", "fbo_stock",
              "seller_stock", "inbound", "placement_zones")
     evidence = tuple(EndpointEvidence(name, now.isoformat(), 1, True,
-                    order_prices_version=1 if name in {"orders_fbo", "orders_fbs"} else 0) for name in names)
+                    order_prices_version=ORDER_PRICES_VERSION if name in {"orders_fbo", "orders_fbs"} else 0) for name in names)
     return replace(
         snap("smart-base"), synced_at_utc=now.isoformat(), source_as_of=now.date(),
         history_from=date(2026, 6, 1), history_to=date(2026, 9, 21),
@@ -813,7 +813,7 @@ def test_legacy_order_prices_refresh_existing_history_once_per_channel(monkeypat
     monkeypatch.setattr(module, 'fetch_inbound', lambda *_: ((), ()))
     document = source_snapshot_to_document(_smart_base(now))
     for item in document['snapshot']['endpoint_evidence']:
-        item['order_prices_version'] = 0 if item['name'] == 'orders_fbo' else 1
+        item['order_prices_version'] = 1 if item['name'] == 'orders_fbo' else ORDER_PRICES_VERSION
     base = source_snapshot_from_document(document)
     starts = []
     def postings(_client, path, start, _end):
@@ -825,8 +825,25 @@ def test_legacy_order_prices_refresh_existing_history_once_per_channel(monkeypat
     candidate, _ = refresh_ozon_source(object(), base_snapshot=base, now=now)
     assert dict(starts) == {FBO_POSTINGS_PATH: base.history_from,
                            FBS_POSTINGS_PATH: date(2026,8,24)}
-    assert all(getattr(x,'order_prices_version',0) == 1 for x in candidate.endpoint_evidence
+    assert all(getattr(x,'order_prices_version',0) == ORDER_PRICES_VERSION for x in candidate.endpoint_evidence
                if x.name in {'orders_fbo','orders_fbs'})
     starts.clear()
     refresh_ozon_source(object(), base_snapshot=candidate, now=now)
     assert {start for _,start in starts} == {date(2026,8,25)}
+
+
+def test_history_backfill_shares_normalized_price_cache(monkeypatch):
+    import backend.ozon.sync as module
+    _patch_non_history(monkeypatch)
+    caches = []
+    def postings(_client, path, start, end, *, price_cache=None):
+        assert price_cache is not None
+        caches.append(price_cache)
+        price_cache.setdefault((path, 'same-posting'), ({'OLD': 40.0}, False))
+        weeks = 8 if len(caches) > 2 else 6
+        return (_orders(end, weeks) if path == FBO_POSTINGS_PATH else ()), ()
+    monkeypatch.setattr(module, 'fetch_postings', postings)
+    source = sync_ozon_source(object())
+    assert len(caches) == 4
+    assert all(cache is caches[0] for cache in caches)
+    assert len(source.orders) == 8

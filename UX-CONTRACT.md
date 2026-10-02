@@ -377,9 +377,10 @@ margin, ROI and modeled shortfall on the same observed route mix without
 mutating the analysis snapshot. Unknown real DRR shows `n/a` and its reason,
 but applies an explicit `В расчёте 0 %` assumption. A SKU
 without observed routes remains visible with an unknown shortfall and price.
-The observed route window contains completed ISO weeks and delivered postings;
-it excludes the current week and is not a confirmed buyout or Ozon payout
-ledger. The UI names the exact window and labels its shortfall as modeled,
+Economics uses delivered postings by acceptance date inside an inclusive selected
+interval from loaded observations, including the loaded current week. Plan/Flow
+retain their completed-week window. This is not a confirmed buyout or Ozon payout
+ledger. The UI names the calculation and observation bounds and labels its shortfall as modeled,
 not as actual financial loss for the current month. A tariff step, a new
 price's effect on demand are outside this scenario. Uploaded advertising spend
 is joined strictly by SKU; import results disclose matched article/name/SKU.
@@ -395,6 +396,16 @@ statement. Advertising amount/period details remain inspectable below DRR.
 Each product row ends with a compact, independently expandable daily panel for
 SPP, buyer price and orders. All three charts use the same calendar for the loaded
 order period, without inheriting the completed-week/delivered route filter.
+The selected interval also owns advertising DRR and Excel. Day/week controls
+change chart buckets only: ISO weeks run Monday–Sunday with clipped edges and
+unit-weighted price/SPP means. Table and viewport positions, editor focus and
+expanded SKU panels survive redraws. Full-width 3px separators distinguish SKUs.
+FBO customer prices omitted by list endpoints are recovered with optional posting
+detail requests in a separate background job. Demand/source synchronization remains
+usable immediately. Visible SKU prices get priority, charts poll while their prices
+are pending, and immutable price evidence is bound to the source/credential context.
+Account changes and newer refreshes discard obsolete results. Only validated price
+numbers, SKU, lifecycle and hashed references enter the account-scoped cache.
 Orders means ordered units of all lifecycle states and channels. Daily SPP is the
 quantity-weighted average of each order's `(seller-buyer)/seller`; buyer price is
 the quantity-weighted unit price. Price and SPP have independent valid-price

@@ -3,6 +3,11 @@
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backend.analytics.daily import DailyFulfillmentCell
+    from backend.economics.route_opportunity import RouteOpportunity
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,3 +28,13 @@ class DailyOrderEvidence:
     complete: bool
     incomplete_skus: tuple[str, ...]
     days: tuple[DailyOrderMetric, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EconomicsPeriodEvidence:
+    """Dated delivered routes and immutable current-rate valuations, server only."""
+    period_start: date
+    period_end: date
+    daily_routes: tuple['DailyFulfillmentCell', ...]
+    route_economics: tuple['RouteOpportunity', ...]
+    complete: bool = True

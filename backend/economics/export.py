@@ -73,9 +73,12 @@ def export_economics(report):
                      _number(product['roi']), _number(report['target_margin']),
                      _number(product['target_price_all_routes']),
                      _number(product.get('applied_drr_rate')),
-                     _number(product.get('commission_per_unit'))])
+                     _number(product.get('commission_per_unit')),
+                     (report.get('period') or {}).get('from'),
+                     (report.get('period') or {}).get('to'), product['qty']])
     return _workbook('Экономика', ['Артикул', 'Товар', 'Текущая цена, ₽',
         'ДРР по плану, %', 'Реальный ДРР, %', 'Маржа, %', 'ROI, %', 'Плановая маржа, %',
-        'Необходимая цена, ₽', 'ДРР в расчёте, %', 'Комиссия Ozon, ₽ / шт.'],
-        rows, [18, 58, 22, 20, 20, 16, 16, 22, 24, 20, 24],
+        'Необходимая цена, ₽', 'ДРР в расчёте, %', 'Комиссия Ozon, ₽ / шт.',
+        'Период с', 'Период по', 'Доставлено, шт.'],
+        rows, [18, 58, 22, 20, 20, 16, 16, 22, 24, 20, 24, 18, 18, 20],
         percentages=(4, 5, 6, 7, 8, 10), freeze='C2')

@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation, localcontext
 
 from backend.analytics._weeks import parse_source_date
 from backend.domain.economics_daily import DailyOrderEvidence, DailyOrderMetric
+from .period import resolve_period
 
 
 def _price(value):
@@ -53,17 +54,21 @@ def build_daily_evidence(orders, coverage, *, orders_complete=True,
                               tuple(sorted(incomplete)), tuple(rows))
 
 
-def daily_series(evidence, sku):
+def daily_series(evidence, sku, *, period_from=None, period_to=None, granularity='day'):
+    if not isinstance(granularity, str) or granularity not in {'day', 'week'}:
+        raise ValueError('Выберите представление по дням или неделям.')
+    period = resolve_period(evidence, period_from, period_to)
     if evidence is None:
         return {'period': None, 'days': [], 'spp_min': None, 'spp_max': None,
                 'buyer_price_min': None, 'buyer_price_max': None,
                 'ordered_qty': None, 'complete': False,
                 'reason': 'Пересчитайте план, чтобы получить историю заказов.'}
     complete = evidence.complete and sku not in evidence.incomplete_skus
-    observed = {row.day: row for row in evidence.days if row.sku == sku}
+    observed = {row.day: row for row in evidence.days if row.sku == sku
+                and period['from'] <= row.day <= period['to']}
     days = []
-    day = evidence.period_start
-    while day <= evidence.period_end:
+    day = period['from']
+    while day <= period['to']:
         row = observed.get(day)
         days.append({'day': day, 'orders': row.quantity if row else (0 if complete else None),
                      'spp': row.spp if row else None,
@@ -71,6 +76,26 @@ def daily_series(evidence, sku):
                      'spp_priced_qty': row.spp_priced_qty if row else 0,
                      'buyer_priced_qty': row.buyer_priced_qty if row else 0})
         day += timedelta(days=1)
+    if granularity == 'week':
+        groups = defaultdict(list)
+        for row in days:
+            groups[row['day'] - timedelta(days=row['day'].weekday())].append(row)
+        weeks = []
+        with localcontext() as context:
+            context.prec = 40
+            for rows in groups.values():
+                known = [r['orders'] for r in rows if r['orders'] is not None]
+                orders = sum(known) if known and (sum(known) > 0 or len(known) == len(rows)) else None
+                week = {'day': rows[0]['day'], 'to': rows[-1]['day'], 'orders': orders}
+                for field, coverage in (('spp', 'spp_priced_qty'),
+                                        ('buyer_price_mean', 'buyer_priced_qty')):
+                    priced = sum(r[coverage] for r in rows if r[field] is not None)
+                    week[coverage] = priced
+                    week[field] = (sum((r[field] * r[coverage] for r in rows
+                                       if r[field] is not None), Decimal(0)) / priced
+                                   if priced else None)
+                weeks.append(week)
+        days = weeks
     spp_values = [row['spp'] for row in days if row['spp'] is not None]
     buyer_values = [row['buyer_price_mean'] for row in days if row['buyer_price_mean'] is not None]
     reasons = []
@@ -78,7 +103,7 @@ def daily_series(evidence, sku):
         reasons.append('История заказов неполная: показаны известные заказы, пропуски не равны нулю.')
     if any(row.quantity > min(row.spp_priced_qty, row.buyer_priced_qty) for row in observed.values()):
         reasons.append('Для части заказов нет корректной пары цен. Средние показаны по известным ценам; подсказка содержит покрытие. Обновите данные Ozon, затем пересчитайте план.')
-    return {'period': {'from': evidence.period_start, 'to': evidence.period_end},
+    return {'period': period, 'granularity': granularity,
             'days': days, 'spp_min': min(spp_values) if spp_values else None,
             'spp_max': max(spp_values) if spp_values else None,
             'buyer_price_min': min(buyer_values) if buyer_values else None,

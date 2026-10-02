@@ -45,8 +45,8 @@ def test_stale_or_changed_snapshot_cannot_supply_series(client,monkeypatch):
     body={'analysis_snapshot_id':'old','skus':['SKU']}
     assert client.post('/api/economics/daily-series',json=body).status_code==409
     original=api.daily_series
-    def stale(*args):
-        result=original(*args);api.ANALYSIS_STORE.clear();return result
+    def stale(*args, **kwargs):
+        result=original(*args, **kwargs);api.ANALYSIS_STORE.clear();return result
     monkeypatch.setattr(api,'daily_series',stale)
     assert client.post('/api/economics/daily-series',json={**body,'analysis_snapshot_id':'snap'}).status_code==409
 
@@ -67,3 +67,44 @@ def test_real_file_analysis_uses_all_order_states_and_paid_total(client):
     assert day['orders']==3 and day['spp']=='0.6'
     assert float(day['buyer_price_mean'])==400
     assert day['spp_priced_qty']==day['buyer_priced_qty']==3
+
+
+def test_background_price_evidence_updates_series_without_changing_analysis(client, monkeypatch, tmp_path):
+    from threading import Event
+    from types import SimpleNamespace as NS
+    from backend.ozon.price_enrichment import OrderPriceEnrichment
+    from backend.ozon.adapters.orders import fetch_postings
+    from backend.ozon.endpoints import FBO_POSTINGS_PATH
+    from tests.ozon.adapters.test_orders import fbo
+    from tests.ozon.adapters.test_order_price_enrichment import Client, detail
+    entered, release = Event(), Event()
+    posting = fbo(); posting['products'][0]['sku'] = 'SKU'
+    posting['in_process_at'] = '2026-09-01T10:00:00Z'
+    requests = []
+    rows, _, _ = fetch_postings(Client([posting], {}), FBO_POSTINGS_PATH,
+        date(2026,9,1), date(2026,9,3), price_requests=requests)
+    snapshot = api.ANALYSIS_STORE.latest()
+    snapshot.source_snapshot_id = 'source'
+    snapshot.daily_order_evidence = api.build_daily_evidence(rows,
+        ObservationCoverage(date(2026,9,1), date(2026,9,3)))
+    original = snapshot.daily_order_evidence
+    service = OrderPriceEnrichment(tmp_path/'prices.json')
+    monkeypatch.setattr(api, 'ORDER_PRICE_ENRICHMENT', service)
+    class Slow(Client):
+        def post_json(self, path, payload, **kwargs):
+            entered.set(); assert release.wait(5)
+            return super().post_json(path, payload, **kwargs)
+    service.start(NS(source_snapshot_id='source', credential_context_id='account', orders=rows),
+        requests, Slow([], {'1': detail('1', [{'product_id':'SKU', 'customer_price':40}])}),
+        is_current=lambda: True)
+    assert entered.wait(2)
+    body = {'analysis_snapshot_id':'snap', 'skus':['SKU']}
+    pending = client.post('/api/economics/daily-series', json=body)
+    assert pending.status_code == 200
+    assert pending.json()['series']['SKU']['price_pending']
+    assert pending.json()['series']['SKU']['days'][0]['spp'] is None
+    release.set(); service.wait(5)
+    ready = client.post('/api/economics/daily-series', json=body).json()['series']['SKU']
+    assert not ready['price_pending']
+    assert ready['days'][0]['spp'] == '0.6' and ready['days'][0]['buyer_price_mean'] == '40'
+    assert snapshot.daily_order_evidence is original and original.days[0].spp is None

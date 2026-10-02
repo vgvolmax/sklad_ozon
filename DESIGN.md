@@ -277,8 +277,14 @@ values, with explicit labels and separators. The necessary price is directly
 below the seller price. Below-target status uses text instead of recoloring
 actual numbers. Advertising amounts/period are disclosed below the DRR bands. Unknown real DRR retains `n/a` but uses
 an explicitly labeled 0% assumption in this Economics scenario. Other missing
-financial inputs remain unknown. The shortfall is an estimate over delivered completed-week routes, not
-a current-month buyout or payout statement.
+financial inputs remain unknown. The shortfall is a current-rate estimate over delivered routes in the selected
+loaded interval, not a buyout or payout statement. Native inclusive date controls
+select one interval for Economics, advertising, history charts and XLSX. The
+observation bounds are explicit; current-week orders may enter Economics without
+altering completed-week Plan/Flow observations. Day/week chart controls keep
+expanded articles; weeks run Monday–Sunday with clipped edges and unit-weighted
+means. Article blocks have full-width 3px teal separators. Editor redraws preserve
+focus and both table-scroll axes as well as the current viewport anchor.
 
 Economics keeps target margin, ROI and planned DRR in the compact target
 band. Real DRR is read-only in each SKU row, with uploaded expense, all-order
@@ -304,7 +310,8 @@ known means visible with explicit covered-unit counts; buyer-price evidence can
 be known independently. The expanded plot supplies one date/SPP/buyer-price/orders
 popup across all three charts, with arrow/Home/End/Escape support and visible
 focus. Popups stay inside the visible table viewport. Order history is lazy
-loaded only for visible products and cached per immutable snapshot; changes to
+loaded only for visible products and cached per immutable snapshot, selected
+interval and day/week grouping; stale asynchronous responses are discarded; changes to
 ads/costs do not reload it. The panel retains the parent's selected surface,
 with quiet borders and no new chart library.
 

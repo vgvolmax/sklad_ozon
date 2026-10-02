@@ -9,6 +9,7 @@ from datetime import date
 from decimal import Decimal, localcontext
 
 from backend.project import EconomicsSettings
+from .period import resolve_period, route_quantities
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
@@ -110,7 +111,8 @@ def _aggregate(rows, margin_target, roi_target, goal):
 
 
 def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
-                              per_sku_drr=None, real_drr=None, per_sku_cost=None):
+                              per_sku_drr=None, real_drr=None, per_sku_cost=None,
+                              period_from=None, period_to=None):
     margin, roi, goal, planned_drr = validate_targets(margin, roi, goal, planned_drr)
     settings: EconomicsSettings | None = snapshot.economics_settings
     if settings is None:
@@ -127,9 +129,18 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
     for unit in snapshot.unit_economics:
         unit_by_sku.setdefault(unit.sku, unit)
     identity = {row.sku: (row.article, row.product_name) for row in snapshot.decision_rows}
+    evidence = getattr(snapshot, 'economics_period_evidence', None)
+    period = resolve_period(evidence, period_from, period_to)
+    selected = (route_quantities(evidence.daily_routes, period['from'], period['to'])
+                if evidence is not None else None)
+    valuations = evidence.route_economics if evidence is not None else snapshot.route_economics
     by_sku = defaultdict(list)
     covered_route_keys = set()
-    for route in snapshot.route_economics:
+    for route in valuations:
+        key = route.sku, route.origin_cluster_id, route.destination_cluster_id
+        quantity = selected.get(key, [0])[0] if selected is not None else route.observed_qty
+        if quantity <= 0:
+            continue
         covered_route_keys.add((route.sku, route.origin_cluster_id,
                                 route.destination_cluster_id))
         unit = unit_by_sku.get(route.sku)
@@ -165,12 +176,12 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
             target_price = None
         if complete:
             required_profit = (margin * price if goal == "margin" else roi * cost)
-            gap = max(ZERO, required_profit - profit) * route.observed_qty
+            gap = max(ZERO, required_profit - profit) * quantity
         else:
             gap = None
         by_sku[route.sku].append({
             "origin": route.origin_cluster_id, "destination": route.destination_cluster_id,
-            "qty": route.observed_qty, "price": price, "cost": cost,
+            "qty": quantity, "price": price, "cost": cost,
             "profit": profit if complete else None,
             "margin": profit / price if complete else None,
             "roi": profit / cost if complete and cost else None,
@@ -178,11 +189,15 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
             "reason_codes": route.reason_codes if not complete else (),
         })
     missing_routes = defaultdict(int)
-    for observed in snapshot.observed_routes.routes:
-        key = (observed.sku, observed.origin_cluster_id,
-               observed.destination_cluster_id)
-        if key not in covered_route_keys:
-            missing_routes[key] += observed.quantity
+    if selected is not None:
+        for key, (quantity, _) in selected.items():
+            if key not in covered_route_keys and quantity > 0:
+                missing_routes[key] += quantity
+    else:
+        for observed in snapshot.observed_routes.routes:
+            key = (observed.sku, observed.origin_cluster_id, observed.destination_cluster_id)
+            if key not in covered_route_keys:
+                missing_routes[key] += observed.quantity
     for (sku, origin, destination), quantity in sorted(missing_routes.items()):
         by_sku[sku].append({
             "origin": origin, "destination": destination, "qty": quantity,
@@ -218,9 +233,12 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
                          "planned_drr_rate": overrides.get(sku, planned_drr),
                          **summary, "groups": groups})
     weeks = snapshot.observed_routes.window.included_weeks
-    period = ({"from": date.fromisocalendar(*min(weeks), 1),
-               "to": date.fromisocalendar(*max(weeks), 7)} if weeks else None)
-    return {"period": period, "evidence": "fulfilled_completed_weeks",
+    if evidence is None:
+        period = ({"from": date.fromisocalendar(*min(weeks), 1),
+                   "to": date.fromisocalendar(*max(weeks), 7)} if weeks else None)
+    return {"period": period, "observation_period": resolve_period(evidence),
+            "history_complete": evidence.complete if evidence is not None else True,
+            "evidence": "fulfilled_selected_period" if evidence else "fulfilled_completed_weeks",
             "target_margin": margin, "target_roi": roi, "goal": goal,
             "planned_drr": planned_drr, "products": products,
             "modeled_shortfall": (sum((p["modeled_shortfall"] for p in products

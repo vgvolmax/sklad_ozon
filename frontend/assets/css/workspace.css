@@ -368,4 +368,15 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .econ-daily-buyer-line{stroke-dasharray:5 3}
 .econ-daily-buyer-dot{fill:white;stroke:#16836e;stroke-width:1.5;vector-effect:non-scaling-stroke}
 .econ-daily-coverage{margin-top:.3rem;border-top:1px solid #ffffff44;padding-top:.25rem;font-size:.65rem}
+.econ-page{overflow-anchor:none}
+.econ-table tr.econ-sku-row>td,.econ-table tr.econ-sku-row.is-open>td,.econ-table tr.econ-sku-row.is-open:hover>td{border-top:3px solid #329483;padding-top:1rem}
+.econ-table tr.econ-daily-row>td,.econ-table tr.econ-daily-row.is-open>td{border-bottom:3px solid #94c7b8;padding-bottom:1rem}
+.econ-period-controls{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem}
+.econ-period-controls form{display:flex;flex-wrap:wrap;align-items:end;gap:.75rem;flex:1 1 42rem}
+.econ-period-controls h3{margin:0;font-size:.9rem}
+.econ-period-controls p{margin:.3rem 0 0;font-size:.75rem;color:var(--workspace-muted)}
+.econ-period-controls>p{flex-basis:100%}
+.econ-period-controls label{display:grid;gap:.3rem;font-size:.75rem}
+.econ-period-controls input{min-width:9.2rem;max-width:100%}
+@media(max-width:600px){.econ-period-controls form>div{flex-basis:100%}.econ-period-controls label{flex:1 1 8rem;min-width:0}.econ-period-controls input{min-width:0;width:100%}}
 @media(forced-colors:active){.econ-daily-buyer-dot{fill:Canvas;stroke:CanvasText}}
