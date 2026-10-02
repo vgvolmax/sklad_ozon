@@ -174,14 +174,17 @@ def main():
                                         {'name':'extra.xlsx','mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':extra}])
                 page.locator('#econ-ads-upload').click()
                 expect(page.locator('.econ-real-drr')).to_have_text('Реальный 22,5 %')
-                # Actual numeric rate in downloaded report, unaffected by filters.
+                # Empty selection is not exported; the selected row retains its numeric rate.
                 page.locator('#econ-search').fill('нет такого товара')
+                expect(page.locator('.econ-sku-row')).to_have_count(0)
+                expect(page.locator('#econ-export')).to_be_disabled()
+                page.locator('#econ-search-clear').click()
+                expect(page.locator('.econ-sku-row')).to_have_count(1)
                 with page.expect_download() as download:
                     page.locator('#econ-export').click()
                 book = load_workbook(BytesIO(Path(download.value.path()).read_bytes()))
                 sheet = book.active
                 assert sheet.max_row == 2 and sheet.cell(2,5).value == .225
-                page.locator('#econ-search-clear').click()
                 # Shared confirmation cancel/Escape is harmless; confirm recalculates.
                 page.locator('.econ-advertising-campaigns summary').click()
                 page.locator('[data-econ-ads-delete="222"]').click()

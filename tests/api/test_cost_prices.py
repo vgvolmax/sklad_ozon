@@ -89,7 +89,7 @@ def test_economics_excel_has_one_product_row_and_numeric_rates(tmp_path, monkeyp
     assert sheet.max_row == 2
     assert [c.value for c in sheet[1]] == ['Артикул', 'Товар', 'Текущая цена, ₽',
         'ДРР по плану, %', 'Реальный ДРР, %', 'Маржа, %', 'ROI, %', 'Плановая маржа, %', 'Необходимая цена, ₽',
-        'ДРР в расчёте, %', 'Комиссия Ozon, ₽ / шт.', 'Период с', 'Период по', 'Доставлено, шт.']
+        'ДРР в расчёте, %', 'Комиссия Ozon, ₽ / шт.', 'Период с', 'Период по', 'Доставлено, шт.', 'SKU']
     assert sheet.cell(2, 1).value == '26572'
     assert sheet.cell(2, 3).value == 100
     assert sheet.cell(2, 4).value == .05
@@ -97,7 +97,7 @@ def test_economics_excel_has_one_product_row_and_numeric_rates(tmp_path, monkeyp
     assert sheet.cell(2, 5).value is None and sheet.cell(2, 6).value is not None
     assert sheet.cell(2, 10).value == 0 and sheet.cell(2, 11).value == 25
     assert sheet.cell(2, 4).number_format == '0.0%'
-    assert sheet.freeze_panes == 'C2' and sheet.auto_filter.ref == 'A1:N2'
+    assert sheet.freeze_panes == 'C2' and sheet.auto_filter.ref == 'A1:O2'
     api.ANALYSIS_STORE.clear()
     assert client.post('/api/economics/export', json=BODY).status_code == 409
 
@@ -118,7 +118,7 @@ def test_old_imported_cost_cannot_replace_conflicting_current_sku_costs(tmp_path
     assert response.json()['workspace']['products'][0]['cost'] == '40'
 
 
-def test_duplicate_article_is_a_blocking_excel_conflict(tmp_path, monkeypatch):
+def test_duplicate_article_exports_separate_sku_rows(tmp_path, monkeypatch):
     from copy import deepcopy
     monkeypatch.setattr(api, 'PROJECT_PATH', tmp_path / 'project.json')
     snapshot = sample_snapshot()
@@ -133,8 +133,10 @@ def test_duplicate_article_is_a_blocking_excel_conflict(tmp_path, monkeypatch):
     monkeypatch.setattr(api, 'ANALYSIS_STORE', store)
     store.put(snapshot)
     result = client.post('/api/economics/export', json=BODY)
-    assert result.status_code == 400
-    assert result.json()['error']['code'] == 'ECONOMICS_EXPORT_IDENTITY_CONFLICT'
+    assert result.status_code == 200, result.text
+    sheet = load_workbook(BytesIO(result.content)).active
+    assert sheet.max_row == 3
+    assert {sheet.cell(r, 15).value for r in (2, 3)} == {'SKU', 'OTHER'}
 
 
 def test_save_failure_keeps_existing_file_and_returns_retryable_error(tmp_path, monkeypatch):

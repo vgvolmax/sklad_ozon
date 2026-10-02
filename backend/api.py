@@ -19,6 +19,8 @@ from backend.application import analyze
 from backend.economics import LogisticsContext
 from backend.economics.workspace import build_economics_workspace
 from backend.economics.export import export_cost_prices, export_economics
+from backend.economics.selection import select_products
+from backend.economics.summary import summarize_products
 from backend.cost_prices import (apply_costs, cost_fingerprint, cost_items,
                                 import_costs, set_cost)
 from backend.advertising_store import (AdvertisingData, apply_report, advertising_fingerprint,
@@ -442,6 +444,14 @@ async def _economics_report(request):
             record = saved.get(product['sku'])
             product['cost_source'] = record.source if record else 'snapshot'
             product['advertising'] = actual.get(product['sku'])
+        report['catalog_product_count'] = len(report['products'])
+        report['products'] = select_products(report['products'], search=body.get('search', ''),
+                                             filter=body.get('filter', 'all'))
+        report['totals'] = summarize_products(report['products'], history_complete=report['history_complete'])
+        report['modeled_shortfall'] = (sum((p['modeled_shortfall'] for p in report['products']
+            if p['modeled_shortfall'] is not None), Decimal('0'))
+            if any(p['covered_qty'] for p in report['products']) else None)
+        report['incomplete_sku_count'] = sum(p['partial'] or p['no_observations'] for p in report['products'])
         report['cost_prices_fingerprint'] = cost_fingerprint(project)
         report['advertising_fingerprint'] = advertising_fingerprint(advertising)
         report['advertising_campaigns'] = campaign_items(advertising)
@@ -597,10 +607,13 @@ async def economics_report_export(request: Request):
     result = await _economics_report(request)
     if isinstance(result, Response): return result
     snapshot, report = result
+    if not report['products']:
+        return error(400, 'ECONOMICS_EXPORT_EMPTY',
+                     'По выбранным условиям нет товаров для выгрузки.', None)
     try:
         data = export_economics(report)
     except ValueError as exc:
-        return error(400, 'ECONOMICS_EXPORT_IDENTITY_CONFLICT', str(exc), 'article')
+        return error(400, 'ECONOMICS_EXPORT_IDENTITY_CONFLICT', str(exc), 'sku')
     if not _economics_report_is_current(snapshot, report):
         return error(409, 'ECONOMICS_INPUT_CHANGED',
                      'Данные изменились во время выгрузки. Скачайте отчёт повторно.', None)

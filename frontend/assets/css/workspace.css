@@ -75,6 +75,15 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .econ-summary strong{display:block;margin:.25rem 0;color:#1c343a;font-size:1.15rem;font-variant-numeric:tabular-nums}
 .econ-summary .econ-plan-key strong{color:var(--econ-plan)}
 .econ-main{padding:0;min-width:0}
+.econ-period-profit{display:grid;grid-template-columns:1fr 1.4fr;gap:.6rem 1.5rem}
+.econ-period-profit h3{font-size:.9rem;margin:0}
+.econ-period-profit p,.econ-period-profit small{font-size:.72rem;color:var(--color-text-muted)}
+.econ-period-profit>p{grid-column:1/-1;margin:0}
+.econ-period-profit dl{margin:0;font-size:.77rem}
+.econ-period-profit dl>div{display:flex;justify-content:space-between;gap:1rem;padding:.35rem 0;border-bottom:1px solid var(--color-border)}
+.econ-period-profit dd{margin:0;color:var(--econ-fact);font-weight:700;font-variant-numeric:tabular-nums}
+.econ-price-lower{color:var(--color-success)}
+@media(max-width:43rem){.econ-period-profit{grid-template-columns:1fr}.econ-period-profit dl>div{flex-wrap:wrap}}
 .econ-main-head{display:flex;justify-content:space-between;align-items:center;gap:1rem;padding:1rem 1.2rem .7rem}
 .econ-main-head h2{font-size:1rem;letter-spacing:-.025em}
 .econ-main-head p{color:#697b80;font-size:.74rem;margin:.25rem 0 0}
@@ -110,6 +119,18 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .econ-drill-head strong{font-size:.78rem}
 .econ-drill-head p{font-size:.68rem;color:#697b80;margin:.2rem 0 0}
 .econ-clusters{display:grid;gap:.4rem}
+.econ-focused .econ-table-scroll{max-height:none}
+.econ-focused .econ-clusters{max-height:min(24rem,44vh);overflow-y:auto;overscroll-behavior-y:contain;scrollbar-gutter:stable;padding-right:.4rem}
+.econ-focus-bar{position:sticky;top:var(--econ-header-height,6rem);z-index:4;display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.65rem 1.2rem;background:var(--color-surface-muted);border-block:1px solid var(--color-border);font-size:.74rem;scroll-margin-top:calc(var(--econ-header-height,6rem) + 8px)}
+.econ-focus-bar button{flex-shrink:0}
+.econ-sku-meta{display:flex;align-items:center;gap:.35rem;margin-top:.25rem}
+.econ-sku-meta>small{margin:0!important;overflow-wrap:anywhere}
+.econ-copy{display:inline-flex;align-items:center;justify-content:center;min-height:1.75rem;min-width:1.75rem;padding:.25rem;background:transparent;border:1px solid transparent;color:var(--color-text-muted)}
+.econ-copy:hover{border-color:var(--color-border);color:var(--color-model);background:var(--color-surface)}
+.econ-copy:active{background:var(--color-surface-muted)}
+.econ-copy-status{position:fixed;z-index:30;max-width:min(18rem,calc(100vw - 16px));padding:.35rem .6rem;border:1px solid var(--color-success);border-radius:var(--radius-sm);background:var(--color-surface);color:var(--color-success);font-size:.72rem;box-shadow:0 2px 8px #203d462b;pointer-events:none}
+.econ-copy-status.is-error{color:var(--color-danger);border-color:var(--color-danger)}
+@media(max-width:43rem){.econ-focus-bar{padding:.5rem;align-items:start}.econ-focus-bar>span{max-width:12rem}}
 .econ-cluster{background:white;border:1px solid #d2e1df;border-radius:.45rem;overflow:hidden}
 .econ-cluster.is-below{border-color:#e7c394;background:#fffcf6}
 .econ-cluster.is-open{background:#f7fcfa;border-color:#92c5b4;box-shadow:inset 3px 0 #3b947f}

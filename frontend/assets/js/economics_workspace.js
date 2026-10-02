@@ -10,7 +10,7 @@ try{
 }catch(_){/* Invalid local preferences cannot prevent opening the screen. */}
 let state={search:'',filter:'all',mode:'products',limit:12,openSku:null,openGroup:null,groupMode:{},report:null,key:null,busy:false,error:'',runId:0};
 let currentRoot=null,currentSnapshot=null,currentFetch=null;
-let drawing=false;
+let drawing=false,searchTimer=null,copyTimer=null,copyGeneration=0,copyPopup=null;
 let periodFrom=null,periodTo=null,periodDraft=null,granularity='day';
 let onCostsChanged=null,costGeneration=0;
 const costDrafts={},costErrors={},costSaving={};
@@ -35,11 +35,12 @@ function validated(){
     if(!Number.isFinite(v)||v<0||v>90)throw Error(`Проверьте плановый ДРР для SKU ${sku}.`);
     overrides[sku]=String(v/100);
   }
-  return {target_margin:result.targetMargin,target_roi:result.targetRoi,planned_drr:result.plannedDrr,goal:preferences.goal,per_sku_drr:overrides,...(periodFrom?{period_from:periodFrom,period_to:periodTo}:{})};
+  return {target_margin:result.targetMargin,target_roi:result.targetRoi,planned_drr:result.plannedDrr,goal:preferences.goal,per_sku_drr:overrides,search:state.search,filter:state.filter,...(periodFrom?{period_from:periodFrom,period_to:periodTo}:{})};
 }
 function persist(){try{root.localStorage?.setItem(KEY,JSON.stringify(preferences));}catch(_){/* Work remains usable without local preference storage. */}}
-function requestKey(snapshot){return JSON.stringify([snapshot.snapshot_id,preferences,periodFrom,periodTo]);}
+function requestKey(snapshot){return JSON.stringify([snapshot.snapshot_id,preferences,periodFrom,periodTo,state.search,state.filter]);}
 async function load(){
+  root.clearTimeout(searchTimer);searchTimer=null;
   const snap=currentSnapshot,run=++state.runId;
   state={...state,key:requestKey(snap),busy:true,error:''};draw();
   let body;
@@ -50,7 +51,8 @@ async function load(){
     if(run!==state.runId||currentSnapshot?.snapshot_id!==snap.snapshot_id)return;
     if(!response.ok)throw Error(payload.error?.message||'Экономика недоступна.');
     if(payload.snapshot_id!==snap.snapshot_id)throw Error('Снимок изменился. Обновите расчёт.');
-    state={...state,report:payload.workspace,busy:false,error:''};draw();
+    state={...state,report:payload.workspace,busy:false,error:''};
+    if(state.openSku&&!state.report.products.some(p=>p.sku===state.openSku))closeArticle();else draw();
   }catch(error){if(run!==state.runId)return;state={...state,busy:false,error:error.message||'Экономика недоступна.'};draw();}
 }
 function costCell(p,index){
@@ -80,39 +82,38 @@ async function saveCost(input){
 async function downloadReport(){
   if(state.busy||advertisingBusy||state.exporting||Object.keys(costDrafts).length||Object.values(costSaving).some(Boolean))return;
   const snap=currentSnapshot,key=state.key;
-  state.exporting=true;state.error='';draw();
+  state.exporting=true;state.exportError='';draw();
   try{
     const response=await currentFetch('/api/economics/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({analysis_snapshot_id:snap.snapshot_id,...validated()})});
     if(!response.ok){const data=await response.json();throw Error(data.error?.message||'Отчёт не удалось скачать.');}
     const blob=await response.blob();
-    if(currentSnapshot?.snapshot_id!==snap.snapshot_id||state.key!==key)throw Error('Параметры изменились. Скачайте отчёт повторно.');
+    if(currentSnapshot?.snapshot_id!==snap.snapshot_id||requestKey(currentSnapshot)!==key)throw Error('Параметры изменились. Скачайте отчёт повторно.');
     const url=root.URL.createObjectURL(blob),a=root.document.createElement('a');
-    a.href=url;a.download='Экономика.xlsx';root.document.body.append(a);a.click();a.remove();root.URL.revokeObjectURL(url);
-  }catch(error){state.error=error.message||'Отчёт не удалось скачать.';}
+    a.href=url;a.download='Экономика.xlsx';root.document.body.append(a);a.click();
+    root.setTimeout(()=>{a.remove();root.URL.revokeObjectURL(url);},1000);
+  }catch(error){state.exportError=error.message||'Отчёт не удалось скачать.';}
   finally{state.exporting=false;draw();}
 }
-function productsForView(report){
-  const query=state.search.trim().toLocaleLowerCase('ru');
-  return (report.products||[]).filter(p=>{
-    if(query&&![p.article,p.sku,p.name,...p.groups.destination.map(g=>g.key),...p.groups.origin.map(g=>g.key)].some(v=>String(v||'').toLocaleLowerCase('ru').includes(query)))return false;
-    if(state.filter==='below'&&!p.below_goal)return false;
-    if(state.filter==='margin'&&!p.below_margin)return false;
-    if(state.filter==='roi'&&!p.below_roi)return false;
-    if(state.filter==='cluster'&&![...p.groups.destination,...p.groups.origin].some(g=>g.below_margin||g.below_roi))return false;
-    if(state.filter==='incomplete'&&!p.partial&&!p.no_observations)return false;
-    return true;
-  }).sort((a,b)=>Number(b.modeled_shortfall)-Number(a.modeled_shortfall)||String(a.article).localeCompare(String(b.article),'ru'));
-}
+function productsForView(report){return report.products||[];}
 function routeTable(routes){return `<div class="econ-route-scroll"><table class="econ-route-table"><thead><tr><th>Источник отгрузки</th><th>Кластер спроса</th><th>Доставлено</th><th>Логистика / шт.</th><th>Маржа</th><th>ROI</th><th>Недобор</th></tr></thead><tbody>${routes.map(r=>`<tr><td>${e(r.origin)}</td><td>${e(r.destination)}</td><td>${qty(r.qty)}</td><td>${money(r.logistics)}</td><td class="${n(r.margin)!=null&&n(r.margin)<n(state.report.target_margin)?'econ-below':''}">${pct(r.margin)}</td><td class="${n(r.roi)!=null&&n(r.roi)<n(state.report.target_roi)?'econ-below':''}">${pct(r.roi)}</td><td>${money(r.gap)}</td></tr>`).join('')}</tbody></table></div>`;}
 function clusterMarkup(p,index){
   const mode=state.groupMode[p.sku]||'destination',groups=p.groups[mode];
-  return `<div class="econ-drill"><div class="econ-drill-head"><div><strong>Разбор кластеров · ${e(p.article||p.sku)}</strong><p>Два разреза одних доставленных заказов. Их суммы не складываются.</p></div><div class="econ-segmented" role="group" aria-label="Роль кластера"><button type="button" data-econ-group-mode="destination" data-sku="${e(p.sku)}" aria-pressed="${mode==='destination'}">Где заказали</button><button type="button" data-econ-group-mode="origin" data-sku="${e(p.sku)}" aria-pressed="${mode==='origin'}">Откуда отгрузили</button></div></div><div class="econ-clusters">${groups.map((g,i)=>{
+  return `<div class="econ-drill"><div class="econ-drill-head"><div><strong>Разбор кластеров · ${e(p.article||p.sku)}</strong><p>Два разреза одних доставленных заказов. Их суммы не складываются.</p></div><div class="econ-segmented" role="group" aria-label="Роль кластера"><button type="button" data-econ-group-mode="destination" data-sku="${e(p.sku)}" aria-pressed="${mode==='destination'}">Где заказали</button><button type="button" data-econ-group-mode="origin" data-sku="${e(p.sku)}" aria-pressed="${mode==='origin'}">Откуда отгрузили</button></div></div><div class="econ-clusters" tabindex="0" role="region" aria-label="Кластеры артикула ${e(p.article||p.sku)}">${groups.map((g,i)=>{
     const key=p.sku+'|'+mode+'|'+g.key,open=state.openGroup===key;
     return `<article class="econ-cluster ${g.below_margin||g.below_roi?'is-below':''} ${open?'is-open':''}"><button type="button" class="econ-cluster-head" data-econ-group="${e(key)}" aria-expanded="${open}" aria-controls="econ-group-${index}-${i}"><span><strong>${open?'▾':'▸'} ${mode==='destination'?'Кластер спроса':'Источник отгрузки'}: ${e(g.key)}</strong><small>${g.partial?'Расчёт неполный':g.below_margin||g.below_roi?'Ниже одной из целей':'В пределах целей'}</small></span><span>${qty(g.qty)}${g.partial?`<small>рассчитано ${g.covered_qty}</small>`:''}</span><span>${money(g.profit_per_unit)}<small>прибыль / шт.</small></span><span class="${g.below_margin?'econ-below':''}">${pct(g.margin)}<small>маржа</small></span><span class="${g.below_roi?'econ-below':''}">${pct(g.roi)}<small>ROI</small></span><span class="${n(g.modeled_shortfall)>0?'econ-below':''}">${money(g.modeled_shortfall)}<small>недобор</small></span></button>${open?`<div id="econ-group-${index}-${i}" class="econ-cluster-routes">${routeTable(g.routes)}${g.partial?`<p>${g.qty-g.covered_qty} шт. без расчёта исключены из средних и недобора.</p>`:''}</div>`:''}</article>`;
   }).join('')}</div></div>`;
 }
 function fact(value){return `<div class="econ-fact"><small class="econ-band-label">Факт</small>${value}</div>`;}
 function plan(value,label='План'){return `<div class="econ-plan"><small class="econ-band-label">${label}</small>${value}</div>`;}
+function priceMarkup(p){
+  const action=p.price_action,delta=money(Math.abs(n(p.price_delta)||0)),rate=pct(Math.abs(n(p.price_delta_rate)||0));
+  const direction=action==='lower'?`↓ Можно снизить на ${delta} · ${rate}`:action==='raise'?`↑ Повысить на ${delta} · ${rate}`:action==='keep'?'Цена соответствует цели':'';
+  return plan(`<strong class="${action==='lower'?'econ-price-lower':''}">${money(p.target_price_all_routes)}</strong>${direction?`<small>${direction}</small>`:''}<small>для всех известных маршрутов</small>`,'План · цена до цели');
+}
+function profitMarkup(report){
+  const totals=report.totals;if(!totals)return '';
+  return `<section class="panel econ-period-profit" data-econ-profit aria-labelledby="econ-profit-title"><div><h3 id="econ-profit-title">Прибыль по доставленным заказам</h3><p>${periodText(report.period)} · выбранные товары: ${totals.selected_sku_count}</p><small>Модель по текущим ценам и ставкам, по дате принятия заказа</small></div><dl><div><dt>До рекламы</dt><dd data-econ-profit-before>${money(totals.profit_before_ads)}</dd></div><div><dt>Загруженные рекламные расходы</dt><dd data-econ-profit-spend>${totals.advertising_spend==null?'Нет отчётов за этот период':money(totals.advertising_spend)}</dd></div><div><dt>После загруженной рекламы</dt><dd data-econ-profit-after>${money(totals.profit_after_uploaded_ads)}</dd></div></dl><p>Рекламные расходы известны для ${totals.advertising_sku_count} из ${totals.selected_sku_count} выбранных SKU.${totals.profit_partial?` Прибыль неполная: рассчитано ${qty(totals.covered_qty)} из ${qty(totals.qty)}${report.history_complete===false?'; история неполная':''}.`:''}</p></section>`;
+}
 function realDrrMarkup(p){
   const known=n(p.real_drr_rate)!=null;
   return `<strong class="econ-real-drr">Реальный ${known?pct(p.real_drr_rate):'n/a'}</strong>${known?'':'<small class="econ-drr-assumption">В расчёте 0 %</small>'}`;
@@ -178,16 +179,47 @@ function bindAdvertising(c){
 function productRows(products,report=state.report){return products.map((p,index)=>{
   const open=state.openSku===p.sku;
   const drrPlan=`<label class="econ-drr-cell">План <input type="number" min="0" max="90" step="0.5" inputmode="decimal" data-econ-drr="${e(p.sku)}" value="${e(preferences.overrides[p.sku]??preferences.plannedDrr)}" aria-label="Плановый ДРР для артикула ${e(p.article||p.sku)}" aria-describedby="econ-drr-error-${index}" ${editingBusy()?'disabled':''}> %</label><small id="econ-drr-error-${index}" class="field-error econ-drr-error" hidden></small>`;
-  return `<tr data-econ-row="${e(p.sku)}" class="econ-sku-row ${open?'is-open':''} ${p.below_margin||p.below_roi?'is-below':''}"><td><button type="button" class="econ-sku-button" data-econ-sku="${e(p.sku)}" aria-expanded="${open}" aria-controls="econ-detail-${index}"><strong>${open?'▾':'▸'} ${e(p.article||'Нет артикула')} · ${e(p.name||'Без названия')}</strong><small>SKU ${e(p.sku)}</small></button>${p.no_observations?'<span class="econ-pill">Нет доставленных заказов</span>':p.partial?'<span class="econ-pill">Неполный расчёт</span>':''}${p.below_goal?'<span class="econ-pill">Ниже цели</span>':''}</td><td>${fact(qty(p.qty)+(p.partial?`<small>рассчитано ${p.covered_qty}</small>`:''))}</td><td>${fact(money(p.price))}${plan(money(p.target_price_all_routes)+'<small>для всех известных маршрутов</small>','План · цена до цели')}</td><td>${fact(costCell(p,index))}</td><td>${fact(pct(p.commission_rate)+`<small>${money(p.commission_per_unit)} / шт.</small>`)}</td><td>${fact(realDrrMarkup(p))}<div class="econ-plan">${drrPlan}</div>${realDrrDetails(p)}</td><td>${fact(money(p.profit_per_unit)+'<small>за шт.</small>')}</td><td>${fact(pct(p.margin))}${plan(pct(report?.target_margin),'План · цель')}</td><td>${fact(pct(p.roi))}${plan(pct(report?.target_roi),'План · цель')}</td><td>${plan(money(p.modeled_shortfall)+(p.partial?'<small>только известное</small>':''),'До плана')}</td></tr>${open?`<tr class="econ-sku-detail" id="econ-detail-${index}"><td colspan="10">${clusterMarkup(p,index)}</td></tr>`:''}${S.EconomicsDaily?`<tr class="econ-daily-row ${open?'is-open':''}"><td colspan="10">${S.EconomicsDaily.markup(p.sku)}</td></tr>`:''}`;
+  return `<tr data-econ-row="${e(p.sku)}" class="econ-sku-row ${open?'is-open':''} ${p.below_margin||p.below_roi?'is-below':''}"><td><button type="button" class="econ-sku-button" data-econ-sku="${e(p.sku)}" aria-expanded="${open}" aria-controls="econ-detail-${index}"><strong>${open?'▾':'▸'} ${e(p.article||'Нет артикула')} · ${e(p.name||'Без названия')}</strong></button><div class="econ-sku-meta"><small>SKU <span>${e(p.sku)}</span></small><button type="button" class="econ-copy" data-econ-copy="${e(p.sku)}" aria-label="Копировать SKU ${e(p.sku)}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1"/><path d="M3 10H2V2h8v1"/></svg></button></div>${p.no_observations?'<span class="econ-pill">Нет доставленных заказов</span>':p.partial?'<span class="econ-pill">Неполный расчёт</span>':''}${p.below_goal?'<span class="econ-pill">Ниже цели</span>':''}</td><td>${fact(qty(p.qty)+(p.partial?`<small>рассчитано ${p.covered_qty}</small>`:''))}</td><td>${fact(money(p.price))}${priceMarkup(p)}</td><td>${fact(costCell(p,index))}</td><td>${fact(pct(p.commission_rate)+`<small>${money(p.commission_per_unit)} / шт.</small>`)}</td><td>${fact(realDrrMarkup(p))}<div class="econ-plan">${drrPlan}</div>${realDrrDetails(p)}</td><td>${fact(money(p.profit_per_unit)+'<small>за шт.</small>')}</td><td>${fact(pct(p.margin))}${plan(pct(report?.target_margin),'План · цель')}</td><td>${fact(pct(p.roi))}${plan(pct(report?.target_roi),'План · цель')}</td><td>${plan(money(p.modeled_shortfall)+(p.partial?'<small>только известное</small>':''),'До плана')}</td></tr>${open?`<tr class="econ-sku-detail" id="econ-detail-${index}"><td colspan="10">${clusterMarkup(p,index)}</td></tr>`:''}${S.EconomicsDaily?`<tr class="econ-daily-row ${open?'is-open':''}"><td colspan="10">${S.EconomicsDaily.markup(p.sku)}</td></tr>`:''}`;
 }).join('');}
 
-function renderProducts(report){const filtered=productsForView(report),shown=filtered.slice(0,state.limit);return `<section class="panel econ-main"><div class="econ-main-head"><div><h2>Товары и кластеры</h2><p>Средние по рассчитанным маршрутам взвешены по доставленным штукам.</p></div><div class="econ-segmented" role="group" aria-label="Представление экономики"><button type="button" data-econ-mode="products" aria-pressed="${state.mode==='products'}">По товарам</button><button type="button" data-econ-mode="routes" aria-pressed="${state.mode==='routes'}">Маршруты</button></div></div><div class="econ-tools"><label class="econ-search">Поиск <span class="search-input"><input type="search" id="econ-search" value="${e(state.search)}" placeholder="Артикул, SKU или кластер">${state.search?'<button type="button" id="econ-search-clear" aria-label="Очистить поиск">Очистить</button>':''}</span></label><div class="econ-filters" role="group" aria-label="Фильтр экономики">${[['all','Все'],['below','Ниже цели'],['margin','Маржа ниже'],['roi','ROI ниже'],['cluster','Проблемный кластер'],['incomplete','Неполные']].map(([key,label])=>`<button type="button" data-econ-filter="${key}" aria-pressed="${state.filter===key}">${label}</button>`).join('')}</div></div><p class="econ-value-legend"><span class="econ-fact-key">Факт · по данным снимка · сверху</span><span class="econ-plan-key">План и цель · снизу</span></p><p class="econ-counter">Показано ${shown.length} из ${filtered.length} товаров · ${report.products.length} всего</p><div class="econ-table-scroll"><table class="econ-table"><thead><tr><th>Артикул / товар</th><th>Доставлено</th><th>Цена продавца</th><th>Себестоимость</th><th>Комиссия Ozon</th><th>ДРР</th><th>Прибыль / шт.</th><th>Маржа</th><th>ROI</th><th>Недобор до плана</th></tr></thead><tbody>${shown.length?productRows(shown):'<tr><td colspan="10" class="econ-empty">Товаров по выбранным условиям нет.</td></tr>'}</tbody></table></div>${filtered.length>shown.length?`<div class="econ-more"><button type="button" data-econ-more>Показать ещё · осталось ${filtered.length-shown.length}</button></div>`:''}</section>`;}
+function renderProducts(report){const filtered=productsForView(report),shown=state.openSku?filtered.filter(p=>p.sku===state.openSku):filtered.slice(0,state.limit);return `<section class="panel econ-main ${state.openSku?'econ-focused':''}"><div class="econ-main-head"><div><h2>Товары и кластеры</h2><p>Средние по рассчитанным маршрутам взвешены по доставленным штукам.</p></div><div class="econ-segmented" role="group" aria-label="Представление экономики"><button type="button" data-econ-mode="products" aria-pressed="${state.mode==='products'}">По товарам</button><button type="button" data-econ-mode="routes" aria-pressed="${state.mode==='routes'}">Маршруты</button></div></div><div class="econ-tools"><label class="econ-search">Поиск <span class="search-input"><input type="search" maxlength="200" id="econ-search" value="${e(state.search)}" placeholder="Артикул, SKU или кластер">${state.search?'<button type="button" id="econ-search-clear" aria-label="Очистить поиск">Очистить</button>':''}</span></label><div class="econ-filters" role="group" aria-label="Фильтр экономики">${[['all','Все'],['below','Ниже цели'],['margin','Маржа ниже'],['roi','ROI ниже'],['cluster','Проблемный кластер'],['incomplete','Неполные'],['lower','Можно снизить цену']].map(([key,label])=>`<button type="button" data-econ-filter="${key}" aria-pressed="${state.filter===key}">${label}</button>`).join('')}</div></div><p class="econ-value-legend"><span class="econ-fact-key">Факт · по данным снимка · сверху</span><span class="econ-plan-key">План и цель · снизу</span></p><p class="econ-counter">Показано ${shown.length} из ${filtered.length} товаров · ${report.catalog_product_count??report.products.length} всего</p>${state.openSku?`<div class="econ-focus-bar"><span>Разбор одного артикула · прокручиваются только кластеры</span><button type="button" data-econ-close>Свернуть кластеры</button></div>`:''}<div class="econ-table-scroll"><table class="econ-table"><thead><tr><th>Артикул / товар</th><th>Доставлено</th><th>Цена продавца</th><th>Себестоимость</th><th>Комиссия Ozon</th><th>ДРР</th><th>Прибыль / шт.</th><th>Маржа</th><th>ROI</th><th>Недобор до плана</th></tr></thead><tbody>${shown.length?productRows(shown):'<tr><td colspan="10" class="econ-empty">Товаров по выбранным условиям нет.</td></tr>'}</tbody></table></div>${!state.openSku&&filtered.length>shown.length?`<div class="econ-more"><button type="button" data-econ-more>Показать ещё · осталось ${filtered.length-shown.length}</button></div>`:''}</section>`;}
 function renderRoutes(report){
   const rows=productsForView(report).flatMap(p=>p.groups.destination.flatMap(g=>g.routes.map(r=>({p,r}))));
   const shown=rows.slice(0,state.limit);
   return `<section class="panel econ-main"><div class="econ-main-head"><div><h2>Точные маршруты</h2><p>Источник исполнения и кластер спроса указаны отдельно.</p></div><div class="econ-segmented" role="group" aria-label="Представление экономики"><button type="button" data-econ-mode="products" aria-pressed="false">По товарам</button><button type="button" data-econ-mode="routes" aria-pressed="true">Маршруты</button></div></div><p class="econ-counter">Показано ${shown.length} из ${rows.length} маршрутов</p><div class="econ-table-scroll"><table class="econ-route-table econ-route-list"><thead><tr><th>Артикул / товар</th><th>Источник отгрузки</th><th>Кластер спроса</th><th>Доставлено</th><th>Логистика / шт.</th><th>Маржа</th><th>ROI</th><th>Недобор</th></tr></thead><tbody>${shown.length?shown.map(({p,r})=>`<tr><td><strong>${e(p.article||'Нет артикула')}</strong> · ${e(p.name||'Без названия')}<small>SKU ${e(p.sku)}</small></td><td>${e(r.origin)}</td><td>${e(r.destination)}</td><td>${qty(r.qty)}</td><td>${money(r.logistics)}</td><td class="${n(r.margin)!=null&&n(r.margin)<n(report.target_margin)?'econ-below':''}">${pct(r.margin)}</td><td class="${n(r.roi)!=null&&n(r.roi)<n(report.target_roi)?'econ-below':''}">${pct(r.roi)}</td><td>${money(r.gap)}</td></tr>`).join(''):'<tr><td colspan="8" class="econ-empty">Маршрутов по выбранным условиям нет.</td></tr>'}</tbody></table></div>${rows.length>shown.length?`<div class="econ-more"><button type="button" data-econ-more>Показать ещё · осталось ${rows.length-shown.length}</button></div>`:''}</section>`;
 }
 function periodText(period){return period?`${e(period.from)}–${e(period.to)}`:'период наблюдения неизвестен';}
+function clearCopyStatus(){copyGeneration++;root.clearTimeout(copyTimer);copyPopup?.remove();copyPopup=null;}
+async function copySku(button){
+  clearCopyStatus();const generation=copyGeneration,sku=button.dataset.econCopy;
+  let message='SKU скопирован',failed=false;
+  try{if(!root.navigator?.clipboard?.writeText)throw Error('unavailable');await root.navigator.clipboard.writeText(sku);}
+  catch(_){message='Не удалось скопировать. Выделите SKU и скопируйте вручную.';failed=true;}
+  if(generation!==copyGeneration||!button.isConnected||!button.getClientRects().length)return;
+  const popup=root.document.createElement('div');popup.className='econ-copy-status'+(failed?' is-error':'');
+  popup.dataset.econCopyStatus='';popup.setAttribute('role','status');popup.textContent=message;
+  root.document.body.append(popup);copyPopup=popup;
+  const rect=button.getBoundingClientRect(),box=popup.getBoundingClientRect();
+  popup.style.left=Math.max(8,Math.min(rect.left,(root.innerWidth||400)-box.width-8))+'px';
+  popup.style.top=Math.max(8,Math.min(rect.bottom+6,(root.innerHeight||800)-box.height-8))+'px';
+  copyTimer=root.setTimeout(()=>{if(copyPopup===popup){popup.remove();copyPopup=null;}},failed?6000:1800);
+}
+function closeArticle(){
+  const sku=state.openSku,position=state.focusReturn;
+  const index=(state.report?.products||[]).findIndex(p=>p.sku===sku);
+  const limit=index<0?state.limit:Math.max(state.limit,position?.limit||0,index+1);
+  state={...state,limit,openSku:null,openGroup:null,focusReturn:null};draw();
+  const table=currentRoot.querySelector('.econ-table-scroll');
+  if(position){if(table){table.scrollTop=position.top;table.scrollLeft=position.left;}root.scrollTo?.(0,position.windowY);}
+  [...currentRoot.querySelectorAll('[data-econ-sku]')].find(b=>b.dataset.econSku===sku)?.focus({preventScroll:true});
+}
+function openArticle(sku){
+  if(state.openSku===sku){closeArticle();return;}
+  const table=currentRoot.querySelector('.econ-table-scroll');
+  state={...state,openSku:sku,openGroup:null,focusReturn:{top:table?.scrollTop||0,left:table?.scrollLeft||0,windowY:root.scrollY||0,limit:state.limit}};
+  draw();currentRoot.querySelector('.econ-focus-bar')?.scrollIntoView({block:'start',behavior:'instant'});
+  [...currentRoot.querySelectorAll('[data-econ-sku]')].find(b=>b.dataset.econSku===sku)?.focus({preventScroll:true});
+}
 function periodMarkup(report){
   const observation=report?.observation_period;
   if(!observation)return '';
@@ -213,15 +245,23 @@ function restorePosition(position){
     input?.focus({preventScroll:true});
   }
 }
+function updateHeaderHeight(){
+  const height=root.document?.querySelector?.('.app-header')?.getBoundingClientRect().height;
+  if(height)currentRoot?.style?.setProperty('--econ-header-height',height+'px');
+}
 function draw(){
   if(!currentRoot)return;
+  clearCopyStatus();
+  updateHeaderHeight();
   drawing=true;
   try{
   const position=viewPosition();
   const oldTable=currentRoot.querySelector('.econ-table-scroll');
   const oldScroll=oldTable?.scrollLeft||0,oldScrollTop=oldTable?.scrollTop||0,report=state.report;
-  currentRoot.innerHTML=`<div class="econ-page" aria-busy="${state.busy}">${state.stale?`<div class="notice notice-warning" role="status">${state.costChanged?'Себестоимость сохранена и учтена ниже. Пересчитайте план, чтобы обновить распределение поставок.':'Входные данные изменились. Пересчитайте план, чтобы обновить экономику.'}</div>`:''}<div class="workspace-intro"><p class="eyebrow">ЭКОНОМИКА · МОДЕЛЬ ПО ДАННЫМ СНИМКА</p><h2>Товары ниже цели</h2><p>Настройте цель и плановый ДРР, затем проверьте, какой кластер влияет на товар как источник отгрузки и как место заказа.</p></div><section class="panel econ-targets"><form id="econ-target-form" novalidate><div><h3>Целевые показатели</h3><p>Реальный ДРР из отчётов — для маржи и ROI; при n/a используем 0 %. Плановый — для необходимой цены.</p></div><label>Маржа, % <input name="margin" type="number" min="0" max="95" step="0.5" value="${e(preferences.targetMargin)}" required></label><label>ROI, % <input name="roi" type="number" min="0" max="1000" step="1" value="${e(preferences.targetRoi)}" required></label><label>Плановый ДРР, % <input name="drr" type="number" min="0" max="90" step="0.5" value="${e(preferences.plannedDrr)}" required></label><fieldset><legend>Цену рассчитать до</legend><label><input type="radio" name="goal" value="margin" ${preferences.goal==='margin'?'checked':''}> Маржи</label><label><input type="radio" name="goal" value="roi" ${preferences.goal==='roi'?'checked':''}> ROI</label></fieldset><button type="submit" class="primary" ${state.busy||editingBusy()?'disabled':''}>Применить настройки</button></form><div class="econ-exports"><button type="button" id="econ-export" ${!report||state.error||state.busy||advertisingBusy||state.exporting||Object.keys(costDrafts).length||Object.values(costSaving).some(Boolean)?'disabled':''}>Скачать отчёт XLSX</button><a class="button-link" href="/api/project/cost-prices/export" download="Себестоимость.xlsx">Скачать себестоимость</a><span role="status">${state.exporting?'Готовим отчёт…':state.busy?'Пересчитываем…':'Себестоимость сохраняется после ввода'}</span></div><p id="econ-error" class="field-error" role="alert" ${state.error?'':'hidden'}>${e(state.error)}</p></section>${advertisingMarkup(report)}${periodMarkup(report)}${report?`<div class="econ-summary"><div class="econ-plan-key"><span>Модельный недобор до ${report.goal==='margin'?'маржи':'ROI'}</span><strong>${money(report.modeled_shortfall)}</strong><small>По рассчитанным доставленным маршрутам</small></div><div class="econ-plan-key"><span>SKU ниже выбранной цели</span><strong>${report.products.filter(p=>p.below_goal).length}</strong><small>Из ${report.products.length} с маршрутами</small></div><div><span>Неполные SKU</span><strong>${report.incomplete_sku_count}</strong><small>Нет маршрутов или часть без расчёта</small></div><div data-econ-period-summary><span>Период расчёта</span><strong>${periodText(report.period)}</strong><small>Доставленные заказы по дате принятия${report.history_complete===false?' · история неполная':''}</small></div></div>${state.mode==='products'?renderProducts(report):renderRoutes(report)}<details class="panel econ-method"><summary>Как рассчитаны показатели</summary><p>Недобор — положительная разница между целевой и модельной прибылью на единицу, умноженная на доставленное количество каждого известного маршрута. Это не фактический убыток по выкупам или выплатам Ozon. Экономика использует доставленные заказы по дате принятия за выбранный период, включая загруженную часть текущей недели. Прибыль рассчитана по текущим ценам, ставкам и тарифам снимка; это модель экономики за период.</p><p>Реальный ДРР — сумма расходов загруженных кампаний с НДС / стоимость всех заказов FBO и FBS этого SKU за те же дни, включая отменённые, по цене продавца. Учитываются только дни рекламных отчётов внутри выбранного периода расчёта. Даты считаются один раз, расходы разных кампаний складываются. Продажи, приписанные рекламе, и проценты из отчёта не используются. Если расходы, полная история заказов или цены отсутствуют, реальный ДРР — n/a, в расчёте маржи и ROI он принимается равным 0 %. Это допущение показано рядом с ДРР. Маржа и ROI пересчитаны с реальным ДРР и сохранённой себестоимостью. Плановая маржа в Excel — заданная цель. Необходимая цена рассчитана до выбранной цели (маржа или ROI) при неизменной логистике, комиссии, налоговом режиме и плановом ДРР. Изменение тарифа или спроса при новой цене не моделируется. Неполные маршруты блокируют единую цену по всем маршрутам.</p></details>`:'<section class="panel econ-loading">'+(state.busy?'Рассчитываем экономику…':state.error?'Исправьте параметры или пересчитайте план.':'Загрузить расчёт экономики.')+'</section>'}</div>`;
+  const clusterTop=currentRoot.querySelector('.econ-clusters')?.scrollTop||0;
+  currentRoot.innerHTML=`<div class="econ-page" aria-busy="${state.busy}">${state.stale?`<div class="notice notice-warning" role="status">${state.costChanged?'Себестоимость сохранена и учтена ниже. Пересчитайте план, чтобы обновить распределение поставок.':'Входные данные изменились. Пересчитайте план, чтобы обновить экономику.'}</div>`:''}<div class="workspace-intro"><p class="eyebrow">ЭКОНОМИКА · МОДЕЛЬ ПО ДАННЫМ СНИМКА</p><h2>Товары ниже цели</h2><p>Настройте цель и плановый ДРР, затем проверьте, какой кластер влияет на товар как источник отгрузки и как место заказа.</p></div><section class="panel econ-targets"><form id="econ-target-form" novalidate><div><h3>Целевые показатели</h3><p>Реальный ДРР из отчётов — для маржи и ROI; при n/a используем 0 %. Плановый — для необходимой цены.</p></div><label>Маржа, % <input name="margin" type="number" min="0" max="95" step="0.5" value="${e(preferences.targetMargin)}" required></label><label>ROI, % <input name="roi" type="number" min="0" max="1000" step="1" value="${e(preferences.targetRoi)}" required></label><label>Плановый ДРР, % <input name="drr" type="number" min="0" max="90" step="0.5" value="${e(preferences.plannedDrr)}" required></label><fieldset><legend>Цену рассчитать до</legend><label><input type="radio" name="goal" value="margin" ${preferences.goal==='margin'?'checked':''}> Маржи</label><label><input type="radio" name="goal" value="roi" ${preferences.goal==='roi'?'checked':''}> ROI</label></fieldset><button type="submit" class="primary" ${state.busy||editingBusy()?'disabled':''}>Применить настройки</button></form><div class="econ-exports"><button type="button" id="econ-export" ${!report||!report.products.length||state.error||state.busy||advertisingBusy||state.exporting||Object.keys(costDrafts).length||Object.values(costSaving).some(Boolean)?'disabled':''}>Скачать отчёт XLSX</button><a class="button-link" href="/api/project/cost-prices/export" download="Себестоимость.xlsx">Скачать себестоимость</a><span role="status">${state.exporting?'Готовим отчёт…':state.busy?'Пересчитываем…':'Себестоимость сохраняется после ввода'}</span></div><p id="econ-error" class="field-error" role="alert" ${state.error?'':'hidden'}>${e(state.error)}</p><p id="econ-export-error" class="field-error" role="alert" ${state.exportError?'':'hidden'}>${e(state.exportError||'')}</p></section>${advertisingMarkup(report)}${periodMarkup(report)}${report?profitMarkup(report):''}${report?`<div class="econ-summary"><div class="econ-plan-key"><span>Модельный недобор до ${report.goal==='margin'?'маржи':'ROI'}</span><strong>${money(report.modeled_shortfall)}</strong><small>По рассчитанным доставленным маршрутам</small></div><div class="econ-plan-key"><span>SKU ниже выбранной цели</span><strong>${report.products.filter(p=>p.below_goal).length}</strong><small>Из ${report.products.length} с маршрутами</small></div><div><span>Неполные SKU</span><strong>${report.incomplete_sku_count}</strong><small>Нет маршрутов или часть без расчёта</small></div><div data-econ-period-summary><span>Период расчёта</span><strong>${periodText(report.period)}</strong><small>Доставленные заказы по дате принятия${report.history_complete===false?' · история неполная':''}</small></div></div>${state.mode==='products'?renderProducts(report):renderRoutes(report)}<details class="panel econ-method"><summary>Как рассчитаны показатели</summary><p>Недобор — положительная разница между целевой и модельной прибылью на единицу, умноженная на доставленное количество каждого известного маршрута. Это не фактический убыток по выкупам или выплатам Ozon. Экономика использует доставленные заказы по дате принятия за выбранный период, включая загруженную часть текущей недели. Прибыль рассчитана по текущим ценам, ставкам и тарифам снимка; это модель экономики за период.</p><p>Реальный ДРР — сумма расходов загруженных кампаний с НДС / стоимость всех заказов FBO и FBS этого SKU за те же дни, включая отменённые, по цене продавца. Учитываются только дни рекламных отчётов внутри выбранного периода расчёта. Даты считаются один раз, расходы разных кампаний складываются. Продажи, приписанные рекламе, и проценты из отчёта не используются. Если расходы, полная история заказов или цены отсутствуют, реальный ДРР — n/a, в расчёте маржи и ROI он принимается равным 0 %. Это допущение показано рядом с ДРР. Маржа и ROI пересчитаны с реальным ДРР и сохранённой себестоимостью. Плановая маржа в Excel — заданная цель. Необходимая цена рассчитана до выбранной цели (маржа или ROI) при неизменной логистике, комиссии, налоговом режиме и плановом ДРР. Изменение тарифа или спроса при новой цене не моделируется. Неполные маршруты блокируют единую цену по всем маршрутам.</p></details>`:'<section class="panel econ-loading">'+(state.busy?'Рассчитываем экономику…':state.error?'Исправьте параметры или пересчитайте план.':'Загрузить расчёт экономики.')+'</section>'}</div>`;
   const sc=currentRoot.querySelector('.econ-table-scroll');if(sc){sc.scrollLeft=oldScroll;sc.scrollTop=oldScrollTop;}
+  const clusters=currentRoot.querySelector('.econ-clusters');if(clusters)clusters.scrollTop=clusterTop;
   bind();
   S.EconomicsDaily?.mount(currentRoot,currentSnapshot.snapshot_id,currentFetch,{period:report?.period,granularity});
   restorePosition(position);
@@ -229,6 +269,9 @@ function draw(){
 }
 function bind(){
   const c=currentRoot,form=c.querySelector('#econ-target-form');
+  c.onkeydown=event=>{if(event.key==='Escape'&&state.openSku&&!event.isComposing&&!event.defaultPrevented&&!event.target.closest?.('input,textarea,select,.econ-daily-plot,dialog')){event.preventDefault();closeArticle();}};
+  c.querySelector('[data-econ-close]')?.addEventListener('click',closeArticle);
+  c.querySelectorAll('[data-econ-copy]').forEach(button=>button.onclick=event=>{event.stopPropagation();copySku(button);});
   form.onsubmit=event=>{event.preventDefault();if(state.busy||editingBusy())return;S.FormState.clearErrors(form);let invalid=false;for(const [field,min,max] of [['margin',0,95],['roi',0,1000],['drr',0,90]]){const raw=form.elements[field].value.trim(),value=Number(raw.replace(',','.'));if(!raw||!Number.isFinite(value)||value<min||value>max){S.FormState.setError(form,field,`Введите число от ${min} до ${max} %.`);invalid=true;}}if(invalid){state.error='Исправьте значения в настройках.';const error=c.querySelector('#econ-error');error.hidden=false;error.textContent=state.error;c.querySelector('#econ-export').disabled=true;S.FormState.focusFirst(form);return;}preferences={...preferences,targetMargin:form.elements.margin.value,targetRoi:form.elements.roi.value,plannedDrr:form.elements.drr.value,goal:form.elements.goal.value};try{validated();}catch(error){state={...state,error:error.message};draw();return;}persist();state={...state,filter:'all',limit:12,openGroup:null};load();};
   bindAdvertising(c);
   const periodForm=c.querySelector('#econ-period-form');
@@ -249,24 +292,39 @@ function bind(){
     [...c.querySelectorAll('[data-econ-granularity]')].find(node=>node.dataset.econGranularity===granularity)?.focus({preventScroll:true});
   });
   c.querySelector('#econ-export')?.addEventListener('click',downloadReport);
-  c.querySelector('#econ-search-clear')?.addEventListener('click',()=>{state.search='';state.limit=12;draw();c.querySelector('#econ-search')?.focus();});
+  c.querySelector('#econ-search-clear')?.addEventListener('click',()=>{state.search='';state.limit=12;load();c.querySelector('#econ-search')?.focus({preventScroll:true});});
   c.querySelectorAll('[data-econ-cost]').forEach(input=>{input.oninput=()=>{costDrafts[input.dataset.econCost]=input.value;const exportButton=c.querySelector('#econ-export');if(exportButton)exportButton.disabled=true;};input.onchange=()=>{if(!drawing)return saveCost(input);};input.onkeydown=event=>{if(event.key==='Enter'&&!event.isComposing){event.preventDefault();saveCost(input);}};});
   c.querySelectorAll('[data-econ-cost-retry]').forEach(button=>button.onclick=()=>saveCost([...c.querySelectorAll('[data-econ-cost]')].find(x=>x.dataset.econCost===button.dataset.econCostRetry)));
-  c.querySelectorAll('[data-econ-filter]').forEach(b=>b.onclick=()=>{state={...state,filter:b.dataset.econFilter,limit:12};draw();[...c.querySelectorAll('[data-econ-filter]')].find(x=>x.dataset.econFilter===b.dataset.econFilter)?.focus({preventScroll:true});});
-  const search=c.querySelector('#econ-search');if(search){const applySearch=()=>{const q=search.value;state={...state,search:q,limit:12};draw();const next=c.querySelector('#econ-search');next?.focus({preventScroll:true});next?.setSelectionRange(q.length,q.length);};let composing=false;search.oncompositionstart=()=>{composing=true;};search.oncompositionend=()=>{composing=false;applySearch();};search.oninput=event=>{if(!composing&&!event.isComposing)applySearch();};}
-  c.querySelectorAll('[data-econ-mode]').forEach(b=>b.onclick=()=>{state={...state,mode:b.dataset.econMode,limit:12};draw();[...c.querySelectorAll('[data-econ-mode]')].find(x=>x.dataset.econMode===b.dataset.econMode)?.focus({preventScroll:true});});
+  c.querySelectorAll('[data-econ-filter]').forEach(b=>b.onclick=()=>{state={...state,filter:b.dataset.econFilter,limit:12};load();[...c.querySelectorAll('[data-econ-filter]')].find(x=>x.dataset.econFilter===b.dataset.econFilter)?.focus({preventScroll:true});});
+  const search=c.querySelector('#econ-search');if(search){
+    let composing=false;
+    const applySearch=(immediate=false)=>{
+      const q=search.value,selection=search.selectionStart;
+      root.clearTimeout(searchTimer);state={...state,search:q,limit:12,busy:true,runId:state.runId+1};
+      // Invalidate the previous response before the debounce starts.
+      state.key=requestKey(currentSnapshot);
+      draw();const next=c.querySelector('#econ-search');next?.focus({preventScroll:true});next?.setSelectionRange(selection,selection);
+      if(immediate)load();else searchTimer=root.setTimeout(load,300);
+    };
+    search.addEventListener('compositionstart',()=>{composing=true;root.clearTimeout(searchTimer);state.runId++;});
+    search.addEventListener('compositionend',()=>{composing=false;applySearch();});
+    search.oninput=event=>{if(!composing&&!event.isComposing)applySearch();};
+    search.onkeydown=event=>{if(event.key==='Enter'&&!composing&&!event.isComposing){event.preventDefault();applySearch(true);}};
+  }
+  c.querySelectorAll('[data-econ-mode]').forEach(b=>b.onclick=()=>{state={...state,mode:b.dataset.econMode,limit:12,openSku:null,openGroup:null,focusReturn:null};draw();[...c.querySelectorAll('[data-econ-mode]')].find(x=>x.dataset.econMode===b.dataset.econMode)?.focus({preventScroll:true});});
   c.querySelector('[data-econ-more]')?.addEventListener('click',()=>{state={...state,limit:state.limit+12};draw();});
-  c.querySelectorAll('[data-econ-sku]').forEach(b=>b.onclick=()=>{state={...state,openSku:state.openSku===b.dataset.econSku?null:b.dataset.econSku,openGroup:null};draw();[...c.querySelectorAll('[data-econ-sku]')].find(x=>x.dataset.econSku===b.dataset.econSku)?.focus({preventScroll:true});});
+  c.querySelectorAll('[data-econ-sku]').forEach(b=>b.onclick=()=>openArticle(b.dataset.econSku));
   c.querySelectorAll('[data-econ-group-mode]').forEach(b=>b.onclick=()=>{state.groupMode[b.dataset.sku]=b.dataset.econGroupMode;state.openGroup=null;draw();[...c.querySelectorAll('[data-econ-group-mode]')].find(x=>x.dataset.sku===b.dataset.sku&&x.dataset.econGroupMode===b.dataset.econGroupMode)?.focus({preventScroll:true});});
   c.querySelectorAll('[data-econ-group]').forEach(b=>b.onclick=()=>{state.openGroup=state.openGroup===b.dataset.econGroup?null:b.dataset.econGroup;draw();[...c.querySelectorAll('[data-econ-group]')].find(x=>x.dataset.econGroup===b.dataset.econGroup)?.focus({preventScroll:true});});
   c.querySelectorAll('[data-econ-drr]').forEach(input=>input.onchange=()=>{if(drawing||editingBusy())return;const value=input.value.replace(',','.'),number=Number(value);if(!value.trim()||!Number.isFinite(number)||number<0||number>90){input.setAttribute('aria-invalid','true');const error=c.querySelector('#'+input.getAttribute('aria-describedby'));if(error){error.hidden=false;error.textContent='Введите ДРР от 0 до 90 %.';}input.focus();return;}preferences.overrides[input.dataset.econDrr]=value;persist();load();});
 }
 function render(rootElement,snapshot,apiFetch,{stale=false,onCostChange=null}={}){
-  if(currentSnapshot?.snapshot_id!==snapshot.snapshot_id){costGeneration++;state.report=null;periodFrom=periodTo=periodDraft=null;for(const map of [costDrafts,costErrors,costSaving])for(const key of Object.keys(map))delete map[key];state.costChanged=false;}
+  if(currentSnapshot?.snapshot_id!==snapshot.snapshot_id){costGeneration++;state.report=null;state.openSku=state.openGroup=state.focusReturn=null;periodFrom=periodTo=periodDraft=null;for(const map of [costDrafts,costErrors,costSaving])for(const key of Object.keys(map))delete map[key];state.costChanged=false;}
   onCostsChanged=onCostChange;
   currentRoot=rootElement;currentSnapshot=snapshot;currentFetch=apiFetch;state.stale=stale;
   const key=requestKey(snapshot);
   if(state.key!==key)load();else draw();
 }
 S.EconomicsWorkspace={render,productsForView,productRows,validateTargets:validated};
+root.addEventListener?.('resize',()=>{updateHeaderHeight();clearCopyStatus();});
 })(globalThis);
