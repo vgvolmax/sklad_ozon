@@ -61,10 +61,12 @@ def main():
                 page.goto(f'http://127.0.0.1:{port}/')
                 page.evaluate("snapshot=>{const S=SkladOzon;S.__periodTest.setState({...S.createInitialState(),section:'economics',snapshot});}", snapshot)
                 expect(page.locator('.econ-sku-row')).to_have_count(3)
-                # Capture the final editable article, with earlier expanded blocks.
+                # Capture the final editable article after returning from earlier disclosures.
                 for sku in ('SKU-1', 'SKU-2', 'SKU-3'):
                     page.locator(f'[data-econ-sku="{sku}"]').click()
                     page.locator(f'[data-daily-sku="{sku}"] [data-daily-toggle]').click()
+                    if sku != 'SKU-3':
+                        page.locator('[data-econ-close]').click()
                 drr = page.locator('[data-econ-drr="SKU-3"]')
                 drr.scroll_into_view_if_needed(); drr.focus()
                 position = drr.bounding_box()['y']; scroll = page.evaluate('scrollY')
@@ -85,12 +87,12 @@ def main():
                 assert abs(page.evaluate('scrollY') - shifted) < 3
                 assert abs(page.locator('.econ-table-scroll').evaluate('el=>el.scrollTop') - shifted_table) < 3
                 expect(page.locator('[data-econ-sku="SKU-3"]')).to_have_attribute('aria-expanded', 'true')
-                assert page.locator('.econ-sku-row').nth(1).evaluate("el=>parseFloat(getComputedStyle(el.cells[0]).borderTopWidth)") >= 3
+                assert page.locator('[data-econ-row="SKU-3"]').evaluate("el=>parseFloat(getComputedStyle(el.cells[0]).borderTopWidth)") >= 3
                 page.locator('#econ-period-from').fill('2026-09-02')
                 page.locator('#econ-period-to').fill('2026-09-07')
                 page.locator('#econ-period-apply').click()
                 expect(page.locator('.econ-page')).to_have_attribute('aria-busy', 'false')
-                row = page.locator('.econ-sku-row').nth(2)
+                row = page.locator('[data-econ-row="SKU-3"]')
                 expect(row.locator('td').nth(1)).to_contain_text('5 шт.')
                 expect(page.locator('[data-econ-period-summary]')).to_contain_text('2026-09-02–2026-09-07')
                 page.locator('[data-econ-granularity="week"]').click()
@@ -109,7 +111,7 @@ def main():
                 assert sheet['N2'].value == 5
                 page.screenshot(path=str(ARTIFACTS / 'weekly-selected.png'), full_page=True)
                 page.locator('#econ-period-reset').click()
-                expect(page.locator('.econ-sku-row').nth(2).locator('td').nth(1)).to_contain_text('13 шт.')
+                expect(page.locator('[data-econ-row="SKU-3"]').locator('td').nth(1)).to_contain_text('13 шт.')
                 # A pending background-price response is refreshed automatically.
                 def pending_prices(route):
                     response = route.fetch(); payload = response.json()

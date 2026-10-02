@@ -286,6 +286,24 @@ expanded articles; weeks run Monday–Sunday with clipped edges and unit-weighte
 means. Article blocks have full-width 3px teal separators. Editor redraws preserve
 focus and both table-scroll axes as well as the current viewport anchor.
 
+Lower target prices use the existing success green with a down arrow and signed
+price-change explanation; this is a deliberate plan-band variant. All other
+actual/plan colors retain their teal/purple ownership. A compact period profit
+card uses the same panel tokens and three aligned money rows: before advertising,
+uploaded expense, after known expense. Its period, selected SKU count and missing
+coverage are always textual.
+
+Expanded Economics uses a selected-article surface. The existing table owns
+horizontal overflow; a bounded cluster region owns vertical scrolling and contains
+overscroll. The close strip is sticky below the measured shared application header,
+outside the wide table, so it remains usable at narrow widths. Other SKU rows return
+on collapse with prior scroll/focus restored. The selected history panel remains
+accessible below the clusters. No shared-shell height or document lock is added.
+The exact SKU sits beside a small independent two-sheet copy icon with an accessible
+name and no visual hover tooltip, per the approved workflow. Copy status is a compact
+anchored surface with existing success/error tokens, viewport collision handling,
+no layout shift, and asynchronous-result ownership.
+
 Economics keeps target margin, ROI and planned DRR in the compact target
 band. Real DRR is read-only in each SKU row, with uploaded expense, all-order
 revenue and period; unknown values show `n/a` with a reason and `В расчёте 0 %`.
@@ -295,8 +313,8 @@ and a bounded campaign list. Campaign deletion uses the shared AppDialog.
 The queue survives redraws and navigation. Advertising mutations serialize
 with economics edits/export; they refresh Economics without making Plan stale. Cost uses an inline money editor with a source/status line, and a failed
 save keeps its value and correction text. The table owns horizontal overflow
-after the additional cost column; its expanded product/cluster surface remains
-unchanged. Two neutral download actions below the target controls distinguish
+after the additional cost column; its expanded product/cluster surface retains the
+existing colors in the focused view. Two neutral download actions below the target controls distinguish
 the compact economics report from the persistent cost directory. Import results
 disclose exact matched SKU with article/name, using native details.
 

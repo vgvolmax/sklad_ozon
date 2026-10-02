@@ -1,4 +1,4 @@
-"""Read-only target scenarios over the completed-week route economics snapshot.
+"""Read-only target scenarios over selected-period route economics evidence.
 
 The historical quantity is delivered route evidence, not paid/bought units.
 The shortfall is a modeled comparison at current input rates, not an actual loss.
@@ -48,7 +48,7 @@ def _profit_at_price(price, cost, logistics, commission_rate, settings, drr):
 
 def _target_price(current_price, cost, logistics, commission_rate, settings, drr,
                   target_margin, target_roi, goal):
-    """Find a non-decreasing price at unchanged rates and route logistics."""
+    """Find the minimum positive price at unchanged rates and route logistics."""
     if current_price is None or cost is None or logistics is None or cost <= 0:
         return None
     if settings.tax_system not in {"usn_income", "usn_income_minus_expenses"}:
@@ -61,23 +61,28 @@ def _target_price(current_price, cost, logistics, commission_rate, settings, drr
 
     with localcontext() as context:
         context.prec = 40
-        lower = max(current_price, Decimal("0.01"))
-        if deficit(lower) >= 0:
-            return lower
-        upper = lower
-        for _ in range(40):
-            upper *= 2
-            if deficit(upper) >= 0:
-                break
-        else:
-            return None
-        for _ in range(100):
-            mid = (lower + upper) / 2
-            if deficit(mid) >= 0:
+        kopek = Decimal("0.01")
+        lower = 1
+        if deficit(kopek) >= 0:
+            return kopek
+        upper = max(1, int((current_price / kopek).to_integral_value(
+            rounding="ROUND_CEILING")))
+        if deficit(upper * kopek) < 0:
+            for _ in range(40):
+                upper *= 2
+                if deficit(upper * kopek) >= 0:
+                    break
+            else:
+                return None
+        # Search prices on the actual currency grid. Decimal bisection followed
+        # by ceiling can add a kopek when the exact minimum already meets the goal.
+        while lower < upper:
+            mid = (lower + upper) // 2
+            if deficit(mid * kopek) >= 0:
                 upper = mid
             else:
-                lower = mid
-        return upper.quantize(Decimal("0.01"), rounding="ROUND_CEILING")
+                lower = mid + 1
+        return upper * kopek
 
 
 def _aggregate(rows, margin_target, roi_target, goal):
@@ -88,18 +93,20 @@ def _aggregate(rows, margin_target, roi_target, goal):
         with localcontext() as context:
             context.prec = 40
             profit_sum = sum((row["profit"] * row["qty"] for row in known), ZERO)
+            before_ads = sum((row['profit_before_ads'] * row['qty'] for row in known), ZERO)
             price_sum = sum((row["price"] * row["qty"] for row in known), ZERO)
             cost_sum = sum((row["cost"] * row["qty"] for row in known), ZERO)
             profit = profit_sum / covered
             margin = profit_sum / price_sum if price_sum else None
             roi = profit_sum / cost_sum if cost_sum else None
     else:
-        profit = margin = roi = None
+        profit = margin = roi = before_ads = None
     gap = sum((row["gap"] for row in known), ZERO) if covered else None
     proposed = [row["target_price"] for row in rows]
     target_price = (max(proposed) if proposed and all(x is not None for x in proposed)
                     else None)
     return {"qty": qty, "covered_qty": covered, "profit_per_unit": profit,
+            "profit_before_ads_total": before_ads,
             "margin": margin, "roi": roi, "modeled_shortfall": gap,
             "target_price_all_routes": target_price,
             "partial": covered != qty, "no_observations": qty == 0,
@@ -148,7 +155,7 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
         cost = costs.get(route.sku, unit.cost if unit else None)
         logistics = route.route_cost_rub
         model_rate = rates.get(route.sku) or ZERO
-        profit = None
+        profit = before_ads = None
         inputs_ready = (unit is not None and unit.price is not None and unit.price > 0
                         and unit.commission is not None and price is not None and price > 0
                         and cost is not None and logistics is not None
@@ -166,6 +173,8 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
                 context.prec = 40
                 profit = _profit_at_price(price, cost, logistics,
                     unit.commission / unit.price, settings, model_rate)
+                before_ads = _profit_at_price(price, cost, logistics,
+                    unit.commission / unit.price, settings, ZERO)
         complete = inputs_ready and profit is not None
         drr = overrides.get(route.sku, planned_drr)
         if inputs_ready:
@@ -183,6 +192,7 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
             "origin": route.origin_cluster_id, "destination": route.destination_cluster_id,
             "qty": quantity, "price": price, "cost": cost,
             "profit": profit if complete else None,
+            "profit_before_ads": before_ads if complete else None,
             "margin": profit / price if complete else None,
             "roi": profit / cost if complete and cost else None,
             "logistics": logistics, "gap": gap, "target_price": target_price,
@@ -201,7 +211,7 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
     for (sku, origin, destination), quantity in sorted(missing_routes.items()):
         by_sku[sku].append({
             "origin": origin, "destination": destination, "qty": quantity,
-            "price": None, "cost": None, "profit": None, "margin": None,
+            "price": None, "cost": None, "profit": None, "profit_before_ads": None, "margin": None,
             "roi": None, "logistics": None, "gap": None,
             "target_price": None, "reason_codes": ("NO_ROUTE_ECONOMICS",),
         })
@@ -213,6 +223,10 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
         article, name = identity.get(sku, ("", ""))
         unit = unit_by_sku.get(sku)
         summary = _aggregate(routes, margin, roi, goal)
+        target_price = summary['target_price_all_routes']
+        current_price = unit.price if unit else None
+        delta = target_price - current_price if target_price is not None and current_price else None
+        action = ('lower' if delta < 0 else 'raise' if delta > 0 else 'keep') if delta is not None else None
         groups = {}
         for role, field in (("destination", "destination"), ("origin", "origin")):
             keys = sorted({row[field] for row in routes})
@@ -231,6 +245,8 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
                          "drr_zero_assumed": rates.get(sku) is None,
                          "assumed_drr_rate": rates.get(sku) or ZERO,
                          "planned_drr_rate": overrides.get(sku, planned_drr),
+                         "price_action": action, "price_delta": delta,
+                         "price_delta_rate": delta / current_price if delta is not None else None,
                          **summary, "groups": groups})
     weeks = snapshot.observed_routes.window.included_weeks
     if evidence is None:

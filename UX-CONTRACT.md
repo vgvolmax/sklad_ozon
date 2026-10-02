@@ -367,7 +367,18 @@ breakdown; expanding a cluster creates a nested highlighted surface. Its
 `Где заказали` and `Откуда отгрузили` cuts are two views of the same routes,
 not additive totals. The separate route list always repeats article, SKU,
 origin and destination. Search, bounded load-more and partial coverage remain
-visible in both views.
+visible in both views. Opening a SKU enters a selected-article view: other articles
+return only after collapse. Its cluster region owns bounded vertical scrolling with
+overscroll containment; the article context and sticky collapse action stay reachable.
+The selected article's own history remains available. Collapse restores the prior
+list/window position and disclosure focus; Escape outside editors/charts also closes.
+Scenario redraws retain the cluster scroll. If a changed selection excludes the SKU,
+the view returns to the list. No global document/body scroll lock is introduced.
+
+A small copy button beside the exact SKU is independent of disclosure, has an
+accessible name, and deliberately has no visual hover tooltip. It announces a small
+anchored success popup only after clipboard write succeeds. Denial offers manual
+copying; superseded async clicks cannot announce a success for the latest failed click.
 
 Margin and ROI targets, selected pricing goal and planned DRR are local
 scenario preferences. Python calculates weighted route averages, commission,
@@ -391,7 +402,19 @@ Actual evidence uses teal above purple plan/target values, with explicit labels;
 colors alone do not convey the distinction. Necessary price is below seller price,
 margin/ROI above their goals. Below-goal status remains textual. Actual financial
 values are still the existing model based on the immutable snapshot, not a payout
-statement. Advertising amount/period details remain inspectable below DRR.
+statement. Advertising amount/period details remain inspectable below DRR. The
+minimum positive price to reach the chosen goal may be lower than the current price;
+lowering has a green amount plus explicit down arrow/delta and a separate filter.
+Unreachable/incomplete goals stay unknown. The scenario does not model new demand
+or tariffs after a price change.
+
+A compact card follows the selected interval and search/filter: current-rate
+profit on delivered routes before advertising, available uploaded advertising
+spend for the same selection/interval, and their difference once. Pre-ad profit
+is calculated independently, never by subtracting spend from the already DRR-adjusted
+per-unit profit. Unreported expense is unknown; reported zero is known zero.
+Partial route/history profit and known-advertising SKU counts remain explicit.
+This is a model after known uploaded expenses, not a complete payout statement.
 
 Each product row ends with a compact, independently expandable daily panel for
 SPP, buyer price and orders. All three charts use the same calendar for the loaded
@@ -437,14 +460,20 @@ Cost changes during an analysis or shipment check cannot commit an old result.
 Older Project schemas v1–v4 migrate without losing existing mappings or quantities.
 
 Economics has separate downloads for the stored cost directory and a compact
-Excel report. The report uses the active scenario for the entire current snapshot,
-independent of search, filters and load-more. It has one article per row and only
+Excel report. Python owns the common search/filter selection used by the displayed
+rows, summary and XLSX. The report includes every matching SKU, independent of
+the bounded display/load-more limit. An empty selection disables download. It has
+one SKU per row and only
 article, product, current price, planned/real/applied DRR, margin, ROI, target margin,
-required price and commission rubles per unit. Required price follows the selected margin/ROI goal; target margin
+required price, commission rubles per unit, interval/quantity and exact SKU.
+Required price follows the selected margin/ROI goal; target margin
 remains the explicit margin setting. Missing values stay blank, rates/money are
-numeric, and duplicate/missing article identity blocks export instead of merging
-different SKU. Draft cost edits, a failed scenario or pending calculation disable
-report download. No route detail sheets are exported.
+numeric. Shared/blank articles are allowed; missing or repeated SKU identity blocks
+export instead of merging rows. Draft cost edits, a failed scenario or pending
+calculation disable report download. Export failures remain separate, allowing retry
+without disabling a valid report. A changed pending selection cannot offer an old
+download. Search is IME-safe, debounced with immediate clear/Enter, and ignores stale
+responses. No route detail sheets are exported.
 
 ## Responsive/zoom
 

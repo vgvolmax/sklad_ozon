@@ -6,7 +6,7 @@ import pytest
 
 import backend.application  # Import order required by the existing analytics/economics packages.
 from backend.economics.workspace import (_profit_at_price, build_economics_workspace,
-                                         validate_targets)
+                                         validate_targets, _target_price)
 from backend.project import EconomicsSettings
 
 
@@ -33,6 +33,79 @@ def workspace(snapshot, **kwargs):
     kwargs.setdefault('real_drr', {'SKU': '.05'})
     return build_economics_workspace(snapshot, margin='0.20', roi='0.40',
                                      goal='margin', planned_drr='0.05', **kwargs)
+
+
+@pytest.mark.parametrize('goal,expected', [('margin', '69.77'), ('roi', '60.32')])
+def test_target_can_lower_price_and_still_reaches_selected_goal(goal, expected):
+    d = Decimal
+    settings = sample_snapshot().economics_settings
+    price = _target_price(d('100'), d('20'), d('10'), d('.25'), settings,
+                          d('.05'), d('.20'), d('.40'), goal)
+    assert price == d(expected)
+    threshold = lambda p: p * d('.20') if goal == 'margin' else d('8')
+    assert _profit_at_price(price, d('20'), d('10'), d('.25'), settings, d('.05')) >= threshold(price)
+    smaller = price - d('.01')
+    assert _profit_at_price(smaller, d('20'), d('10'), d('.25'), settings, d('.05')) < threshold(smaller)
+
+
+def test_before_ad_profit_is_independent_of_real_drr():
+    before = workspace(sample_snapshot(), real_drr={'SKU': '.05'})['products'][0]
+    after = workspace(sample_snapshot(), real_drr={'SKU': '.20'})['products'][0]
+    assert before['profit_before_ads_total'] == after['profit_before_ads_total'] == Decimal('170')
+    assert before['profit_per_unit'] != after['profit_per_unit']
+
+
+def test_lower_price_direction_uses_all_routes():
+    snap = sample_snapshot()
+    snap.unit_economics[0].cost = Decimal('20')
+    for route in snap.route_economics:
+        route.route_cost_rub = Decimal('10')
+    p = workspace(snap)['products'][0]
+    assert p['price_action'] == 'lower'
+    assert p['price_delta'] == Decimal('-30.23')
+    assert p['price_delta_rate'] == Decimal('-.3023')
+
+
+def test_unreachable_target_does_not_suggest_a_price():
+    d = Decimal
+    assert _target_price(d('100'), d('20'), d('10'), d('.25'),
+        sample_snapshot().economics_settings, d('.90'), d('.20'), d('.40'), 'margin') is None
+
+
+@pytest.mark.parametrize('goal,cost,current,expected', [
+    ('margin', '80', '100.01', '100.00'),
+    ('margin', '80', '1000', '100.00'),
+    ('roi', '20', '1000', '28.00'),
+])
+def test_exact_kopek_price_is_the_minimum(goal, cost, current, expected):
+    d = Decimal
+    settings = EconomicsSettings(d('0'), d('0'), d('1'), d('0'),
+                                 'usn_income', d('0'), d('0'), d('0'))
+    price = _target_price(d(current), d(cost), d('0'), d('0'), settings,
+                          d('0'), d('.20'), d('.40'), goal)
+    assert price == d(expected)
+    threshold = lambda p: p * d('.20') if goal == 'margin' else d(cost) * d('.40')
+    assert _profit_at_price(price, d(cost), d('0'), d('0'), settings, d('0')) >= threshold(price)
+    smaller = price - d('.01')
+    assert _profit_at_price(smaller, d(cost), d('0'), d('0'), settings, d('0')) < threshold(smaller)
+
+
+def test_exact_tax_breakpoint_price_and_lower_direction():
+    d = Decimal
+    snap = sample_snapshot()
+    snap.economics_settings = EconomicsSettings(d('0'), d('0'), d('1'), d('0'),
+        'usn_income_minus_expenses', d('.15'), d('0'), d('0'))
+    snap.unit_economics[0].cost = d('80')
+    snap.unit_economics[0].commission = d('0')
+    snap.unit_economics[0].price = d('80.01')
+    for route in snap.route_economics:
+        route.price_per_unit = d('80.01')
+        route.route_cost_rub = d('0')
+    product = build_economics_workspace(snap, margin='0', roi='0', goal='margin',
+        planned_drr='0')['products'][0]
+    assert product['target_price_all_routes'] == d('80.00')
+    assert product['price_action'] == 'lower'
+    assert product['price_delta'] == d('-.01')
 
 
 def test_product_and_both_cluster_roles_reconcile_without_double_count():
