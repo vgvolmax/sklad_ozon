@@ -22,7 +22,9 @@ def posting(identity='1', **extra):
 class Client:
     def __init__(self, pages, types=None):
         self.pages = iter(pages); self.calls = []; self.types = types or []
-    def post_json(self, path, body, *, policy):
+    def post_json(self, path, body, *, policy, check_cancelled=None):
+        if check_cancelled:
+            check_cancelled()
         self.calls.append((path, body.copy()))
         if path.endswith('/types'): return {'accrual_types': self.types}
         if path.endswith('/by-day'): return next(self.pages)
@@ -114,3 +116,33 @@ def test_cursor_loop_and_conflicting_duplicates_reject_the_load():
                       {'accruals': [posting('2')], 'last_id': 'loop'}]))
     with pytest.raises(ValueError):
         fetch(Client([{'accruals': [posting(), posting(total_amount=money(2000))], 'last_id': ''}]))
+
+
+def test_progress_inside_a_day_exposes_work_before_posting_lookup():
+    p = posting()
+    p['posting']['products'][0]['commission']['sale_price'] = None
+    client = Client([{'accruals': [p], 'last_id': ''}])
+    events = []
+    def progress(value):
+        events.append((value.copy(), len(client.calls)))
+    importlib.import_module('backend.ozon.adapters.finance').fetch_finance(
+        client, DAY, DAY, 'account-1', progress_callback=progress)
+    lookup = [v for v, calls in events if v.get('stage') == 'posting' and calls == 2]
+    assert lookup, 'Long posting lookups must publish progress before the request.'
+    assert lookup[0]['day'] == DAY.isoformat() and lookup[0]['page'] == 1
+    assert lookup[0]['processed'] == 0 and lookup[0]['page_total'] == 1
+    assert events[-1][0]['current'] == 1 and events[-1][0]['processed'] == 1
+    assert all('12345-1' not in str(event) for event in events)
+
+
+def test_cancellation_inside_a_page_stops_before_next_seller_request():
+    p = posting()
+    p['posting']['products'][0]['commission']['sale_price'] = None
+    client = Client([{'accruals': [p], 'last_id': ''}])
+    def cancel_lookup(value):
+        if value.get('stage') == 'posting':
+            raise InterruptedError()
+    with pytest.raises(InterruptedError):
+        importlib.import_module('backend.ozon.adapters.finance').fetch_finance(
+            client, DAY, DAY, 'account-1', progress_callback=cancel_lookup)
+    assert not any(path.endswith('/get') for path, _ in client.calls)

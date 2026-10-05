@@ -615,6 +615,14 @@ Source: `docs/superpowers/specs/2026-10-02-economics-buyouts-design.md`.
   period remains visible after a failed refresh. Account/session changes reject
   stale finance; cached views are revalidated on outer app renders. Long loading
   has progress and cancel; no overlapping submission or stale response overwrite.
+- Switching back to orders restores its existing controls and report. An
+  interrupted initial/recalculation request is not treated as a loaded report;
+  it is requested again on return. Selecting the active mode is a no-op.
+- Financial progress names the current day, page, processed accruals and Seller
+  read/quantity stage. Keep-alive events maintain the stream during bounded
+  paced/retried reads without claiming completed days. Cancellation interrupts
+  retry/cooldown/admission waits and prevents subsequent reads. An already
+  in-flight socket read remains subject to the existing finite timeout.
 - Date controls reuse native date inputs with platform-owned calendars and
   application validation, inclusive ranges, and Moscow business-date limits.
   Search follows the existing 300ms debounce, IME, clear, and stale-result policy.

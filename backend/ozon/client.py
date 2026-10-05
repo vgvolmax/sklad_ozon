@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 import json
@@ -117,15 +118,18 @@ class OzonClient:
     def post_json(
         self, path: str, payload: dict, *, policy: OzonRequestPolicy,
         timeout: float | None = None,
+        check_cancelled: Callable[[], None] | None = None,
     ) -> dict:
         return self._post_json(path, payload, policy=policy,
-                               context=self._vault.capture_context(), timeout=timeout)
+                               context=self._vault.capture_context(), timeout=timeout,
+                               check_cancelled=check_cancelled)
 
     def bind_context(self, context: OzonCredentialContext) -> "BoundOzonClient":
         return BoundOzonClient(self, context)
 
     def _post_json(self, path: str, payload: dict, *, policy: OzonRequestPolicy,
-                   context: OzonCredentialContext, timeout: float | None = None) -> dict:
+                   context: OzonCredentialContext, timeout: float | None = None,
+                   check_cancelled: Callable[[], None] | None = None) -> dict:
         self._validate_path(path)
         request_timeout = self._timeout if timeout is None else float(timeout)
         if isinstance(timeout, bool) or not 0 < request_timeout < 60:
@@ -144,27 +148,31 @@ class OzonClient:
         attempts = policy.max_attempts if policy.retry_safe else 1
         operation_started = time.perf_counter()
         for attempt in range(1, attempts + 1):
+            if check_cancelled:
+                check_cancelled()
             self._assert_context_active(context, path)
             try:
-                response = self._send(request, request_timeout, path, context, attempt)
-            except OzonClientError:
+                response = self._send(request, request_timeout, path, context, attempt, check_cancelled)
+            except (OzonClientError, InterruptedError):
                 raise
             except Exception as exc:
                 self._assert_context_active(context, path)
                 logger.warning("Ozon request transport failure path=%s attempt=%d", path, attempt)
                 if policy.retry_safe and attempt < attempts:
-                    self._sleep(self._backoff(attempt))
+                    self._wait(self._backoff(attempt), check_cancelled)
                     continue
                 raise OzonClientError(
                     OzonErrorCode.UNAVAILABLE, "Ozon API is unavailable", endpoint=path,
                     transport_kind=self._transport_kind(exc), attempts=attempt,
                     elapsed_ms=round((time.perf_counter() - operation_started) * 1000),
                 ) from None
+            if check_cancelled:
+                check_cancelled()
             self._assert_context_active(context, path)
             if response.status in _TRANSIENT_STATUSES and policy.retry_safe and attempt < attempts:
-                self._sleep(self._retry_delay(
+                self._wait(self._retry_delay(
                     response, attempt, endpoint=path, credentials=credentials,
-                ))
+                ), check_cancelled)
                 continue
             if response.status >= 400:
                 raise self._http_error(response, endpoint=path, credentials=credentials)
@@ -264,10 +272,35 @@ class OzonClient:
                 return None
         return max(0.0, value) if math.isfinite(value) else None
 
-    def _send(self, request, timeout, path, context, attempt):
+    def _wait(self, seconds, check_cancelled):
+        if check_cancelled is None:
+            self._sleep(seconds)
+            return
+        while seconds > 0:
+            check_cancelled()
+            step = min(seconds, .25)
+            self._sleep(step)
+            seconds -= step
+        check_cancelled()
+
+    @contextmanager
+    def _admission(self, check_cancelled):
+        if check_cancelled is None:
+            self._request_lock.acquire()
+        else:
+            while not self._request_lock.acquire(timeout=.25):
+                check_cancelled()
+        try:
+            if check_cancelled:
+                check_cancelled()
+            yield
+        finally:
+            self._request_lock.release()
+
+    def _send(self, request, timeout, path, context, attempt, check_cancelled=None):
         # Shared by all bound clients. Serialize admission and response cooldown
         # so concurrent sync/search callers cannot bypass a just-received 429.
-        with self._request_lock:
+        with self._admission(check_cancelled):
             self._assert_context_active(context, path)
             now = self._clock()
             if self._cooldown_until - now > _MAX_SERVER_RETRY_AFTER_SECONDS:
@@ -275,7 +308,7 @@ class OzonClient:
             allowed = max(self._next_request, self._cooldown_until,
                           self._next_stock_request if path == FBO_STOCK_PATH else 0.0)
             if allowed > now:
-                self._sleep(allowed - now)
+                self._wait(allowed - now, check_cancelled)
             self._assert_context_active(context, path)
             started = self._clock()
             self._next_request = started + _REQUEST_INTERVAL_SECONDS
@@ -370,6 +403,8 @@ class BoundOzonClient:
     def post_json(
         self, path: str, payload: dict, *, policy: OzonRequestPolicy,
         timeout: float | None = None,
+        check_cancelled: Callable[[], None] | None = None,
     ) -> dict:
         return self._client._post_json(path, payload, policy=policy,
-                                       context=self._context, timeout=timeout)
+                                       context=self._context, timeout=timeout,
+                                       check_cancelled=check_cancelled)

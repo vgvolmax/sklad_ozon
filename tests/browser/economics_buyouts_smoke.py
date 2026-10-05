@@ -36,6 +36,8 @@ def main():
         api.ANALYSIS_STORE.clear(); api.FINANCE_STORE.clear()
         fail = [False]
         switch_account = [False]
+        slow_read = [False]
+        release_read = threading.Event()
         calls = []
         def transport(request, timeout):
             path = urlparse(request.full_url).path
@@ -44,6 +46,9 @@ def main():
             if path.endswith('/types'):
                 payload = {'accrual_types': [{'id': 1, 'name': 'Реклама'}, {'id': 2, 'name': 'Кросс-докинг'}]}
             elif path.endswith('/by-day'):
+                if slow_read[0]:
+                    slow_read[0] = False
+                    release_read.wait(timeout=8)
                 if switch_account[0]:
                     switch_account[0] = False
                     api.OZON_VAULT.setup(OzonCredentials('other-account', 'other-key'), 'test-password')
@@ -98,10 +103,33 @@ def main():
                     'S.__buyoutTest={setState(value){setState(value);}};')
                 page.route('**/assets/js/app.js', lambda route: route.fulfill(body=source, content_type='text/javascript'))
                 page.goto(f'http://127.0.0.1:{port}/')
+                # Switching before the first order report completes must reload it on return.
+                pending_orders = []
+                page.route('**/api/economics/workspace', lambda route: pending_orders.append(route), times=1)
                 page.evaluate("snapshot=>{const S=SkladOzon;S.__buyoutTest.setState({...S.createInitialState(),section:'economics',snapshot});}", snapshot)
+                for _ in range(100):
+                    if pending_orders: break
+                    page.wait_for_timeout(25)
+                assert pending_orders
+                page.locator('[data-econ-calculation="buyouts"]').click()
+                page.locator('[data-econ-calculation="orders"]').click()
+                expect(page.locator('[data-econ-row]')).to_have_count(2)
+                expect(page.locator('#econ-target-form')).to_be_visible()
+                pending_orders.pop().continue_()
                 page.locator('[data-econ-calculation="buyouts"]').click()
                 expect(page.locator('#buyout-load')).to_be_enabled()
                 page.locator('#buyout-from').fill('2026-09-01'); page.locator('#buyout-to').fill('2026-09-02')
+                slow_read[0] = True
+                page.locator('#buyout-load').click()
+                expect(page.locator('#buyout-progress-detail')).to_contain_text('Ожидаем ответ Ozon')
+                expect(page.locator('#buyout-progress-detail')).to_contain_text('01.09.2026')
+                page.locator('[data-econ-calculation="buyouts"]').click()
+                expect(page.locator('#buyout-progress-detail')).to_contain_text('Прошло: 1 с', timeout=3000)
+                page.screenshot(path=str(ARTIFACTS/'slow-load.png'), full_page=True)
+                page.locator('#buyout-cancel').click()
+                expect(page.locator('#buyout-load')).to_be_enabled()
+                expect(page.locator('#buyout-error')).to_contain_text('отменена')
+                release_read.set()
                 page.locator('#buyout-load').click()
                 expect(page.locator('[data-buyout-row]')).to_have_count(2)
                 expect(page.locator('[data-buyout-final]')).to_have_text('1 250 ₽')
@@ -161,6 +189,7 @@ def main():
                 # Retain selected period and filters when switching calculation mode.
                 page.locator('[data-econ-calculation="orders"]').click()
                 expect(page.locator('#econ-target-form')).to_be_visible()
+                expect(page.locator('[data-econ-row]')).to_have_count(2)
                 page.locator('[data-econ-calculation="buyouts"]').click()
                 expect(page.locator('#buyout-from')).to_have_value('2026-09-01')
                 expect(page.locator('[data-buyout-row]')).to_have_count(2)

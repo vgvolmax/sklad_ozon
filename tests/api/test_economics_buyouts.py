@@ -117,8 +117,8 @@ def test_account_switch_during_fetch_cannot_commit_or_emit_result(setup, monkeyp
     from tests.ozon.test_finance import Client, posting
     c, _, old = setup
     class SwitchingClient(Client):
-        def post_json(self, path, body, *, policy):
-            response = super().post_json(path, body, policy=policy)
+        def post_json(self, path, body, *, policy, check_cancelled=None):
+            response = super().post_json(path, body, policy=policy, check_cancelled=check_cancelled)
             if path.endswith('/by-day'):
                 api.OZON_VAULT.setup(OzonCredentials('other-account', 'other-key'), 'long-password')
             return response
@@ -142,3 +142,42 @@ def test_formula_like_names_are_literal_and_fee_only_period_can_export(setup):
     export = c.post('/api/economics/buyouts/export', json=BODY)
     assert export.status_code == 200
     assert load_workbook(BytesIO(export.content)).active.max_row == 1
+
+
+def test_slow_finance_read_keeps_the_stream_alive(setup, monkeypatch):
+    import time
+    import backend.economics.buyout_api as buyout_api
+    c, _, finance = setup
+    def slow_fetch(*args, progress_callback):
+        progress_callback({'current': 0, 'total': 1, 'day': '2026-09-01', 'stage': 'day'})
+        time.sleep(1.2)
+        progress_callback({'current': 1, 'total': 1, 'day': '2026-09-01', 'stage': 'complete'})
+        return finance
+    monkeypatch.setattr(buyout_api, 'fetch_finance', slow_fetch)
+    r = c.post('/api/economics/buyouts/sync', json={'period_from': '2026-09-01', 'period_to': '2026-09-01'})
+    events = [json.loads(line) for line in r.text.splitlines() if line]
+    assert any(e['type'] == 'heartbeat' and e['elapsed_seconds'] >= 1 for e in events)
+    assert any(e['type'] == 'progress' and e.get('stage') == 'complete'
+               and e.get('elapsed_seconds', 0) >= 1 for e in events)
+    assert events[-1]['type'] == 'result'
+
+
+@pytest.mark.parametrize('code, expected', [
+    ('OZON_PERMISSION_DENIED', 'финансовым начислениям'),
+    ('OZON_RATE_LIMITED', 'лимит запросов'),
+    ('OZON_UNAVAILABLE', 'не отвечает'),
+])
+def test_finance_error_explains_recovery_without_vendor_secrets(setup, monkeypatch, code, expected):
+    import backend.economics.buyout_api as buyout_api
+    from backend.ozon.client import OzonClientError
+    from backend.ozon.contracts import OzonErrorCode
+    c, _, old = setup
+    def failed(*args, **kwargs):
+        raise OzonClientError(OzonErrorCode(code), 'synthetic-key', vendor_message='synthetic-key')
+    monkeypatch.setattr(buyout_api, 'fetch_finance', failed)
+    r = c.post('/api/economics/buyouts/sync', json={'period_from': '2026-09-01', 'period_to': '2026-09-01'})
+    events = [json.loads(line) for line in r.text.splitlines() if line]
+    assert events[-1]['error']['code'] == code
+    assert expected in events[-1]['error']['message']
+    assert 'synthetic-key' not in r.text
+    assert api.FINANCE_STORE.get(old.snapshot_id) is old

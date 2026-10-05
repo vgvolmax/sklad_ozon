@@ -54,6 +54,35 @@ fixtures follow the current published Seller API schema; no exact accounting
 reconciliation is promised. Taxes and expenses outside Ozon are not included.
 Final whole-branch review and exact-head CI results are recorded in the PR.
 
+## Loading and mode-switch regressions (2026-10-05)
+
+- A first order report interrupted by an early switch was marked as loaded,
+  leaving the product table absent on return. The pending key is now invalidated
+  and the report is requested again. Existing controls, applied goals, filters,
+  period and completed data remain owned by the existing order workspace.
+  Selecting the active mode does not cancel or reset the current operation.
+- A large day's page could require many paced posting-detail reads without a
+  progress event. The browser's 90-second inactivity timeout could abort valid
+  work. Progress now exposes type/day/posting stages, date, page, processed count
+  and elapsed seconds; one-second keep-alives preserve genuinely active streams
+  without inventing completed days. Per-row and per-read checkpoints cancel
+  processing. The shared client also cancels admission/pacing/retry waits; an
+  already in-flight socket read keeps the existing finite timeout.
+- Permission, rate-limit and unavailable responses have actionable safe messages.
+  Prior valid financial snapshots/results remain atomic; no finance math changed.
+- Regression-first checks observed missing progress/cancellation/heartbeat/error
+  behavior and the absent order table before implementation. The real loopback
+  browser verifies a deferred initial order response, completed mode roundtrips,
+  a slow first Seller day, active-mode clicks, cancel/reload, stale/error/locked
+  cabinet recovery, filtered XLSX, native dates, narrow width and 200% zoom.
+- Final local verification: **1972 pytest tests passed**, one existing Starlette
+  deprecation warning; all five production browser scenarios passed (buyouts,
+  advertising, periods, focused articles and Plan). All 9 JS syntax checks pass.
+  The strict premium audit reports **36 literal-button findings both before and
+  after this fix**: its inline-action detector misses programmatic event binding.
+  Actual changed controls are exercised in the browser; static-clean compliance
+  is not claimed. Live Seller-account response compatibility remains unverified.
+
 ## Independent review corrections
 
 The fresh whole-branch reviewer found two Important asynchronous-state defects.

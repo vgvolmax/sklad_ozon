@@ -2,8 +2,9 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
-from queue import Queue
+from queue import Empty, Queue
 from threading import Event, Thread
+from time import monotonic
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -89,10 +90,17 @@ async def sync(request: Request):
     except OzonVaultError:
         return api.error(423, 'OZON_VAULT_LOCKED', 'Разблокируйте доступ к Ozon на экране Данные.', None)
     events, stopped = Queue(), Event()
+    last_progress, last_sent = None, 0.0
 
     def progress(value):
+        nonlocal last_progress, last_sent
         if stopped.is_set():
             raise InterruptedError()
+        now = monotonic()
+        phase = (value.get('stage'), value.get('day'), value.get('page'))
+        if phase == last_progress and now-last_sent < .25:
+            return
+        last_progress, last_sent = phase, now
         events.put({'type': 'progress', **value})
 
     def worker():
@@ -111,8 +119,16 @@ async def sync(request: Request):
         except ValueError as exc:
             events.put({'type': 'error', 'error': {'code': 'INVALID_FINANCE_DATA', 'message': str(exc)}})
         except OzonClientError as exc:
+            messages = {
+                'OZON_PERMISSION_DENIED': 'Нет доступа к финансовым начислениям. Проверьте права API-ключа в Ozon.',
+                'OZON_RATE_LIMITED': 'Ozon ограничил лимит запросов. Подождите и повторите загрузку.',
+                'OZON_UNAVAILABLE': 'Ozon не отвечает после повторных попыток. Проверьте соединение и повторите загрузку.',
+                'OZON_AUTH_FAILED': 'Ozon отклонил API-ключ. Проверьте подключение на экране Данные.',
+                'OZON_CREDENTIAL_CONTEXT_CHANGED': 'Кабинет Ozon изменился. Загрузите начисления для текущего кабинета.',
+            }
             events.put({'type': 'error', 'error': {'code': exc.code.value,
-                'message': 'Не удалось загрузить начисления Ozon. Проверьте доступ и повторите загрузку.'}})
+                'message': messages.get(exc.code.value,
+                    'Не удалось загрузить начисления Ozon. Проверьте доступ и повторите загрузку.')}})
         except Exception:
             events.put({'type': 'error', 'error': {'code': 'FINANCE_SYNC_FAILED',
                 'message': 'Не удалось загрузить начисления. Повторите загрузку.'}})
@@ -120,13 +136,20 @@ async def sync(request: Request):
             events.put(None)
 
     async def stream():
+        started = monotonic()
         thread = Thread(target=worker, name='finance-sync', daemon=True)
         thread.start()
         try:
             while True:
-                item = await asyncio.to_thread(events.get)
+                try:
+                    item = await asyncio.to_thread(events.get, True, 1.0)
+                except Empty:
+                    # Keep paced/retried Seller reads alive without inventing completed days.
+                    item = {'type': 'heartbeat', 'elapsed_seconds': int(monotonic()-started)}
                 if item is None:
                     break
+                if item['type'] == 'progress':
+                    item = {**item, 'elapsed_seconds': int(monotonic()-started)}
                 yield json.dumps(item, ensure_ascii=False, separators=(',', ':')) + '\n'
         finally:
             stopped.set()

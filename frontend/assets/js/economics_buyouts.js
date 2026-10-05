@@ -4,11 +4,18 @@ const money=value=>S.EconomicsWorkspace.formatMoney(value);
 let container,snapshot,apiFetch,options,active=false,analysisId=null,financeId=null,report=null;
 let dates=null,search='',filter='all',limit=12,busy=false,exporting=false,error='',periodError='',progress=null;
 let run=0,controller=null,searchTimer=null,reportSelection=null,pendingFinanceId=null,reportError=false;
+let elapsedSeconds=0;
 const selectionKey=()=>JSON.stringify([search,filter]);
 function deactivate(){active=false;run++;controller?.abort();root.clearTimeout(searchTimer);busy=exporting=false;}
 function body(){return {analysis_snapshot_id:snapshot.snapshot_id,finance_snapshot_id:financeId,search,filter};}
 function defaultDates(asOf){const day=String(asOf||new Date().toISOString().slice(0,10));const [y,m]=day.split('-').map(Number);const last=new Date(Date.UTC(y,m-1,0));return {from:`${last.getUTCFullYear()}-${String(last.getUTCMonth()+1).padStart(2,'0')}-01`,to:last.toISOString().slice(0,10)};}
 function periodText(period){return `${S.presentIsoDate(period.from)} — ${S.presentIsoDate(period.to)}`;}
+function progressDetail(){
+  if(!busy||!progress)return '';
+  const phase=progress.stage==='types'?'Ожидаем ответ Ozon: справочник начислений':progress.stage==='posting'?'Ожидаем ответ Ozon: уточняем количество товаров':progress.stage==='day'?'Ожидаем ответ Ozon: начисления за день':progress.stage==='complete'?'Начисления загружены':'Обрабатываем начисления';
+  const day=progress.stage==='types'?'':` · ${S.presentIsoDate(progress.day)} · страница ${progress.page}`;
+  return `${phase}${day} · обработано начислений: ${progress.processed||0}${elapsedSeconds?` · Прошло: ${elapsedSeconds} с`:''}`;
+}
 function draw(){
   if(!active||!container)return;
   const focused=root.document.activeElement,focusId=container.contains(focused)?focused.id:null,selection=focused?.selectionStart;
@@ -24,6 +31,7 @@ function draw(){
       ${busy?'<button id="buyout-cancel" type="button">Отменить</button>':''}</form>
       <p id="buyout-period-error" class="field-error" role="alert" ${periodError?'':'hidden'}>${e(periodError)}</p>
       <p id="buyout-progress" role="status">${busy?(progress?`Загружаем начисления: ${progress.current} из ${progress.total} дней`:'Загружаем расчёт…'):report?`Загружен период: ${periodText(report.period)}`:'Загрузите начисления Ozon за нужный период. Доступ к Ozon должен быть разблокирован на экране Данные.'}</p>
+      <p id="buyout-progress-detail" ${busy&&progress?'':'hidden'}>${e(progressDetail())}</p>
       ${busy&&progress?`<progress value="${Number(progress.current)}" max="${Number(progress.total)}" aria-label="Загрузка начислений"></progress>`:''}
       <p id="buyout-error" class="field-error" role="alert" ${error?'':'hidden'}>${e(error)}</p>${reportError&&(pendingFinanceId||financeId)?`<button id="buyout-retry" type="button" ${busy?'disabled':''}>Повторить расчёт выборки</button>`:''}</section>
     ${report?`<section class="panel buyout-summary" aria-label="Итог всего магазина"><h3>Весь магазин · ${periodText(report.period)}</h3>
@@ -68,12 +76,12 @@ async function sync(){
   if(busy||exporting)return;periodError='';error='';reportError=false;
   const from=new Date(dates.from+'T00:00:00Z'),to=new Date(dates.to+'T00:00:00Z');
   if(!dates.from||!dates.to||!Number.isFinite(+from)||!Number.isFinite(+to)||dates.from<'2022-01-01'||from>to||(+to-+from)/86400000>=366){periodError='Выберите обе даты по порядку: до 366 дней начиная с 01.01.2022.';draw();container.querySelector('#buyout-from').focus({preventScroll:true});return;}
-  controller?.abort();controller=new AbortController();const request=++run,abort=controller;busy=true;progress=null;draw();let result=null,timer=null;
+  controller?.abort();controller=new AbortController();const request=++run,abort=controller;busy=true;progress=null;elapsedSeconds=0;draw();let result=null,timer=null;
   const touch=()=>{root.clearTimeout(timer);timer=root.setTimeout(()=>abort.abort(),90000);};touch();
   try{const response=await apiFetch('/api/economics/buyouts/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({period_from:dates.from,period_to:dates.to}),signal:abort.signal});
     if(!response.ok){const data=await response.json();if(request!==run)return;if(response.status===409||response.status===423){report=null;financeId=pendingFinanceId=null;}throw Error(data.error?.message||'Не удалось загрузить начисления.');}
     if(!response.body)throw Error('Не удалось получить ответ Ozon. Повторите загрузку.');
-    const reader=response.body.getReader(),decoder=new TextDecoder(),parser=S.createNdjsonParser(item=>{if(request!==run||!active)return;touch();if(item.type==='progress'){progress=item;draw();}else if(item.type==='result')result=item.data;else if(item.type==='error'){if(['OZON_CREDENTIAL_CONTEXT_CHANGED','OZON_VAULT_LOCKED'].includes(item.error?.code)){report=null;financeId=pendingFinanceId=null;}throw Error(item.error?.message||'Не удалось загрузить начисления.');}});
+    const reader=response.body.getReader(),decoder=new TextDecoder(),parser=S.createNdjsonParser(item=>{if(request!==run||!active)return;touch();if(item.type==='progress'){progress=item;elapsedSeconds=Number(item.elapsed_seconds)||0;draw();}else if(item.type==='heartbeat'){elapsedSeconds=Number(item.elapsed_seconds)||0;const detail=container.querySelector('#buyout-progress-detail');if(detail)detail.textContent=progressDetail();}else if(item.type==='result')result=item.data;else if(item.type==='error'){if(['OZON_CREDENTIAL_CONTEXT_CHANGED','OZON_VAULT_LOCKED'].includes(item.error?.code)){report=null;financeId=pendingFinanceId=null;}throw Error(item.error?.message||'Не удалось загрузить начисления.');}});
     try{while(true){const {value,done}=await reader.read();if(request!==run||!active)return;parser.push(decoder.decode(value||new Uint8Array(),{stream:!done}),done);if(done)break;}}finally{await reader.cancel().catch(()=>{});}
     if(request!==run||!active)return;if(!result)throw Error('Загрузка не завершена. Повторите.');pendingFinanceId=result.finance_snapshot_id;progress=null;busy=false;await refresh();
   }catch(exc){if(request===run&&active)error=exc.name==='AbortError'?'Загрузка прервана. Повторите загрузку.':exc.message;}

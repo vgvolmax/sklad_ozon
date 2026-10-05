@@ -60,6 +60,16 @@ reachable at narrow widths and 200% zoom. A failed refresh preserves prior conte
 with its original period and persistent error. Superseded requests cannot replace
 a newer view. No new navigation section or Data settings/import wizard.
 
+The reported loading/mode-switch regressions refine this contract: returning to
+orders restores its established controls/table, including re-requesting a report
+interrupted before completion. Selecting an already active mode does nothing.
+Progress shows the current date, page, processed accrual count and read/quantity
+stage; keep-alive events prevent a valid slow read from hitting stream inactivity
+timeouts. Cancellation reaches shared-client admission, pacing and retry waits;
+an already running socket read retains its finite timeout. No subsequent reads
+may start after cancellation. Seller failures expose safe actionable categories,
+never credentials or raw vendor messages.
+
 ## Verification
 
 Test whole-unit/partial-return quantities, multiple SKUs, missing prices/costs,

@@ -76,7 +76,7 @@ def _category(name):
     return 'other'
 
 
-def _quantity(product, posting, unit_number, client, cache):
+def _quantity(product, posting, unit_number, request, cache):
     commission = product.get('commission') or {}
     sale = _money(commission.get('sale_amount'), optional=True)
     if sale == 0:
@@ -102,7 +102,7 @@ def _quantity(product, posting, unit_number, client, cache):
         return None
     key = sha256((path+'\0'+unit_number).encode()).hexdigest()
     if key not in cache:
-        response = client.post_json(path, {'posting_number': unit_number, 'with': {'financial_data': False}}, policy=READ)
+        response = request(path, {'posting_number': unit_number, 'with': {'financial_data': False}}, 'posting')
         detail = response.get('result')
         if not isinstance(detail, dict) or detail.get('posting_number') != unit_number:
             raise ValueError('Ответ отправления не соответствует финансовому начислению.')
@@ -121,7 +121,22 @@ def fetch_finance(client, start, end, credential_context_id, progress_callback=N
     if type(start) is not date or type(end) is not date or not credential_context_id:
         raise ValueError('Нужны даты и контекст аккаунта для финансового отчёта.')
     finance_period(start.isoformat(), end.isoformat())
-    response = client.post_json(FINANCE_ACCRUAL_TYPES_PATH, {}, policy=READ)
+    status = {'current': 0, 'total': (end-start).days+1, 'day': start.isoformat(),
+              'page': 0, 'processed': 0, 'page_processed': 0, 'page_total': 0}
+
+    def notify(stage, **values):
+        status.update(values, stage=stage)
+        if progress_callback:
+            progress_callback(status.copy())
+
+    def request(path, payload, stage):
+        # Also a cancellation checkpoint before/after every potentially slow read.
+        notify(stage)
+        response = client.post_json(path, payload, policy=READ, check_cancelled=lambda: notify(stage))
+        notify('processing')
+        return response
+
+    response = request(FINANCE_ACCRUAL_TYPES_PATH, {}, 'types')
     types = {}
     for t in _objects(response.get('accrual_types')):
         identifier = t.get('id')
@@ -150,16 +165,18 @@ def fetch_finance(client, start, end, credential_context_id, progress_callback=N
         context.prec = 40
         while day <= end:
             cursor, cursors = '', set()
-            for _ in range(MAX_PAGES_PER_DAY):
-                if progress_callback:
-                    progress_callback({'current': (day-start).days, 'total': (end-start).days+1, 'day': day.isoformat()})
-                response = client.post_json(FINANCE_ACCRUAL_BY_DAY_PATH,
-                    {'date': day.isoformat(), 'last_id': cursor}, policy=READ)
+            for page in range(1, MAX_PAGES_PER_DAY+1):
+                notify('day', current=(day-start).days, day=day.isoformat(), page=page,
+                       page_processed=0, page_total=0)
+                response = request(FINANCE_ACCRUAL_BY_DAY_PATH,
+                    {'date': day.isoformat(), 'last_id': cursor}, 'day')
                 rows = _objects(response.get('accruals'))
+                notify('processing', page_total=len(rows))
                 next_cursor = response.get('last_id')
                 if not isinstance(next_cursor, str):
                     raise ValueError('Отсутствует курсор финансового ответа.')
-                for row in rows:
+                for index, row in enumerate(rows):
+                    notify('processing', page_processed=index, processed=len(seen))
                     if row.get('date') != day.isoformat():
                         raise ValueError('Начисление находится вне запрошенного дня.')
                     identifier = row.get('accrual_id', row.get('type_id'))
@@ -192,7 +209,7 @@ def fetch_finance(client, start, end, credential_context_id, progress_callback=N
                             commission_net = _money(commission.get('commission'), optional=True)
                             delivery_net = _money(delivery.get('total_accrued'), optional=True)
                             net = sale + commission_net + delivery_net
-                            quantity = _quantity(p, posting, row.get('unit_number'), client, cache)
+                            quantity = _quantity(p, posting, row.get('unit_number'), request, cache)
                             unit_price = _money(commission.get('seller_price'), optional=True)
                             revenue = abs(unit_price) * quantity if quantity is not None else None
                             if quantity and unit_price == 0:
@@ -220,6 +237,7 @@ def fetch_finance(client, start, end, credential_context_id, progress_callback=N
                     difference = total - nested
                     if difference:
                         expenses.append(FinanceExpense(day, 'other', 'Другие начисления и корректировки', -difference))
+                notify('processing', page_processed=len(rows), processed=len(seen))
                 if not next_cursor:
                     break
                 if not rows or next_cursor in cursors or next_cursor == cursor:
@@ -229,7 +247,6 @@ def fetch_finance(client, start, end, credential_context_id, progress_callback=N
             else:
                 raise ValueError('Слишком много страниц начислений. Выберите меньший период.')
             day += timedelta(days=1)
-    if progress_callback:
-        progress_callback({'current': (end-start).days+1, 'total': (end-start).days+1, 'day': end.isoformat()})
+    notify('complete', current=(end-start).days+1, day=end.isoformat())
     return FinanceSnapshot(uuid4().hex, credential_context_id, start, end,
         tuple(products), tuple(expenses), datetime.now(timezone.utc).isoformat())
