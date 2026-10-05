@@ -42,7 +42,9 @@ async def _report(request, *, export=False):
         finance = api.FINANCE_STORE.get(finance_id) if isinstance(finance_id, str) else None
         if finance is None or finance.credential_context_id != context.context_id:
             return api.error(409, 'FINANCE_SNAPSHOT_STALE', 'Загрузите начисления для текущего кабинета.', 'finance_snapshot_id')
-        names = {row.sku: (row.article, row.product_name) for row in snapshot.decision_rows}
+        names = {row.sku: (getattr(row, 'article', ''), 'Товар без текущего наименования')
+                 for row in snapshot.buyout_cost_inputs}
+        names.update({row.sku: (row.article, row.product_name) for row in snapshot.decision_rows})
         report = build_buyout_report(finance, snapshot.buyout_cost_inputs, names,
             search=body.get('search', ''), filter=body.get('filter', 'all'))
         if export and not report['products'] and report['catalog_product_count']:

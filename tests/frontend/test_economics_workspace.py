@@ -51,6 +51,25 @@ def test_manual_model_drr_is_removed_and_cost_editor_keeps_saved_value():
     assert 'Ручная' in markup and 'econ-cost-error-0' in markup
 
 
+def test_client_prices_keep_fact_above_plan_with_independent_coverage_and_zero():
+    product = {'sku': 'S', 'article': 'A', 'name': 'Товар', 'price': '100',
+        'target_price_all_routes': '80', 'groups': {}, 'buyer_prices': {
+            'buyer_price_mean': '0', 'target_buyer_price': '32.00', 'spp_mean': '.6',
+            'ordered_qty': 4, 'buyer_priced_qty': 2, 'spp_priced_qty': 3,
+            'complete': False, 'pending': True}}
+    markup = node(f'SkladOzon.EconomicsWorkspace.productRows({json.dumps([product])})')
+    assert 'data-econ-buyer-price>0 ₽' in markup
+    assert 'data-econ-target-buyer-price>32 ₽' in markup
+    assert markup.index('data-econ-buyer-price') < markup.index('econ-plan') < markup.index('data-econ-target-buyer-price')
+    assert 'Клиента · средняя' in markup and 'Клиента при цели' in markup
+    assert '2 из 4 шт.' in markup and '3 из 4 шт.' in markup
+    assert 'История неполная' in markup and 'Цены уточняются' in markup
+    product['buyer_prices'].update(buyer_price_mean=None, target_buyer_price=None, spp_mean=None)
+    markup = node(f'SkladOzon.EconomicsWorkspace.productRows({json.dumps([product])})')
+    assert 'data-econ-buyer-price>Не рассчитано' in markup
+    assert 'data-econ-target-buyer-price>Не рассчитано' in markup
+
+
 def test_cost_validation_and_save_failure_restore_focus_with_dom_node_lists():
     script = f"""
     const assert=require('node:assert/strict');

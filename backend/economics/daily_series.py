@@ -54,6 +54,43 @@ def build_daily_evidence(orders, coverage, *, orders_complete=True,
                               tuple(sorted(incomplete)), tuple(rows))
 
 
+def period_price_means(evidence, period, skus):
+    """Aggregate known per-unit prices/discounts once for the selected calendar.
+
+    Price and SPP have independent coverage. These are all ordered units, like
+    the history plots, rather than the delivered-route quantities in the model.
+    """
+    summaries = {sku: {'buyer_price_mean': None, 'spp_mean': None,
+        'ordered_qty': 0 if evidence is not None and period is not None else None,
+        'buyer_priced_qty': 0, 'spp_priced_qty': 0,
+        'complete': bool(evidence is not None and period is not None and
+                         evidence.complete and sku not in evidence.incomplete_skus and
+                         evidence.period_start <= period['from'] <= period['to'] <= evidence.period_end)}
+        for sku in skus}
+    if evidence is None or period is None:
+        return summaries
+    amounts = defaultdict(lambda: [Decimal(0), Decimal(0)])
+    with localcontext() as context:
+        context.prec = 40
+        for row in evidence.days:
+            if row.sku not in summaries or not period['from'] <= row.day <= period['to']:
+                continue
+            summary = summaries[row.sku]
+            summary['ordered_qty'] += row.quantity
+            for index, (field, coverage) in enumerate((('buyer_price_mean', 'buyer_priced_qty'),
+                                                     ('spp', 'spp_priced_qty'))):
+                value, quantity = getattr(row, field), getattr(row, coverage)
+                if value is not None and quantity:
+                    amounts[row.sku][index] += value * quantity
+                    summary[coverage] += quantity
+        for sku, summary in summaries.items():
+            for index, (field, coverage) in enumerate((('buyer_price_mean', 'buyer_priced_qty'),
+                                                     ('spp_mean', 'spp_priced_qty'))):
+                if summary[coverage]:
+                    summary[field] = amounts[sku][index] / summary[coverage]
+    return summaries
+
+
 def daily_series(evidence, sku, *, period_from=None, period_to=None, granularity='day'):
     if not isinstance(granularity, str) or granularity not in {'day', 'week'}:
         raise ValueError('Выберите представление по дням или неделям.')

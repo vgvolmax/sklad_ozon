@@ -102,3 +102,40 @@ quantity handling and scope separation. Live Seller response compatibility was
 set aside because no live account response was available; the implementation is
 verified against the published wire shape and synthetic transport, with the first
 live account load remaining the production compatibility check.
+
+## Client prices and merge-readiness audit (2026-10-05)
+
+- The existing SKU price column shows current seller price and the mean price
+  paid by clients in the fact band; target seller price and client price at that
+  target are in the plan band. Both means use the selected inclusive calendar
+  and known ordered-unit counts, consistent with the history plots. SPP is the
+  unit-weighted mean of per-order percentages, not a ratio of average prices.
+  The projection retains mean historical SPP and rounds half-kopeks up. Unknown
+  SPP/target remain unknown; 0%/100% discounts and free buyer prices remain real.
+- The API/export use the current immutable background price evidence. Card
+  updates patch price cells only, retaining unsaved input/focus/scroll. Local
+  failure/retry and request ownership cover superseded periods, modes and
+  overlapping same-key refreshes. A browser regression observed an older price
+  overwriting a newer one before the monotonic request guard was added.
+- XLSX retains the existing 15 columns and filtered SKU selection, appending
+  numeric buyer means, SPP, target client price and separate coverage/status.
+- Fresh review reproduced lost cost for an explicit uploaded old SKU absent
+  from the current Ozon catalog. Private finance cost capture now precedes catalog
+  projection and manual overrides. The regression proves cost 200 / net 600 gives
+  profit 400 while Plan and persistent cost-directory scoping remain unchanged.
+  Uploaded article identity is available for old-SKU search.
+- Extended 200% browser checks exposed min-content propagation from the order
+  workspace grid and overflow from its advertising/profit/header panels. Their
+  existing owners now shrink/wrap within the page; table overflow stays internal.
+  The sticky close strip uses header layout height, avoiding a double-scaled
+  screen-coordinate offset at 200%; its position below the header is asserted.
+- Local full pytest: **1984 passed**, one existing Starlette deprecation warning.
+  All five production browser scenarios passed, with additional period/client
+  price, input retention, failed refresh/retry, overlapping/stale responses and
+  narrow/200% checks. All nine JS files pass syntax checks. Strict static audit
+  still reports **36 literal-button findings** (same as before this change): its
+  inline-action detector misses programmatic binding; changed actions are tested
+  in the browser, and a static-clean result is not claimed.
+- Independent whole-branch review found no remaining Critical/Important/Minor
+  issues after the two reported defects were corrected. Final published-head
+  CI and merge readiness are recorded in PR #206; the PR stays unmerged.

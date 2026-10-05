@@ -6,10 +6,11 @@ The shortfall is a modeled comparison at current input rates, not an actual loss
 
 from collections import defaultdict
 from datetime import date
-from decimal import Decimal, localcontext
+from decimal import Decimal, ROUND_HALF_UP, localcontext
 
 from backend.project import EconomicsSettings
 from .period import resolve_period, route_quantities
+from .daily_series import period_price_means
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
@@ -119,7 +120,7 @@ def _aggregate(rows, margin_target, roi_target, goal):
 
 def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
                               per_sku_drr=None, real_drr=None, per_sku_cost=None,
-                              period_from=None, period_to=None):
+                              period_from=None, period_to=None, daily_evidence=None):
     margin, roi, goal, planned_drr = validate_targets(margin, roi, goal, planned_drr)
     settings: EconomicsSettings | None = snapshot.economics_settings
     if settings is None:
@@ -217,6 +218,13 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
         })
     for sku in identity:
         by_sku.setdefault(sku, [])
+    if evidence is None:
+        weeks = snapshot.observed_routes.window.included_weeks
+        period = ({'from': date.fromisocalendar(*min(weeks), 1),
+                   'to': date.fromisocalendar(*max(weeks), 7)} if weeks else None)
+    price_summaries = period_price_means(
+        daily_evidence if daily_evidence is not None else getattr(snapshot, 'daily_order_evidence', None),
+        period, by_sku)
     products = []
     for sku in sorted(by_sku):
         routes = by_sku[sku]
@@ -224,6 +232,13 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
         unit = unit_by_sku.get(sku)
         summary = _aggregate(routes, margin, roi, goal)
         target_price = summary['target_price_all_routes']
+        buyer_prices = price_summaries[sku]
+        with localcontext() as context:
+            context.prec = 40
+            buyer_prices['target_buyer_price'] = (
+                (target_price * (ONE - buyer_prices['spp_mean'])).quantize(
+                    Decimal('.01'), rounding=ROUND_HALF_UP)
+                if target_price is not None and buyer_prices['spp_mean'] is not None else None)
         current_price = unit.price if unit else None
         delta = target_price - current_price if target_price is not None and current_price else None
         action = ('lower' if delta < 0 else 'raise' if delta > 0 else 'keep') if delta is not None else None
@@ -247,11 +262,8 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
                          "planned_drr_rate": overrides.get(sku, planned_drr),
                          "price_action": action, "price_delta": delta,
                          "price_delta_rate": delta / current_price if delta is not None else None,
+                         "buyer_prices": buyer_prices,
                          **summary, "groups": groups})
-    weeks = snapshot.observed_routes.window.included_weeks
-    if evidence is None:
-        period = ({"from": date.fromisocalendar(*min(weeks), 1),
-                   "to": date.fromisocalendar(*max(weeks), 7)} if weeks else None)
     return {"period": period, "observation_period": resolve_period(evidence),
             "history_complete": evidence.complete if evidence is not None else True,
             "evidence": "fulfilled_selected_period" if evidence else "fulfilled_completed_weeks",

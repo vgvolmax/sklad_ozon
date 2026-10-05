@@ -113,6 +113,43 @@ def test_cost_evidence_remains_backend_only(setup):
     assert 'buyout_cost_inputs' not in api.PROJECT_PATH.read_text()
 
 
+def test_api_analysis_retains_uploaded_old_sku_cost_only_for_finance(setup, monkeypatch):
+    from dataclasses import replace
+    from backend.ozon.source_store import OzonSourceSnapshotStore
+    from tests.api.test_analysis import _api_parity_fixture, _parity_files, _analysis_data, PRODUCT_HEADERS
+    from tests.helpers.xlsx_fixtures import make_xlsx
+    c, _, _ = setup
+    source = replace(_api_parity_fixture(), credential_context_id=api.OZON_VAULT.credential_context_id())
+    monkeypatch.setattr(api, 'OZON_SOURCE_STORE', OzonSourceSnapshotStore())
+    api.OZON_SOURCE_STORE.put(source)
+    products = make_xlsx(headers=PRODUCT_HEADERS, rows=[
+        ['SKU-1', 'ART-1', 100, 99, 1000, '10%', 1],
+        ['OLD-SKU', 'OLD-ART', 200, 0, 1000, '10%', 1]])
+    response = c.post('/api/analysis', files={
+        'tariffs_file': _parity_files()['tariffs_file'],
+        'product_economics_file': ('products.xlsx', products)}, data=_analysis_data(
+            source_mode='api', source_snapshot_id=source.source_snapshot_id))
+    assert response.status_code == 200, response.text
+    snap = api.ANALYSIS_STORE.latest()
+    costs = {p.sku: p.cost for p in snap.buyout_cost_inputs}
+    assert costs['OLD-SKU'] == D('200')
+    assert all(p.sku != 'OLD-SKU' for p in snap.unit_economics)
+    assert all(p.sku != 'OLD-SKU' for p in snap.decision_rows)
+    from backend.project import load_project_if_exists
+    assert 'OLD-ART' not in load_project_if_exists(api.PROJECT_PATH).cost_prices
+    assert 'buyout_cost_inputs' not in response.json()['snapshot']
+    finance = FinanceSnapshot('old-finance', api.OZON_VAULT.credential_context_id(),
+        date(2026, 9, 1), date(2026, 9, 30),
+        (FinanceProductLine(date(2026, 9, 1), 'OLD-SKU', 1, D('1000'), D('600')),), (), 'now')
+    api.FINANCE_STORE.put(finance)
+    result = c.post('/api/economics/buyouts/workspace', json={
+        'analysis_snapshot_id': snap.snapshot_id, 'finance_snapshot_id': finance.snapshot_id})
+    assert result.status_code == 200, result.text
+    p = result.json()['workspace']['products'][0]
+    assert p['sku'] == 'OLD-SKU' and p['article'] == 'OLD-ART'
+    assert p['cost'] == '200' and p['profit'] == '400'
+
+
 def test_account_switch_during_fetch_cannot_commit_or_emit_result(setup, monkeypatch):
     from tests.ozon.test_finance import Client, posting
     c, _, old = setup

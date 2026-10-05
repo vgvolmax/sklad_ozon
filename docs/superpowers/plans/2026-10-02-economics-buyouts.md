@@ -53,4 +53,18 @@
 - [x] Run browser scenario, existing Economics browser scenarios, JS syntax checks and full pytest; expected all pass.
 - [x] Update DESIGN/UX contract and acceptance evidence. Commit Task 3.
 - [x] Fresh whole-branch review; fix material findings with failing regressions first.
-- [ ] Push feature branch, open PR, check exact-head CI and confirm unmerged/auto-merge disabled.
+- [x] Push feature branch, open PR, check exact-head CI and confirm unmerged/auto-merge disabled
+  (PR #206, published loading-fix head `4276532`; follow-up checks below).
+
+### Follow-up: merge-readiness audit and client prices (2026-10-05)
+
+- [x] Add regression-first domain/API/render checks for unit-weighted selected-period
+  buyer price/SPP, projection, missing/zero values, independent coverage and SKU identity.
+- [x] Extend the existing fact/plan price cell and filtered XLSX with client prices.
+- [x] Use current background price evidence; update only price cells, with local
+  retry and request-generation guards that preserve unsaved input/focus/scroll.
+- [x] Verify full pytest and production browser scenarios; fresh whole-branch
+  review reproduced old-SKU cost capture and overlapping price response defects,
+  both corrected with regressions.
+- [ ] Publish the follow-up and verify final exact-head CI; record results in
+  PR #206. Keep PR open and unmerged.

@@ -437,19 +437,26 @@ async def _economics_report(request):
                  if row.article in project.cost_prices and
                  (project.cost_prices[row.article].source == 'manual' or
                   snapshot_costs.get(row.sku) in (None, project.cost_prices[row.article].cost))}
+        price_evidence, prices = ORDER_PRICE_ENRICHMENT.evidence(
+            getattr(snapshot, 'source_snapshot_id', None), getattr(snapshot, 'daily_order_evidence', None))
         report = build_economics_workspace(
             snapshot, margin=body.get('target_margin'), roi=body.get('target_roi'),
             goal=body.get('goal'), planned_drr=body.get('planned_drr'),
             per_sku_drr=overrides, real_drr={sku: value['rate'] for sku, value in actual.items()},
             per_sku_cost={sku: record.cost for sku, record in saved.items()},
-            period_from=body.get('period_from'), period_to=body.get('period_to'))
+            period_from=body.get('period_from'), period_to=body.get('period_to'),
+            daily_evidence=price_evidence)
         for product in report['products']:
             record = saved.get(product['sku'])
             product['cost_source'] = record.source if record else 'snapshot'
             product['advertising'] = actual.get(product['sku'])
+            buyer = product['buyer_prices']
+            buyer['pending'] = bool(prices['pending'] and (buyer['ordered_qty'] or 0) >
+                                    min(buyer['buyer_priced_qty'], buyer['spp_priced_qty']))
         report['catalog_product_count'] = len(report['products'])
         report['products'] = select_products(report['products'], search=body.get('search', ''),
                                              filter=body.get('filter', 'all'))
+        report['prices_pending'] = any(p['buyer_prices']['pending'] for p in report['products'])
         report['totals'] = summarize_products(report['products'], history_complete=report['history_complete'])
         report['modeled_shortfall'] = (sum((p['modeled_shortfall'] for p in report['products']
             if p['modeled_shortfall'] is not None), Decimal('0'))
@@ -1835,6 +1842,9 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
             join_diags.append(ImportDiagnostic('warning','MISSING_ARTICLE_TO_SKU','Unitka article is outside the current SKU universe.'))
             quality_facts.append(DataQualityFact('MISSING_ARTICLE_TO_SKU','article',product.article,product.article,'warning',article=product.article,source_name=products.meta.source_name,source_row=source_row))
     products=replace(products,records=tuple(joined),diagnostics=products.diagnostics+tuple(join_diags))
+    # Finance can include an explicit uploaded SKU outside today's catalog.
+    # Keep this private cost evidence before Plan scoping and saved overrides.
+    buyout_cost_products = products.records
     if source_inputs is not None:
         merged_products, merge_diagnostics = merge_api_product_economics(
             products.records, source_inputs.product_facts,
@@ -2050,7 +2060,7 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
                                    source_inputs.ozon_recommendation_error))
     if source_inputs is not None and not source_inputs.order_revenue_complete:
         snapshot = replace(snapshot, order_revenue_evidence=replace(snapshot.order_revenue_evidence, complete=False))
-    snapshot = replace(snapshot, buyout_cost_inputs=tuple(imported_cost_products))
+    snapshot = replace(snapshot, buyout_cost_inputs=tuple(buyout_cost_products))
     expected_context=provenance[2] if len(provenance)>2 else None
     snapshot = commit_analysis_snapshot_if_current(
         snapshot,expected_pack_fingerprint=pack_fingerprint_at_start,

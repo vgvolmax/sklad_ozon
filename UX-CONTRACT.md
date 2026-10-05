@@ -442,6 +442,23 @@ evidence and retryable errors stay local to the panel. Visible SKU histories are
 requested in bounded batches; old snapshot responses cannot overwrite new ones.
 Raw history prices/records stay server-side; only daily aggregates reach the browser.
 
+The SKU price cell also shows the selected-period mean client purchase price in
+the fact band, followed by the target seller/client prices in the plan band.
+Period means aggregate each known daily mean with its priced-unit count, never
+an equal-weight mean of days or a ratio of aggregate seller/buyer prices. The
+client-price projection is `target_seller_price * (1 - mean_spp)`, rounded to
+kopeks, and assumes that historical SPP is retained. All order lifecycle states
+and channels use the same evidence/interval as the plots. Separate known-price
+and known-SPP counts and incomplete history are explicit. Unknown SPP or target
+never implies zero; known 0%/100% SPP and zero buyer price remain calculable.
+Workspace and XLSX consume the current immutable background price evidence,
+without changing the analysis snapshot. Pending card prices refresh in place;
+superseded responses cannot cross snapshot, mode or selected-interval boundaries.
+Unsaved goals/costs, focused editors and scroll are retained. Refresh failures
+keep the current card values and provide local retry. XLSX appends numeric means,
+projection and coverage to the existing filtered SKU rows; original columns keep
+their positions. Financial buyout periods do not inherit unrelated order prices.
+
 Each cached API order channel carries an optional price-normalization version.
 Legacy channels refresh their existing loaded history once on normal refresh;
 subsequent complete channels resume the 28-day overlap even if Ozon genuinely

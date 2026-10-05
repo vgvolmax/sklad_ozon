@@ -286,6 +286,16 @@ expanded articles; weeks run Monday–Sunday with clipped edges and unit-weighte
 means. Article blocks have full-width 3px teal separators. Editor redraws preserve
 focus and both table-scroll axes as well as the current viewport anchor.
 
+The existing price cell contains seller and client prices without adding another
+wide table column. Its teal fact band shows the current seller price and the
+quantity-weighted mean client purchase price for the selected interval. Its purple
+plan band shows the target seller price and client price at that target, calculated
+with the same quantity-weighted historical SPP as the charts. Price and SPP
+coverage remain independent and textual; missing SPP/target means unknown, while
+zero prices/discounts remain real values. Background price updates patch only the
+price cells, preserving unsaved form input, focus and scroll; failure offers a
+local retry. The projection explicitly assumes unchanged SPP.
+
 Lower target prices use the existing success green with a down arrow and signed
 price-change explanation; this is a deliberate plan-band variant. All other
 actual/plan colors retain their teal/purple ownership. A compact period profit

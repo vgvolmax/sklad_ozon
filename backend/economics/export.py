@@ -108,6 +108,7 @@ def export_economics(report):
         if not sku or sku in skus:
             raise ValueError('Нужен уникальный SKU для каждой строки отчёта.')
         skus.add(sku)
+        prices = product.get('buyer_prices') or {}
         rows.append([article, product['name'], _number(product['price']),
                      _number(product['planned_drr_rate']), _number(product['real_drr_rate']), _number(product['margin']),
                      _number(product['roi']), _number(report['target_margin']),
@@ -115,10 +116,18 @@ def export_economics(report):
                      _number(product.get('applied_drr_rate')),
                      _number(product.get('commission_per_unit')),
                      (report.get('period') or {}).get('from'),
-                     (report.get('period') or {}).get('to'), product['qty'], sku])
+                     (report.get('period') or {}).get('to'), product['qty'], sku,
+                     _number(prices.get('buyer_price_mean')), _number(prices.get('spp_mean')),
+                     _number(prices.get('target_buyer_price')), prices.get('ordered_qty'),
+                     prices.get('buyer_priced_qty'), prices.get('spp_priced_qty'),
+                     'Полная' if prices.get('complete') else 'Неполная / отсутствует',
+                     'Уточняются' if prices.get('pending') else 'По загруженным данным'])
     return _workbook('Экономика', ['Артикул', 'Товар', 'Текущая цена, ₽',
         'ДРР по плану, %', 'Реальный ДРР, %', 'Маржа, %', 'ROI, %', 'Плановая маржа, %',
         'Необходимая цена, ₽', 'ДРР в расчёте, %', 'Комиссия Ozon, ₽ / шт.',
-        'Период с', 'Период по', 'Доставлено, шт.', 'SKU'],
-        rows, [18, 58, 22, 20, 20, 16, 16, 22, 24, 20, 24, 18, 18, 20, 24],
-        percentages=(4, 5, 6, 7, 8, 10), freeze='C2')
+        'Период с', 'Период по', 'Доставлено, шт.', 'SKU', 'Средняя цена клиента, ₽',
+        'Средний СПП, %', 'Цена клиента при цели, ₽', 'Заказано для средних, шт.',
+        'Цена клиента известна, шт.', 'СПП известен, шт.', 'История заказов для цен', 'Статус цен'],
+        rows, [18, 58, 22, 20, 20, 16, 16, 22, 24, 20, 24, 18, 18, 20, 24,
+               26, 20, 28, 26, 28, 24, 28, 28],
+        percentages=(4, 5, 6, 7, 8, 10, 17), freeze='C2')
