@@ -41,6 +41,9 @@ async def _report(request, export=False):
             getattr(snapshot, 'economics_order_quantities', ()), finance, body.get('mode', 'orders'),
             selected_skus=None if not search.strip() and filter == 'all' else {p['sku'] for p in selected},
             history_complete=getattr(snapshot, 'economics_order_quantities_complete', pricing['history_complete']))
+        if export and report['mode'] == 'buyouts' and not report['expenses_complete']:
+            return api.error(400, 'FINANCE_REQUIRED',
+                'Загрузите начисления за выбранный период: для отчёта нужны количества выкупов.', 'finance_snapshot_id')
         report['pricing_basis_id'] = pricing.get('pricing_basis_id', snapshot.snapshot_id)
         report['analysis_snapshot_id'] = snapshot.snapshot_id
         if export and not report['products'] and report['catalog_product_count']:

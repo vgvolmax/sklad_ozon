@@ -19,6 +19,17 @@ from tests.helpers.xlsx_fixtures import make_xlsx
 BODY = dict(target_margin='.2', target_roi='.4', goal='margin', planned_drr='.05')
 
 
+def test_buyout_export_requires_finance_quantity_even_with_complete_unit(data):
+    c, sid, period = data
+    body = {**BODY, **period, 'analysis_snapshot_id': sid, 'mode': 'buyouts',
+            'scenario_routes': {'NEW': [['Москва', 'Москва']]}}
+    result = c.post('/api/economics/period/export', json=body)
+    assert result.status_code == 400
+    assert result.json()['error']['code'] == 'FINANCE_REQUIRED'
+    report = c.post('/api/economics/period/workspace', json=body).json()['workspace']
+    assert report['coverage']['missing_unit_products'] == []
+
+
 @pytest.mark.parametrize('uploaded_old_unit', [True, False])
 @pytest.mark.parametrize('with_finance', [True, False])
 def test_removed_sku_orders_are_in_store_total_without_reactivating_plan(data, uploaded_old_unit, with_finance):
