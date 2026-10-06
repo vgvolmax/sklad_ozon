@@ -8,6 +8,7 @@ from uuid import uuid4
 from backend.economics.buyouts import FinanceExpense, FinanceProductLine, FinanceSnapshot
 from backend.ozon.client import OzonRequestPolicy
 from backend.ozon.endpoints import FINANCE_ACCRUAL_TYPES_PATH, FINANCE_ACCRUAL_BY_DAY_PATH, FBO_POSTING_GET_PATH, FBS_POSTING_GET_PATH
+from .finance_categories import classify_expense as _category
 
 READ = OzonRequestPolicy(retry_safe=True)
 ZERO = Decimal('0')
@@ -61,35 +62,24 @@ def _objects(value):
     return value
 
 
-def _category(name):
-    name = name.casefold()
-    for key, words in (
-        ('advertising', ('advert', 'promo', 'marketing', 'реклам', 'продвиж', 'оплата за клик')),
-        ('crossdock', ('crossdock', 'cross_dock', 'cross-dock', 'кросс')),
-        ('storage', ('storage', 'placement', 'хранен', 'размещен')),
-        ('acceptance', ('acceptance', 'приёмк', 'приемк')),
-        ('penalty', ('penalty', 'fine', 'штраф')),
-        ('commission', ('commission', 'комисси')),
-        ('acquiring', ('acquir', 'эквайр')),
-        ('returns', ('return', 'refund', 'возврат')),
-        ('logistics', ('delivery', 'logistic', 'lastmile', 'достав', 'логист')),
-    ):
-        if any(word in name for word in words):
-            return key
-    return 'other'
-
-
 def _quantity(product, posting, unit_number, request, cache):
     commission = product.get('commission') or {}
     sale = _money(commission.get('sale_amount'), optional=True)
-    if sale == 0:
-        if not _money(commission.get('seller_price'), optional=True):
-            return 0
-        # A fully discounted purchase can still be compensated by Ozon.
-        # Only a positive sale settlement may use the original posting quantity.
-        if _money(commission.get('commission'), optional=True) <= 0:
-            return None
     price = _money(commission.get('sale_price'), optional=True)
+    if sale == 0:
+        if commission.get('sale_amount') is None:
+            return None
+        if (commission.get('seller_price') is not None and
+                _money(commission['seller_price']) == ZERO):
+            return 0
+        if price > ZERO:
+            # Prices can be retained on a later commission/delivery adjustment.
+            return 0
+        # Only explicit free purchases with positive compensation can inherit
+        # the original posting quantity. Missing price is ambiguous, not free.
+        if (commission.get('sale_price') is None or price != ZERO or
+                _money(commission.get('commission'), optional=True) <= ZERO):
+            return None
     if price:
         with localcontext() as context:
             context.prec = 40
@@ -149,7 +139,7 @@ def fetch_finance(client, start, end, credential_context_id, progress_callback=N
         description = t.get('description') or name or f'Начисление {identifier}'
         if not isinstance(name, str) or not isinstance(description, str):
             raise ValueError('Некорректное описание начисления.')
-        types[identifier] = (_category(name+' '+description), description[:200])
+        types[identifier] = (_category(name, description), description[:200])
     products, expenses, seen, cache = [], [], {}, {}
 
     def fee(day, value, sku=None):

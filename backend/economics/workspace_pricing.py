@@ -119,6 +119,12 @@ def enrich_pricing(snapshot, report, scenario_routes, *, current_costs=None):
                     routes=[r for r in refreshed if r[field] == key])
                     for key in sorted({r[field] for r in refreshed})]
                     for role,field in (('destination','destination'),('origin','origin'))}
+                for groups in p['groups'].values():
+                    for group in groups:
+                        group['target_price_all_routes'] = calculator.calculate(product,
+                            [(r['origin'], r['destination']) for r in group['routes']],
+                            drr=p['planned_drr_rate'], margin=report['target_margin'],
+                            roi=report['target_roi'], goal=report['goal'])['target_price']
             p.update(cost=product.cost, cost_source='manual_current' if p['sku'] in (current_costs or {}) else 'import' if product.cost is not None else 'missing',
                 price=product.price, commission_rate=product.commission_rate,
                 commission_per_unit=product.price * product.commission_rate if product.price is not None and product.commission_rate is not None else None,

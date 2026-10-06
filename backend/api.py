@@ -449,6 +449,11 @@ async def _economics_report(request, *, scenario=None, include_historical=False,
                   snapshot_costs.get(row.sku) in (None, project.cost_prices[row.article].cost))}
         price_evidence, prices = ORDER_PRICE_ENRICHMENT.evidence(
             getattr(snapshot, 'source_snapshot_id', None), getattr(snapshot, 'daily_order_evidence', None))
+        historical_skus = set(additional_skus)
+        if include_historical:
+            historical_skus.update(q.sku for q in snapshot.economics_order_quantities)
+        historical_articles = {p.sku: p.article
+            for p in getattr(snapshot, 'economics_pricing_inputs', ())}
         report = build_economics_workspace(
             snapshot, margin=body.get('target_margin'), roi=body.get('target_roi'),
             goal=body.get('goal'), planned_drr=body.get('planned_drr'),
@@ -457,8 +462,8 @@ async def _economics_report(request, *, scenario=None, include_historical=False,
             period_from=body.get('period_from'), period_to=body.get('period_to'),
             daily_evidence=price_evidence, use_planned_drr=body.get('use_planned_drr', False),
             reported_skus={sku for sku, value in actual.items() if value['spend'] is not None},
-            extra_identities=tuple((p.sku,p.article,'Товар вне текущего каталога')
-                for p in getattr(snapshot,'economics_pricing_inputs',()) if p.sku in additional_skus))
+            extra_identities=tuple((sku, historical_articles.get(sku, ''), 'Товар вне текущего каталога')
+                for sku in sorted(historical_skus)))
         if (not include_historical and getattr(snapshot, 'source_mode', SourceMode.FILES) is SourceMode.API and
                 getattr(snapshot,'economics_tariffs',None) is not None):
             catalog_skus = {row[0] for row in snapshot.economics_catalog_identities}
@@ -1333,6 +1338,7 @@ class PreparedAnalysisInputs:
     ozon_recommendation_error: str | None = None
     recommendation_import: ImportResult | None = None
     order_revenue_complete: bool = True
+    economics_orders: ImportResult | None = None
 
 
 def _complete_current_catalog(snapshot) -> frozenset[str] | None:
@@ -1421,6 +1427,7 @@ def _api_prepared_inputs(snapshot, *, include_inbound: bool = True) -> PreparedA
         ),
         tuple(snapshot.product_facts),
         current_catalog_skus,
+        economics_orders=ImportResult(tuple(snapshot.orders), order_diagnostics, orders_meta),
         order_revenue_complete=all(e.complete and (e.record_quality is None or
             e.record_quality.rejected_record_count == 0) for e in snapshot.endpoint_evidence
             if e.name in {'orders_fbo', 'orders_fbs'}),
@@ -1783,6 +1790,10 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         orders=scope_orders_to_coverage(orders, order_coverage)
         economics_offset=0
         operational_availability=source_inputs.operational_availability
+    # Store profit owns historical removed SKU as well as today's Plan catalog.
+    economics_orders = scope_orders_to_coverage(
+        source_inputs.economics_orders if source_inputs is not None and
+        source_inputs.economics_orders is not None else orders, order_coverage)
     progress("reports",4,4,"unitka" if unitka is not None else "economics")
 
     if unitka is not None:
@@ -2062,9 +2073,20 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
         supply_facts=supply_facts,
         blocked_decision_rows=snapshot.decision_rows,
     )
+    pricing_inputs = {p.sku: p for p in buyout_cost_products}
+    uploaded_costs = {p.sku: p.cost for p in buyout_cost_products}
+    for p in imported_cost_products:
+        pricing_inputs[p.sku] = replace(p, cost=uploaded_costs.get(p.sku))
+    # Catalog products do not need a sales record or a cost-upload row to exist.
+    if source_inputs is not None:
+        from backend.domain.contracts import ProductEconomicsInput
+        for fact in source_inputs.product_facts:
+            if fact.sku not in pricing_inputs:
+                pricing_inputs[fact.sku] = ProductEconomicsInput(fact.sku, fact.article,
+                    None, None, fact.price, fact.commission_rate, fact.volume_liters)
     snapshot=replace(snapshot,shippable_plan=shippable_plan,
-        economics_period_evidence=build_period_evidence(orders.records, order_coverage,
-            products.records, analysis_tariffs, settings,
+        economics_period_evidence=build_period_evidence(economics_orders.records, order_coverage,
+            tuple(pricing_inputs.values()), analysis_tariffs, settings,
             complete=(source_inputs is None or source_inputs.order_revenue_complete)),
         daily_order_evidence=build_daily_evidence(orders.records, order_coverage,
             orders_complete=(source_inputs is None or source_inputs.order_revenue_complete),
@@ -2080,24 +2102,13 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
     if source_inputs is not None and not source_inputs.order_revenue_complete:
         snapshot = replace(snapshot, order_revenue_evidence=replace(snapshot.order_revenue_evidence, complete=False))
     from backend.analytics.daily import build_daily_order_facts
-    order_facts = build_daily_order_facts(orders.records, as_of)
+    order_facts = build_daily_order_facts(economics_orders.records, as_of)
     quantity_complete = (
         (source_inputs is None or source_inputs.order_revenue_complete and
          (source_inputs.source_coverage is None or source_inputs.source_coverage.demand_complete)) and
-        not any(d.severity == 'error' or d.code == 'UNKNOWN_ORDER_STATUS' for d in orders.diagnostics) and
+        not any(d.severity == 'error' or d.code == 'UNKNOWN_ORDER_STATUS' for d in economics_orders.diagnostics) and
         order_facts.demand.excluded_undated_observations == 0 and
         order_facts.demand.excluded_future_observations == 0)
-    pricing_inputs = {p.sku: p for p in buyout_cost_products}
-    uploaded_costs = {p.sku: p.cost for p in buyout_cost_products}
-    for p in imported_cost_products:
-        pricing_inputs[p.sku] = replace(p, cost=uploaded_costs.get(p.sku))
-    # Catalog products do not need a sales record or a cost-upload row to exist.
-    if source_inputs is not None:
-        from backend.domain.contracts import ProductEconomicsInput
-        for fact in source_inputs.product_facts:
-            if fact.sku not in pricing_inputs:
-                pricing_inputs[fact.sku] = ProductEconomicsInput(fact.sku, fact.article,
-                    None, None, fact.price, fact.commission_rate, fact.volume_liters)
     snapshot = replace(snapshot, buyout_cost_inputs=tuple(buyout_cost_products),
         economics_pricing_inputs=tuple(pricing_inputs.values()), economics_tariffs=analysis_tariffs,
         economics_catalog_identities=tuple((sku,

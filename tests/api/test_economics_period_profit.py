@@ -19,6 +19,123 @@ from tests.helpers.xlsx_fixtures import make_xlsx
 BODY = dict(target_margin='.2', target_roi='.4', goal='margin', planned_drr='.05')
 
 
+@pytest.mark.parametrize('uploaded_old_unit', [True, False])
+@pytest.mark.parametrize('with_finance', [True, False])
+def test_removed_sku_orders_are_in_store_total_without_reactivating_plan(data, uploaded_old_unit, with_finance):
+    from dataclasses import replace
+    from backend.domain.contracts import OrderLifecycle
+    from tests.api.test_analysis import _api_parity_fixture, _parity_files
+    c, _, _ = data
+    base = _api_parity_fixture()
+    old = replace(base.orders[0], sku='OLD', article='OLD-ART', quantity=9)
+    cancelled = replace(old, quantity=4, lifecycle=OrderLifecycle.CANCELLED)
+    source = replace(base, source_snapshot_id='store-history', orders=base.orders + (old, cancelled),
+        credential_context_id=api.OZON_VAULT.credential_context_id())
+    api.OZON_SOURCE_STORE.put(source)
+    rows = [['SKU-1', 'ART-1', 100, 0, 1000, '10%', 1]]
+    if uploaded_old_unit:
+        rows.append(['OLD', 'OLD-ART', 100, 0, 1000, '10%', 1])
+    files = _parity_files()
+    result = c.post('/api/analysis', files={
+        'tariffs_file': files['tariffs_file'],
+        'product_economics_file': ('costs.xlsx', make_xlsx(headers=PRODUCT_HEADERS, rows=rows)),
+    }, data=_analysis_data(source_mode='api', source_snapshot_id=source.source_snapshot_id))
+    assert result.status_code == 200, result.text
+    snapshot = result.json()['snapshot']
+    assert {r['sku'] for r in snapshot['decision_rows']} == {'SKU-1'}
+    assert {r['sku'] for r in snapshot['shippable_plan']['lines']} <= {'SKU-1'}
+    before = api.wire(api.ANALYSIS_STORE.latest())
+    body = {**BODY, 'analysis_snapshot_id': snapshot['snapshot_id'],
+        'period_from': '2026-07-01', 'period_to': '2026-07-31', 'mode': 'orders'}
+    if with_finance:
+        finance = FinanceSnapshot('STORE', api.OZON_VAULT.credential_context_id(),
+            date(2026, 7, 1), date(2026, 7, 31), (), (
+                FinanceExpense(date(2026, 7, 6), 'advertising', 'Ads', D('50')),
+                FinanceExpense(date(2026, 7, 6), 'storage', 'Storage', D('100'))), 'now')
+        api.FINANCE_STORE.put(finance)
+        body['finance_snapshot_id'] = 'STORE'
+    response = c.post('/api/economics/period/workspace', json=body)
+    assert response.status_code == 200, response.text
+    report = response.json()['workspace']
+    assert report['quantity_complete'] is True
+    assert report['totals']['qty'] == 35
+    old_row = next(p for p in report['products'] if p['sku'] == 'OLD')
+    assert old_row['qty'] == 9
+    if uploaded_old_unit:
+        assert D(old_row['profit']) == D('6120')
+        assert D(report['totals']['profit_before_common']) == D('23800')
+        if with_finance:
+            assert D(report['totals']['profit_after_common']) == D('23650')
+            assert report['totals']['partial'] is False
+    else:
+        assert old_row['profit'] is None
+        assert report['totals']['uncovered_known_qty'] == 9
+        assert D(report['totals']['profit_before_common']) == D('17680')
+        assert report['totals']['partial'] is True
+    public = c.post('/api/economics/workspace', json=body)
+    assert public.status_code == 200, public.text
+    assert {p['sku'] for p in public.json()['workspace']['products']} == {'SKU-1'}
+    exported = c.post('/api/economics/period/export', json={**body, 'search': 'OLD'})
+    assert exported.status_code == 200, exported.text
+    sheet = load_workbook(BytesIO(exported.content))['Товары']
+    assert sheet.max_row == 2
+    assert 'OLD' in [v.value for v in sheet[2]]
+    assert api.wire(api.ANALYSIS_STORE.latest()) == before
+
+
+@pytest.mark.parametrize('mode', ['orders', 'buyouts'])
+def test_historical_quantity_only_sku_remains_filterable_and_exportable(data, mode):
+    from dataclasses import replace
+    from backend.domain.contracts import OrderLifecycle
+    from tests.api.test_analysis import _api_parity_fixture, _parity_files
+    c, _, _ = data
+    base = _api_parity_fixture()
+    old = replace(base.orders[0], sku='OLD', article='OLD-ART', quantity=9,
+        lifecycle=OrderLifecycle.IN_PROGRESS)
+    source = replace(base, source_snapshot_id='quantity-only-history',
+        orders=base.orders + ((old,) if mode == 'orders' else ()),
+        credential_context_id=api.OZON_VAULT.credential_context_id())
+    api.OZON_SOURCE_STORE.put(source)
+    files = _parity_files()
+    analysis = c.post('/api/analysis', files={
+        'tariffs_file': files['tariffs_file'],
+        'product_economics_file': ('costs.xlsx', make_xlsx(headers=PRODUCT_HEADERS,
+            rows=[['SKU-1', 'ART-1', 100, 0, 1000, '10%', 1]])),
+    }, data=_analysis_data(source_mode='api', source_snapshot_id=source.source_snapshot_id))
+    assert analysis.status_code == 200, analysis.text
+    snapshot = analysis.json()['snapshot']
+    assert {r['sku'] for r in snapshot['decision_rows']} == {'SKU-1'}
+    before = api.wire(api.ANALYSIS_STORE.latest())
+    finance = FinanceSnapshot('QUANTITY', api.OZON_VAULT.credential_context_id(),
+        date(2026, 7, 1), date(2026, 7, 31),
+        (FinanceProductLine(date(2026, 7, 6), 'OLD', 9, D('9000'), D('1')),) if mode == 'buyouts' else (),
+        (), 'now')
+    api.FINANCE_STORE.put(finance)
+    body = {**BODY, 'analysis_snapshot_id': snapshot['snapshot_id'],
+        'period_from': '2026-07-01', 'period_to': '2026-07-31',
+        'mode': mode, 'finance_snapshot_id': 'QUANTITY'}
+    total = c.post('/api/economics/period/workspace', json=body)
+    assert total.status_code == 200, total.text
+    report = total.json()['workspace']
+    assert report['totals']['qty'] == (35 if mode == 'orders' else 9)
+    assert report['totals']['uncovered_known_qty'] == 9
+    for selection in ({'search': 'OLD'}, {'filter': 'incomplete'}):
+        response = c.post('/api/economics/period/workspace', json={**body, **selection})
+        assert response.status_code == 200, response.text
+        products = response.json()['workspace']['products']
+        assert [p['sku'] for p in products] == ['OLD']
+        assert products[0]['qty'] == 9 and products[0]['profit'] is None
+        assert products[0]['partial'] is True
+        exported = c.post('/api/economics/period/export', json={**body, **selection})
+        assert exported.status_code == 200, exported.text
+        sheet = load_workbook(BytesIO(exported.content))['Товары']
+        assert sheet.max_row == 2 and 'OLD' in [v.value for v in sheet[2]]
+    public = c.post('/api/economics/workspace', json=body)
+    assert public.status_code == 200, public.text
+    assert {p['sku'] for p in public.json()['workspace']['products']} == {'SKU-1'}
+    assert api.wire(api.ANALYSIS_STORE.latest()) == before
+
+
 def test_pricing_does_not_block_other_async_requests(data, monkeypatch):
     import asyncio
     from threading import Event
