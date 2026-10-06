@@ -146,3 +146,13 @@ def test_cancellation_inside_a_page_stops_before_next_seller_request():
         importlib.import_module('backend.ozon.adapters.finance').fetch_finance(
             client, DAY, DAY, 'account-1', progress_callback=cancel_lookup)
     assert not any(path.endswith('/get') for path, _ in client.calls)
+
+
+@pytest.mark.parametrize('name,category', [
+    ('Приёмка товаров', 'acceptance'), ('Штраф за нарушение', 'penalty'),
+    ('Комиссия за продажу', 'commission'), ('Неизвестная услуга', 'other'),
+    ('Возврат расходов на рекламу', 'advertising'),
+])
+def test_expense_category_retains_known_roles_and_unknown_services(name, category):
+    from backend.ozon.adapters.finance import _category
+    assert _category(name) == category

@@ -237,3 +237,21 @@ def test_unknown_real_drr_uses_explicit_zero_and_keeps_current_scenario():
     assert product['covered_qty'] == 15
     assert product['modeled_shortfall'] == 130
     assert product['commission_per_unit'] == Decimal('25')
+
+
+def test_optional_plan_fallback_changes_current_profit_but_not_before_ad_basis():
+    original = workspace(sample_snapshot(), real_drr={})['products'][0]
+    planned = workspace(sample_snapshot(), real_drr={}, use_planned_drr=True)['products'][0]
+    assert planned['real_drr_rate'] is None
+    assert planned['applied_drr_rate'] == Decimal('.05')
+    assert planned['applied_drr_source'] == 'plan'
+    assert planned['profit_per_unit'].quantize(Decimal('.01')) == Decimal('6.33')
+    assert planned['profit_before_ads_total'] == original['profit_before_ads_total']
+
+
+def test_incomplete_uploaded_report_is_not_replaced_by_zero_or_plan():
+    product = workspace(sample_snapshot(), real_drr={}, use_planned_drr=True,
+                        reported_skus={'SKU'})['products'][0]
+    assert product['applied_drr_rate'] is None
+    assert product['applied_drr_source'] == 'incomplete_report'
+    assert product['profit_per_unit'] is None

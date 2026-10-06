@@ -426,3 +426,29 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .buyout-expenses table{min-width:40rem}
 .buyout-page progress{width:100%;accent-color:var(--color-ozon)}
 @media(max-width:50rem){.buyout-totals{grid-template-columns:minmax(0,1fr)}.buyout-filters{align-items:stretch}.buyout-filters input{max-width:100%}}
+/* Period summary is a local island; its updates never replace SKU cards. */
+.econ-period-profit{display:block;min-width:0;overflow-anchor:none}
+.econ-profit-head,.econ-profit-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--space-sm)}
+.econ-profit-actions{justify-content:flex-start;margin:.7rem 0}
+.econ-profit-final{font-size:1rem;border-top:2px solid var(--econ-fact);margin-top:.4rem}
+.econ-period-profit progress{width:100%;accent-color:var(--econ-fact)}
+.econ-period-profit details{margin-top:.65rem;max-width:100%;min-width:0}
+.econ-period-profit table{min-width:36rem}
+.econ-period-profit .buyout-table-scroll{max-height:18rem}
+.econ-period-profit .buyout-table-scroll small{display:block;white-space:normal}
+.econ-targets .econ-drr-fallback{display:flex;align-items:center;gap:.4rem;max-width:20rem;white-space:normal}
+.econ-scenario{padding:.8rem;white-space:normal;min-width:0}
+.econ-scenario-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:.6rem}
+.econ-scenario-head p,.econ-scenario small{font-size:.74rem;color:var(--color-text-muted)}
+.econ-scenario-inputs,.econ-scenario-values{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1rem;margin:.8rem 0}
+.econ-scenario-inputs>div,.econ-scenario-inputs>label{display:grid;align-content:start;gap:.3rem}
+.econ-scenario-inputs select{max-width:100%;min-height:2.2rem}
+.econ-scenario-inputs fieldset{border:1px solid var(--color-border);padding:.5rem;min-width:0}
+.econ-scenario-inputs fieldset label{display:flex;gap:.4rem;align-items:center;white-space:normal}
+.econ-scenario-values strong{display:block;font-variant-numeric:tabular-nums}
+.econ-scenario-costs dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.4rem 1rem}
+.econ-scenario-costs dl>div{display:flex;justify-content:space-between;gap:.5rem}
+.econ-scenario-costs dd{margin:0;font-variant-numeric:tabular-nums}
+.econ-scenario-status{border-left:3px solid var(--econ-plan);padding-left:.6rem}
+@media(max-width:50rem){.econ-scenario-inputs,.econ-scenario-values,.econ-scenario-costs dl{grid-template-columns:repeat(2,minmax(0,1fr))}.econ-profit-head{align-items:flex-start}}
+@media(max-width:30rem){.econ-scenario-inputs,.econ-scenario-values,.econ-scenario-costs dl{grid-template-columns:1fr}}

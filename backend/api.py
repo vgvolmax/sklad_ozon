@@ -19,7 +19,7 @@ from backend.application import analyze
 from backend.economics import LogisticsContext
 from backend.economics.workspace import build_economics_workspace
 from backend.economics.export import export_cost_prices, export_economics
-from backend.economics.selection import select_products
+from backend.economics.selection import select_products, is_incomplete
 from backend.economics.summary import summarize_products
 from backend.cost_prices import (apply_costs, cost_fingerprint, cost_items,
                                 import_costs, set_cost)
@@ -129,7 +129,9 @@ def wire(value):
         # Daily revenue stays server-side; the Economics endpoint exposes only
         # the exact period totals required by its consumer.
         return {f.name:wire(getattr(value, f.name)) for f in fields(value)
-                if f.name not in {'order_revenue_evidence', 'daily_order_evidence', 'economics_period_evidence', 'buyout_cost_inputs'}}
+                if f.name not in {'order_revenue_evidence', 'daily_order_evidence', 'economics_period_evidence', 'buyout_cost_inputs',
+                                  'economics_pricing_inputs', 'economics_tariffs', 'economics_order_quantities',
+                                  'economics_catalog_identities', 'economics_order_quantities_complete'}}
     if isinstance(value,Enum): return value.value
     if isinstance(value,Decimal): return _decimal_string(value)
     if isinstance(value,(date,datetime)): return value.isoformat()
@@ -407,8 +409,8 @@ def _find_working_line(plan, identity):
     return next((line for line in plan.lines
                  if (line.sku,line.destination_cluster_id)==identity),None)
 
-async def _economics_report(request):
-    body = await json_object(request)
+async def _economics_report(request, *, scenario=None, include_historical=False, additional_skus=()):
+    body = await json_object(request) if scenario is None else scenario
     if body is None:
         return error(400, 'INVALID_ECONOMICS_SCENARIO',
                      'Укажите параметры экономического сценария.', None)
@@ -424,12 +426,20 @@ async def _economics_report(request):
         return error(400, 'INVALID_ECONOMICS_SCENARIO',
                      'Плановый ДРР по товарам заполнен неверно.', 'per_sku_drr')
     try:
+        current_costs = body.get('per_sku_cost', {})
+        if (not isinstance(current_costs, dict) or len(current_costs) > 1000 or
+                any(not isinstance(sku, str) or not sku.strip() for sku in current_costs)):
+            raise ValueError('Себестоимость по SKU заполнена неверно.')
+        from backend.economics.workspace import _decimal
+        current_costs = {sku: _decimal(value, 'cost', Decimal('1e12'))
+                         for sku, value in current_costs.items()}
         with PROJECT_PERSISTENCE_LOCK:
             advertising = load_advertising(PROJECT_PATH.with_name('advertising.json'))
         period = resolve_period(getattr(snapshot, 'economics_period_evidence', None),
                                 body.get('period_from'), body.get('period_to'))
         actual = real_drr_by_sku(advertising, getattr(snapshot, 'order_revenue_evidence', None),
-                                {row.sku for row in snapshot.decision_rows},
+                                {row.sku for row in snapshot.decision_rows} |
+                                {row[0] for row in getattr(snapshot, 'economics_catalog_identities', ())},
                                 period_from=period['from'] if period else None,
                                 period_to=period['to'] if period else None)
         snapshot_costs = {unit.sku: unit.cost for unit in snapshot.unit_economics}
@@ -443,12 +453,21 @@ async def _economics_report(request):
             snapshot, margin=body.get('target_margin'), roi=body.get('target_roi'),
             goal=body.get('goal'), planned_drr=body.get('planned_drr'),
             per_sku_drr=overrides, real_drr={sku: value['rate'] for sku, value in actual.items()},
-            per_sku_cost={sku: record.cost for sku, record in saved.items()},
+            per_sku_cost={**{sku: record.cost for sku, record in saved.items()}, **current_costs},
             period_from=body.get('period_from'), period_to=body.get('period_to'),
-            daily_evidence=price_evidence)
+            daily_evidence=price_evidence, use_planned_drr=body.get('use_planned_drr', False),
+            reported_skus={sku for sku, value in actual.items() if value['spend'] is not None},
+            extra_identities=tuple((p.sku,p.article,'Товар вне текущего каталога')
+                for p in getattr(snapshot,'economics_pricing_inputs',()) if p.sku in additional_skus))
+        if (not include_historical and getattr(snapshot, 'source_mode', SourceMode.FILES) is SourceMode.API and
+                getattr(snapshot,'economics_tariffs',None) is not None):
+            catalog_skus = {row[0] for row in snapshot.economics_catalog_identities}
+            report['products'] = [p for p in report['products'] if p['sku'] in catalog_skus]
+        from backend.economics.workspace_pricing import enrich_pricing
+        await asyncio.to_thread(enrich_pricing, snapshot, report, body.get('scenario_routes', {}), current_costs=current_costs)
         for product in report['products']:
             record = saved.get(product['sku'])
-            product['cost_source'] = record.source if record else 'snapshot'
+            product['cost_source'] = product.get('cost_source', record.source if record else 'snapshot')
             product['advertising'] = actual.get(product['sku'])
             buyer = product['buyer_prices']
             buyer['pending'] = bool(prices['pending'] and (buyer['ordered_qty'] or 0) >
@@ -461,7 +480,7 @@ async def _economics_report(request):
         report['modeled_shortfall'] = (sum((p['modeled_shortfall'] for p in report['products']
             if p['modeled_shortfall'] is not None), Decimal('0'))
             if any(p['covered_qty'] for p in report['products']) else None)
-        report['incomplete_sku_count'] = sum(p['partial'] or p['no_observations'] for p in report['products'])
+        report['incomplete_sku_count'] = sum(is_incomplete(p) for p in report['products'])
         report['cost_prices_fingerprint'] = cost_fingerprint(project)
         report['advertising_fingerprint'] = advertising_fingerprint(advertising)
         report['advertising_campaigns'] = campaign_items(advertising)
@@ -2060,7 +2079,34 @@ def run_analysis_pipeline(raw, unitka, files, values, tax, as_of, scenario_reque
                                    source_inputs.ozon_recommendation_error))
     if source_inputs is not None and not source_inputs.order_revenue_complete:
         snapshot = replace(snapshot, order_revenue_evidence=replace(snapshot.order_revenue_evidence, complete=False))
-    snapshot = replace(snapshot, buyout_cost_inputs=tuple(buyout_cost_products))
+    from backend.analytics.daily import build_daily_order_facts
+    order_facts = build_daily_order_facts(orders.records, as_of)
+    quantity_complete = (
+        (source_inputs is None or source_inputs.order_revenue_complete and
+         (source_inputs.source_coverage is None or source_inputs.source_coverage.demand_complete)) and
+        not any(d.severity == 'error' or d.code == 'UNKNOWN_ORDER_STATUS' for d in orders.diagnostics) and
+        order_facts.demand.excluded_undated_observations == 0 and
+        order_facts.demand.excluded_future_observations == 0)
+    pricing_inputs = {p.sku: p for p in buyout_cost_products}
+    uploaded_costs = {p.sku: p.cost for p in buyout_cost_products}
+    for p in imported_cost_products:
+        pricing_inputs[p.sku] = replace(p, cost=uploaded_costs.get(p.sku))
+    # Catalog products do not need a sales record or a cost-upload row to exist.
+    if source_inputs is not None:
+        from backend.domain.contracts import ProductEconomicsInput
+        for fact in source_inputs.product_facts:
+            if fact.sku not in pricing_inputs:
+                pricing_inputs[fact.sku] = ProductEconomicsInput(fact.sku, fact.article,
+                    None, None, fact.price, fact.commission_rate, fact.volume_liters)
+    snapshot = replace(snapshot, buyout_cost_inputs=tuple(buyout_cost_products),
+        economics_pricing_inputs=tuple(pricing_inputs.values()), economics_tariffs=analysis_tariffs,
+        economics_catalog_identities=tuple((sku,
+            product_identities.get(sku, ('', ''))[0] or (pricing_inputs[sku].article if sku in pricing_inputs else ''),
+            product_identities.get(sku, ('', ''))[1])
+            for sku in sorted(current_catalog_skus if current_catalog_skus is not None
+                              else set(pricing_inputs) | set(product_identities))),
+        economics_order_quantities=order_facts.demand.cells,
+        economics_order_quantities_complete=quantity_complete)
     expected_context=provenance[2] if len(provenance)>2 else None
     snapshot = commit_analysis_snapshot_if_current(
         snapshot,expected_pack_fingerprint=pack_fingerprint_at_start,
@@ -2189,3 +2235,5 @@ def export_pack_multiplicity():
 
 from backend.economics.buyout_api import router as buyout_router
 router.include_router(buyout_router)
+from backend.economics.period_api import router as period_economics_router
+router.include_router(period_economics_router)

@@ -275,8 +275,8 @@ available with a route table naming both roles. The pricing scenario and
 historical model use separate labels. Actual values use teal above purple plan/target
 values, with explicit labels and separators. The necessary price is directly
 below the seller price. Below-target status uses text instead of recoloring
-actual numbers. Advertising amounts/period are disclosed below the DRR bands. Unknown real DRR retains `n/a` but uses
-an explicitly labeled 0% assumption in this Economics scenario. Other missing
+actual numbers. Advertising amounts/period are disclosed below the DRR bands. Unknown real DRR retains `n/a`; absent reports use the explicit zero/plan
+policy below, while incomplete uploaded reports stay unknown. Other missing
 financial inputs remain unknown. The shortfall is a current-rate estimate over delivered routes in the selected
 loaded interval, not a buyout or payout statement. Native inclusive date controls
 select one interval for Economics, advertising, history charts and XLSX. The
@@ -316,7 +316,8 @@ no layout shift, and asynchronous-result ownership.
 
 Economics keeps target margin, ROI and planned DRR in the compact target
 band. Real DRR is read-only in each SKU row, with uploaded expense, all-order
-revenue and period; unknown values show `n/a` with a reason and `В расчёте 0 %`.
+revenue and period; unknown values show `n/a` and the applied zero/plan policy
+or the incomplete-report reason.
 The commission column stacks rubles per unit under its percentage. The optional
 advertising panel on Economics owns batch selection, per-file results/retry,
 and a bounded campaign list. Campaign deletion uses the shared AppDialog.
@@ -359,14 +360,32 @@ The immutable `ShippablePlan` is the system recommendation. The separately mater
 
 The product and cluster perspectives render the same server-returned Working Plan. `Рекомендация` always means the immutable system quantity; `К поставке` is editable using whole-pack steps or an exact integer entry. Volume is derived from the working quantity. Until shipment candidates consume `working_plan_id`, any active current override blocks the legacy shipment flow.
 
-### Economics: bought-out period variant
+### Economics: one unit model and a local period panel
 
-`По заказам / По выкупам` is a separate calculation selector, using the existing
-segmented-button group and `aria-pressed`. The order pricing model and its
-actual/plan colors retain their established presentation. The financial view uses
-Ozon blue for observed finance amounts and explicit text for incomplete totals.
-It retains the existing panel, date, table and clipboard owners; no new visual
-tokens or framework. Its grid uses `minmax(0, 1fr)` so only the table region owns
-horizontal overflow. Summary panels use natural document height; the table alone
-has bounded internal scrolling. Native date pickers retain platform ownership.
-Source: `docs/superpowers/specs/2026-10-02-economics-buyouts-design.md`.
+Source: `docs/superpowers/specs/2026-10-05-economics-unit-period-design.md`.
+
+The period-profit selector lives inside its summary panel. It changes only the
+quantity multiplier: net accepted orders or signed buyout accruals. SKU cards,
+charts, edited fields, focus, cluster disclosures and scroll keep their own owner.
+The shared native period controls own dates for cards, charts and the summary.
+Financial progress, cancellation, retry and download update only the panel.
+
+The panel uses the same before-ad unit basis in both modes. It shows storewide
+advertising separately from other known common expenses, then the result and
+model-revenue margin. Missing quantities, inputs, expenses and unclassified
+services are explicit. The store result stays fixed under SKU filters; the
+filtered product contribution is shown separately. Bounded native tables own
+horizontal overflow; summaries remain in document flow at narrow/200% widths.
+
+Historical cards keep actual/model values above plan in the existing two colors.
+Target prices identify planned DRR and the limiting route. A high weighted mean
+margin can coexist with an increased universal route target; the copy explains
+that distinction. Price reductions retain the existing direction treatment.
+
+Products without their own fulfilled routes use a compact calculation card:
+current/target seller prices, current margin/ROI, upload cost, volume, explicit
+native origin/destination controls, and server-returned expense components.
+There are no SPP, client-price or history charts in this card. Multiple selected
+routes use a conservative basis. No routes/inputs/attainable goal produce a
+specific action or explanation rather than a made-up zero. SKU copy keeps the
+shared icon and success popup, without a hover tooltip.

@@ -57,6 +57,35 @@ def _number(value):
     return None if value is None else float(value)
 
 
+def export_period_profit(report):
+    book = Workbook(); book.remove(book.active)
+    t = report['totals']
+    _sheet(book, 'Итог', ['Показатель', 'Значение'], [
+        ['Охват', 'Весь магазин · модель по текущей юнитке'],
+        ['Период с', report['period']['from'].isoformat()],
+        ['Период по', report['period']['to'].isoformat()],
+        ['Режим', 'По заказам' if report['mode'] == 'orders' else 'По выкупам'],
+        ['Количество, шт.', t['qty']], ['Модельная выручка, ₽', _number(t['revenue_model'])],
+        ['Прибыль до общих расходов, ₽', _number(t['profit_before_common'])],
+        ['Реклама за период, ₽', _number(t['advertising_total'])],
+        ['Прочие общие расходы, ₽', _number(t['other_common_total'])],
+        ['Прибыль после известных расходов, ₽', _number(t['profit_after_common'])],
+        ['Маржа', _number(t['margin'])], ['Полнота', 'Частичный' if t['partial'] else 'Полный по известным данным'],
+        ['Источник расходов', 'Финансовые начисления Ozon' if report['expenses_complete'] else 'Не загружены'], ['Загружено', report['loaded_at']],
+        ['База юнитки', report.get('pricing_basis_id')], ['Снимок начислений', report.get('finance_snapshot_id')],
+        ['SKU с полной базой', t['covered_sku_count']], ['SKU всего', t['sku_count']],
+        ['Количество с полной базой', t['covered_qty']], ['SKU без полной базы', ', '.join(t['uncovered_skus'])],
+        ['Прибыль выбранных SKU до общих расходов, ₽', _number(report['selected_profit_before_common'])]], [54, 66])
+    _sheet(book, 'Товары', ['SKU', 'Артикул', 'Товар', 'Прибыль до рекламы, ₽ / шт.',
+        'Количество, шт.', 'Вклад в прибыль, ₽', 'Цена продавца, ₽', 'Модельная выручка, ₽', 'Статус', 'Выкуплено, шт.', 'Возвращено, шт.'],
+        [[p['sku'], p['article'], p['name'], _number(p['profit_per_unit_before_ads']), p['qty'],
+          _number(p['profit']), _number(p['price']), _number(p['revenue']),
+          'Неполный' if p['partial'] else 'Известен', p['purchased_qty'], p['returned_qty']] for p in report['products']], [24,22,50,28,22,26,26,28,22,22,22])
+    _sheet(book, 'Расходы', ['Категория', 'Сумма всего магазина, ₽', 'Роль'],
+        [[e['label'], _number(e['amount']), {'advertising':'Реклама · вычтена','additional_period_expense':'Общий расход · вычтен','already_in_unit_model':'Уже в юнитке','unclassified':'Не классифицирован · не вычтен'}[e['role']]] for e in report['expenses']], [60,30,38])
+    stream = BytesIO(); book.save(stream); return stream.getvalue()
+
+
 def export_buyouts(report):
     book = Workbook()
     book.remove(book.active)
@@ -100,6 +129,10 @@ def export_cost_prices(items):
 
 
 def export_economics(report):
+    drr_sources = {'real':'Реальный отчёт', 'plan':'План · отчёт отсутствует',
+                   'zero_assumption':'Допущение 0 % · отчёт отсутствует', 'incomplete_report':'Отчёт неполный'}
+    basis_sources = {'selected_period':'Выбранный период', 'loaded_history':'Загруженная история',
+                     'scenario_worst_route':'Выбранные маршруты · худший вариант'}
     skus = set()
     rows = []
     for product in sorted(report['products'], key=lambda p: (p['article'], p['sku'])):
@@ -121,13 +154,24 @@ def export_economics(report):
                      _number(prices.get('target_buyer_price')), prices.get('ordered_qty'),
                      prices.get('buyer_priced_qty'), prices.get('spp_priced_qty'),
                      'Полная' if prices.get('complete') else 'Неполная / отсутствует',
-                     'Уточняются' if prices.get('pending') else 'По загруженным данным'])
+                     'Уточняются' if prices.get('pending') else 'По загруженным данным',
+                     _number(product.get('cost')), product.get('cost_source'),
+                     _number(product.get('profit_per_unit')), _number(product.get('profit_per_unit_before_ads')),
+                     drr_sources.get(product.get('applied_drr_source'), 'Неизвестен'),
+                     'Без продаж' if product.get('calculation_kind') == 'no_sales' else 'По истории',
+                     basis_sources.get(product.get('basis_source'), 'История маршрутов'),
+                     '; '.join(' → '.join(route) for route in product.get('calculation_routes', [])),
+                     ' → '.join(product.get('limiting_route') or ()), product.get('price_action'),
+                     'Полный' if product.get('pricing_complete') else 'Неполный'])
     return _workbook('Экономика', ['Артикул', 'Товар', 'Текущая цена, ₽',
         'ДРР по плану, %', 'Реальный ДРР, %', 'Маржа, %', 'ROI, %', 'Плановая маржа, %',
         'Необходимая цена, ₽', 'ДРР в расчёте, %', 'Комиссия Ozon, ₽ / шт.',
         'Период с', 'Период по', 'Доставлено, шт.', 'SKU', 'Средняя цена клиента, ₽',
         'Средний СПП, %', 'Цена клиента при цели, ₽', 'Заказано для средних, шт.',
-        'Цена клиента известна, шт.', 'СПП известен, шт.', 'История заказов для цен', 'Статус цен'],
+        'Цена клиента известна, шт.', 'СПП известен, шт.', 'История заказов для цен', 'Статус цен',
+        'Себестоимость, ₽ / шт.', 'Источник себестоимости', 'Прибыль, ₽ / шт.', 'Прибыль до рекламы, ₽ / шт.',
+        'Источник ДРР в расчёте', 'Режим юнитки', 'Источник маршрутов', 'Расчётные маршруты',
+        'Маршрут, ограничивающий цену', 'Действие с ценой', 'Расчёт юнитки'],
         rows, [18, 58, 22, 20, 20, 16, 16, 22, 24, 20, 24, 18, 18, 20, 24,
-               26, 20, 28, 26, 28, 24, 28, 28],
+               26, 20, 28, 26, 28, 24, 28, 28, 26, 26, 26, 30, 40, 22, 38, 50, 50, 22, 22],
         percentages=(4, 5, 6, 7, 8, 10, 17), freeze='C2')

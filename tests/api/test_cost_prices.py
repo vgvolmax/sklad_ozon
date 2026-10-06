@@ -92,7 +92,10 @@ def test_economics_excel_has_one_product_row_and_numeric_rates(tmp_path, monkeyp
         'ДРР в расчёте, %', 'Комиссия Ozon, ₽ / шт.', 'Период с', 'Период по', 'Доставлено, шт.', 'SKU',
         'Средняя цена клиента, ₽', 'Средний СПП, %', 'Цена клиента при цели, ₽',
         'Заказано для средних, шт.', 'Цена клиента известна, шт.', 'СПП известен, шт.',
-        'История заказов для цен', 'Статус цен']
+        'История заказов для цен', 'Статус цен', 'Себестоимость, ₽ / шт.',
+        'Источник себестоимости', 'Прибыль, ₽ / шт.', 'Прибыль до рекламы, ₽ / шт.',
+        'Источник ДРР в расчёте', 'Режим юнитки', 'Источник маршрутов',
+        'Расчётные маршруты', 'Маршрут, ограничивающий цену', 'Действие с ценой', 'Расчёт юнитки']
     assert sheet.cell(2, 1).value == '26572'
     assert sheet.cell(2, 3).value == 100
     assert sheet.cell(2, 4).value == .05
@@ -100,7 +103,7 @@ def test_economics_excel_has_one_product_row_and_numeric_rates(tmp_path, monkeyp
     assert sheet.cell(2, 5).value is None and sheet.cell(2, 6).value is not None
     assert sheet.cell(2, 10).value == 0 and sheet.cell(2, 11).value == 25
     assert sheet.cell(2, 4).number_format == '0.0%'
-    assert sheet.freeze_panes == 'C2' and sheet.auto_filter.ref == 'A1:W2'
+    assert sheet.freeze_panes == 'C2' and sheet.auto_filter.ref == 'A1:AH2'
     api.ANALYSIS_STORE.clear()
     assert client.post('/api/economics/export', json=BODY).status_code == 409
 

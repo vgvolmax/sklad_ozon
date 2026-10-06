@@ -380,22 +380,14 @@ accessible name, and deliberately has no visual hover tooltip. It announces a sm
 anchored success popup only after clipboard write succeeds. Denial offers manual
 copying; superseded async clicks cannot announce a success for the latest failed click.
 
-Margin and ROI targets, selected pricing goal and planned DRR are local
-scenario preferences. Python calculates weighted route averages, commission,
-modeled target shortfall and a price at unchanged rates/logistics. Planned DRR
-only affects prospective price. Read-only real DRR recalculates current
-margin, ROI and modeled shortfall on the same observed route mix without
-mutating the analysis snapshot. Unknown real DRR shows `n/a` and its reason,
-but applies an explicit `В расчёте 0 %` assumption. A SKU
-without observed routes remains visible with an unknown shortfall and price.
-Economics uses delivered postings by acceptance date inside an inclusive selected
-interval from loaded observations, including the loaded current week. Plan/Flow
-retain their completed-week window. This is not a confirmed buyout or Ozon payout
-ledger. The UI names the calculation and observation bounds and labels its shortfall as modeled,
-not as actual financial loss for the current month. A tariff step, a new
-price's effect on demand are outside this scenario. Uploaded advertising spend
-is joined strictly by SKU; import results disclose matched article/name/SKU.
-A missing route blocks a universal price recommendation.
+Margin/ROI targets, pricing goal, planned DRR and the optional fallback policy
+are local scenario preferences. Python owns current unit components, weighted
+route means and target search, including tariff changes at the proposed price.
+Actual DRR stays read-only and separate from applied assumptions. Incomplete
+uploaded advertising evidence stays unknown. Without route history, explicit
+scenario routes permit a target without inventing sales. The unit-period section
+below owns the detailed rules. Plan/Flow retain completed-week observations.
+SKU advertising matching never merges articles or uses attributed sales.
 
 Commission is displayed as percent with rubles per unit immediately below it.
 Actual evidence uses teal above purple plan/target values, with explicit labels;
@@ -406,15 +398,12 @@ statement. Advertising amount/period details remain inspectable below DRR. The
 minimum positive price to reach the chosen goal may be lower than the current price;
 lowering has a green amount plus explicit down arrow/delta and a separate filter.
 Unreachable/incomplete goals stay unknown. The scenario does not model new demand
-or tariffs after a price change.
+after a price change; tariffs are re-evaluated at each candidate price.
 
-A compact card follows the selected interval and search/filter: current-rate
-profit on delivered routes before advertising, available uploaded advertising
-spend for the same selection/interval, and their difference once. Pre-ad profit
-is calculated independently, never by subtracting spend from the already DRR-adjusted
-per-unit profit. Unreported expense is unknown; reported zero is known zero.
-Partial route/history profit and known-advertising SKU counts remain explicit.
-This is a model after known uploaded expenses, not a complete payout statement.
+The local period panel below owns store totals, quantities and common expenses.
+SKU filters affect its contribution table, while store totals stay storewide.
+Historical product rows end with the daily panel described below; products without
+route history use the compact calculation card and omit those charts.
 
 Each product row ends with a compact, independently expandable daily panel for
 SPP, buyer price and orders. All three charts use the same calendar for the loaded
@@ -608,44 +597,59 @@ the previous directory. Deleting a campaign uses shared AppDialog confirmation.
 The row label is `Реальный`, read-only, never a fallback to scenario/local
 preferences. Overall DRR uses all posting states and FBO/FBS seller revenue
 over the expense dates, never attributed sales or averaged vendor percentages.
-Missing complete evidence means `n/a`; the current Economics model applies
-0% with an explicit assumption label, preserving margin/ROI/shortfall when
-all other route inputs are complete. Unknown source expense remains unknown.
+Missing real evidence means `n/a`. Without a report the model applies the
+explicit zero/plan policy below; an incomplete uploaded report stays unknown. Unknown source expense remains unknown.
 Planned DRR remains editable and drives target pricing independently. Ad
 imports do not change Data uploads, source mode, Demand, Need or Plan.
 
-## Economics: explicit financial period
+## Economics: unit pricing and local period profit
 
-Source: `docs/superpowers/specs/2026-10-02-economics-buyouts-design.md`.
+Source: `docs/superpowers/specs/2026-10-05-economics-unit-period-design.md`.
 
-- `По выкупам` explicitly loads Seller finance accruals for inclusive dates;
-  it does not change the source or mathematics of Plan, Demand, Flow or the
-  order pricing model. Finance may accompany FILES analysis because it is an
-  independent reporting source, never live shipment validation.
-- Current uploaded SKU costs are used before saved article overrides. No
-  historical or monthly costs are added. Missing cost/quantity yields a visible
-  partial result, with no invented cost or original full-return quantity.
-- Common costs and the final profit card always cover the whole store. Search
-  and filters affect the product subtotal and product Excel sheet. The summary
-  and expense sheets explicitly cover the whole store.
-- Dates are draft values until an explicit load succeeds. The previously loaded
-  period remains visible after a failed refresh. Account/session changes reject
-  stale finance; cached views are revalidated on outer app renders. Long loading
-  has progress and cancel; no overlapping submission or stale response overwrite.
-- Switching back to orders restores its existing controls and report. An
-  interrupted initial/recalculation request is not treated as a loaded report;
-  it is requested again on return. Selecting the active mode is a no-op.
-- Financial progress names the current day, page, processed accruals and Seller
-  read/quantity stage. Keep-alive events maintain the stream during bounded
-  paced/retried reads without claiming completed days. Cancellation interrupts
-  retry/cooldown/admission waits and prevents subsequent reads. An already
-  in-flight socket read remains subject to the existing finite timeout.
-- Date controls reuse native date inputs with platform-owned calendars and
-  application validation, inclusive ranges, and Moscow business-date limits.
-  Search follows the existing 300ms debounce, IME, clear, and stale-result policy.
-- Tables reuse committed native table markup and global scrollbars. Financial
-  periods are a named bounded table variant; summary/form panels stay in document
-  flow. Copy reuses `EconomicsWorkspace.copySku`, no hover tooltip, real clipboard
-  success popup only. Money reuses `EconomicsWorkspace.formatMoney`.
-- XLSX remains backend-built, literal-string safe, retryable, and disabled during
-  unsettled selection. Download creates no remote accounting action.
+- One canonical unit calculator owns cost, commission, acquiring, current and
+  target tariff bands, FBO/return assumptions, supported taxes and co-invest.
+  Target price works without sales or current price, permits decreases and
+  verifies every selected route at the final currency price. Cost zero permits
+  a margin target; ROI remains undefined.
+- Current uploaded SKU costs precede older saved article costs. An explicit
+  current edit can override the upload within this analysis; a new snapshot
+  resets those edits. No monthly or historical cost directory is introduced.
+- DRR stores real, planned and applied rates separately. A real zero remains zero.
+  Without a report, applied DRR is zero or the plan if the optional checkbox is
+  enabled (old preferences default off). An uploaded incomplete report blocks
+  current after-ad profit instead of silently substituting plan/zero. The panel
+  before-ad basis is recalculated with DRR zero, including tax recalculation.
+- API cards follow the complete current Ozon catalog, including products without
+  orders/cluster stock. FILES unit-upload products may be calculated without
+  adding synthetic Demand/Need/Plan/Flow observations. Old financial SKUs count
+  in the panel; complete inputs permit their contribution, incomplete inputs
+  appear in coverage, and neither case reactivates the Plan assortment.
+- Orders/buyouts change only the period panel. Net orders include in-progress
+  and fulfilled units by acceptance day; cancellations are excluded. Buyouts
+  use signed finance quantities by accrual day. Partial returns never guess the
+  original posting quantity; negative net quantities stay negative.
+- Both modes multiply the identical before-ad profit per unit by their quantity,
+  then subtract the identical store expense ledger for the same dates. All ads
+  are common, including ads attached to a SKU without orders. Ad XLSX imports
+  remain DRR evidence and are not added again to finance expenses. Commission,
+  acquiring and modeled logistics are shown as already in the unit basis.
+  Known storage/crossdock/acceptance/penalties are additional; unknown services
+  are unclassified, visible, un-subtracted and make the result partial.
+- Main totals and expenses always cover the store. Shared SKU search/filters
+  affect the contribution table and its export, not the store result. Missing
+  finance yields unknown after-expense profit, whereas a complete zero-expense
+  ledger yields a known zero deduction. Empty periods can still have a loss.
+- Draft native period inputs apply through the shared form inside the loaded
+  history. Finance is explicitly loaded for those dates; a wider cached ledger
+  can be sliced to a contained interval. Source, dates, loaded time and coverage
+  are visible. Changed/locked credentials, analysis or request keys reject stale
+  results and exports. Account-sensitive cached finance is revalidated on an
+  outer app render, also for FILES analysis.
+- Financial progress names day/page/processed accruals and Seller read stage.
+  Keep-alive events maintain a bounded stream. Cancel/retry affect the panel
+  alone. A mode switch during finance sync changes the subsequent aggregate;
+  it does not reload expenses or replace unit-card DOM.
+- XLSX is server-built, literal-string safe and retryable. Unit columns retain
+  their original order and append basis/source/status. Period workbook has
+  store summary, all filtered product rows and store expenses. Active drafts,
+  stale selection or credentials block download. No remote accounting mutation.

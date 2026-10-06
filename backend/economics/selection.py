@@ -4,6 +4,10 @@ from decimal import Decimal
 FILTERS = frozenset(('all', 'below', 'margin', 'roi', 'cluster', 'incomplete', 'lower'))
 
 
+def is_incomplete(product):
+    return product['partial'] or product['no_observations'] and product.get('pricing_complete') is not True
+
+
 def select_products(products, *, search='', filter='all'):
     if not isinstance(search, str) or len(search) > 200:
         raise ValueError('Поиск должен быть строкой не длиннее 200 символов.')
@@ -22,7 +26,7 @@ def select_products(products, *, search='', filter='all'):
             'all': True, 'below': product['below_goal'],
             'margin': product['below_margin'], 'roi': product['below_roi'],
             'cluster': any(g['below_margin'] or g['below_roi'] for g in groups),
-            'incomplete': product['partial'] or product['no_observations'],
+            'incomplete': is_incomplete(product),
             'lower': product['price_action'] == 'lower',
         }
         if matches[filter]:

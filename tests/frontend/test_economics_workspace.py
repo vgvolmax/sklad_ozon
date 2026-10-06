@@ -75,7 +75,7 @@ def test_cost_validation_and_save_failure_restore_focus_with_dom_node_lists():
     const assert=require('node:assert/strict');
     const calls=[];
     const input={{dataset:{{econCost:'S',article:'A'}},value:'',focus(){{calls.push('focus');}}}};
-    const retry={{dataset:{{econCostRetry:'S'}}}},form={{}},download={{addEventListener(){{}}}};
+    const retry={{dataset:{{econCostRetry:'S'}}}},form={{addEventListener(){{}}}},download={{addEventListener(){{}}}};
     const list=values=>({{forEach:fn=>values.forEach(fn),[Symbol.iterator]:()=>values[Symbol.iterator]()}});
     const container={{innerHTML:'',querySelector(selector){{
       return selector==='#econ-target-form'?form:selector==='#econ-export'?download:null;

@@ -4,7 +4,7 @@ from decimal import Decimal, localcontext
 
 def summarize_products(products, *, history_complete=True):
     quantity = sum(p['qty'] for p in products)
-    covered = sum(p['covered_qty'] for p in products)
+    covered = sum(p.get('before_ads_covered_qty', p['covered_qty']) for p in products)
     profits = [p['profit_before_ads_total'] for p in products
                if p['profit_before_ads_total'] is not None]
     reported = [p['advertising'] for p in products

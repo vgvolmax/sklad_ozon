@@ -27,7 +27,9 @@ def import_orders(data: bytes, report_context: ReportMeta) -> ImportResult[Order
             sku = normalize_text(row["sku"])
             origin = normalize_cluster_label(row["кластер отгрузки"])
             destination = normalize_cluster_label(row["кластер доставки"])
-            if not sku or not origin or not destination:
+            # An in-progress order already contributes demand before its
+            # shipment origin is assigned. Route eligibility checks the origin.
+            if not sku or not destination:
                 raise KeyError
         except ValueError:
             diagnostics.append(_diag("INVALID_NUMBER", "Order quantity and seller price must be valid non-negative numbers.", row=row_number)); continue

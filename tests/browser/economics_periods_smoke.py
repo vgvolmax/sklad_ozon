@@ -90,7 +90,7 @@ def main():
                 shifted_table = page.locator('.econ-table-scroll').evaluate('el=>el.scrollTop')
                 pending.pop().continue_()
                 expect(page.locator('.econ-page')).to_have_attribute('aria-busy', 'false')
-                assert abs(page.evaluate('scrollY') - shifted) < 3
+                assert abs(page.evaluate('scrollY') - shifted) < 3, (shifted,page.evaluate('scrollY'),drr.bounding_box(),page.locator('[data-econ-profit]').bounding_box())
                 assert abs(page.locator('.econ-table-scroll').evaluate('el=>el.scrollTop') - shifted_table) < 3
                 expect(page.locator('[data-econ-sku="SKU-3"]')).to_have_attribute('aria-expanded', 'true')
                 assert page.locator('[data-econ-row="SKU-3"]').evaluate("el=>parseFloat(getComputedStyle(el.cells[0]).borderTopWidth)") >= 3

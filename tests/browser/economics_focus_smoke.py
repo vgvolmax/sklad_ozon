@@ -163,10 +163,11 @@ def main():
                 page.locator('#econ-search-clear').click()
                 page.locator('#econ-search').fill('DUP')
                 expect(page.locator('.econ-sku-row')).to_have_count(2)
-                # 3×680 + 2×(-120) = 1800 before ads; uploaded spend = 50.
-                expect(page.locator('[data-econ-profit-before]')).to_contain_text('1\u00a0800')
-                expect(page.locator('[data-econ-profit-spend]')).to_contain_text('50')
-                expect(page.locator('[data-econ-profit-after]')).to_contain_text('1\u00a0750')
+                # Store total: 3×680 + 2×(-120) + 12×2×680 = 18120.
+                # SKU advertising files affect DRR; they are not the store ledger.
+                expect(page.locator('[data-econ-profit-before]')).to_contain_text('18\u00a0120')
+                expect(page.locator('[data-buyout-ads]')).to_contain_text('Не рассчитано')
+                expect(page.locator('[data-buyout-final]')).to_contain_text('Не рассчитано')
                 page.screenshot(path=str(ARTIFACTS / 'filtered-summary.png'), full_page=True)
                 page.locator('#econ-period-reset').click()
                 page.locator('#econ-search-clear').click()

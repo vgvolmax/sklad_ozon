@@ -20,7 +20,8 @@ from backend.ozon.client import OzonClient, TransportResponse
 from backend.ozon.contracts import OzonCredentials
 from backend.ozon.vault import CredentialVault
 from backend.security import LOCAL_SESSION_HEADER, current_local_session_token
-from tests.api.test_analysis import _two_sku_analysis_files, _analysis_data
+from tests.api.test_analysis import _two_sku_analysis_files, _analysis_data, PRODUCT_HEADERS
+from tests.helpers.xlsx_fixtures import make_xlsx
 from tests.ozon.test_finance import posting, money
 
 ROOT = Path(__file__).parents[2]
@@ -54,17 +55,17 @@ def main():
                     api.OZON_VAULT.setup(OzonCredentials('other-account', 'other-key'), 'test-password')
                 day = body['date']; rows = []
                 if fail[0]:
-                    payload = {'accruals': [posting(total_amount=money('NaN'))], 'last_id': ''}
+                    payload = {'accruals': [posting(date=day,total_amount=money('NaN'))], 'last_id': ''}
                 else:
-                    if day == '2026-09-01':
-                        first = posting(); first['posting']['products'][0]['sku'] = 'SKU-1'
+                    if day == '2026-08-20':
+                        first = posting(date=day); first['posting']['products'][0]['sku'] = 'SKU-1'
                         second = deepcopy(first); second['accrual_id'] = '2'; second['total_amount'] = money(600)
                         product = second['posting']['products'][0]; product['sku'] = 'SKU-2'
                         product['commission'].update(sale_amount=money(400), commission=money(300))
                         product['delivery']['total_accrued'] = money(-100)
                         rows = [first, second, {'accrual_id': 'ad', 'accrued_category': 'NON_ITEM', 'date': day,
                             'total_amount': money(-100), 'non_item_fee': {'type_id': 1, 'accrued': money(-100)}}]
-                    if day == '2026-09-02':
+                    if day == '2026-08-21':
                         returned = posting('return', date=day, total_amount=money(-600))
                         product = returned['posting']['products'][0]; product['sku'] = 'SKU-1'
                         product['commission'].update(sale_amount=money(-400), sale_price=money(-400), commission=money(-100))
@@ -78,7 +79,11 @@ def main():
         api.OZON_CLIENT = OzonClient(api.OZON_VAULT, transport=transport, sleeper=lambda _: None)
         with TestClient(app, base_url='http://127.0.0.1', headers={LOCAL_SESSION_HEADER: current_local_session_token()}) as client:
             client.put('/api/project/cost-prices/ART-1', json={'cost': '999'})
-            response = client.post('/api/analysis', files=_two_sku_analysis_files(), data=_analysis_data())
+            files = _two_sku_analysis_files()
+            files['product_economics_file'] = ('products.xlsx', make_xlsx(headers=PRODUCT_HEADERS, rows=[
+                ['SKU-1','ART-1',100,3,1000,'10%',1], ['SKU-2','ART-2',200,4,1200,'10%',1],
+                ['NEW','NEW-ART',100,0,1000,'10%',1]]))
+            response = client.post('/api/analysis', files=files, data=_analysis_data())
             assert response.status_code == 200, response.text
             snapshot = response.json()['snapshot']
         sock = socket.socket(); sock.bind(('127.0.0.1', 0))
@@ -103,142 +108,127 @@ def main():
                     'S.__buyoutTest={setState(value){setState(value);}};')
                 page.route('**/assets/js/app.js', lambda route: route.fulfill(body=source, content_type='text/javascript'))
                 page.goto(f'http://127.0.0.1:{port}/')
-                # Switching before the first order report completes must reload it on return.
-                pending_orders = []
-                page.route('**/api/economics/workspace', lambda route: pending_orders.append(route), times=1)
                 page.evaluate("snapshot=>{const S=SkladOzon;S.__buyoutTest.setState({...S.createInitialState(),section:'economics',snapshot});}", snapshot)
-                for _ in range(100):
-                    if pending_orders: break
-                    page.wait_for_timeout(25)
-                assert pending_orders
-                page.locator('[data-econ-calculation="buyouts"]').click()
-                page.locator('[data-econ-calculation="orders"]').click()
-                expect(page.locator('[data-econ-row]')).to_have_count(2)
+                expect(page.locator('[data-econ-row]')).to_have_count(3)
                 expect(page.locator('#econ-target-form')).to_be_visible()
-                pending_orders.pop().continue_()
+                page.locator('#econ-period-from').fill('2026-08-20')
+                page.locator('#econ-period-to').fill('2026-08-21')
+                page.locator('#econ-period-form button[type=submit]').click()
+                expect(page.locator('[data-econ-period-summary]')).to_contain_text('2026-08-20')
+                # A new SKU has explicit tariff routes and no history charts/SPP.
+                new = page.locator('[data-econ-scenario-sku="NEW"]')
+                expect(new).to_be_visible()
+                expect(page.locator('[data-daily-sku="NEW"]')).to_have_count(0)
+                new.locator('[data-econ-destination="Москва"]').check()
+                expect(new.locator('[data-econ-target-price]')).not_to_contain_text('Не рассчитано')
+                expect(new.locator('[data-econ-destination="Москва"]')).to_be_focused()
+                new.screenshot(path=str(ARTIFACTS/'no-sales.png'))
+                # Fallback policy changes the unit card, never the before-ad store basis.
+                page.locator('[name=usePlan]').check()
+                page.locator('#econ-target-form button[type=submit]').click()
+                expect(page.locator('[data-econ-row="SKU-1"]')).to_contain_text('ДРР по плану')
+                expect(page.locator('[data-econ-row="SKU-1"] td').nth(6)).to_contain_text('630')
+                expect(page.locator('[data-econ-profit-before]')).to_have_text('1 426 ₽')
+                page.locator('[name=usePlan]').uncheck()
+                page.locator('#econ-target-form button[type=submit]').click()
+                expect(page.locator('[data-econ-row="SKU-1"] td').nth(6)).to_contain_text('680')
+                expect(page.locator('[data-econ-profit] [data-econ-calculation="buyouts"]')).to_be_visible()
                 page.locator('[data-econ-calculation="buyouts"]').click()
-                expect(page.locator('#buyout-load')).to_be_enabled()
-                page.locator('#buyout-from').fill('2026-09-01'); page.locator('#buyout-to').fill('2026-09-02')
+                expect(page.locator('#econ-target-form')).to_be_visible()
+                expect(page.locator('[data-econ-row]')).to_have_count(3)
                 slow_read[0] = True
                 page.locator('#buyout-load').click()
                 expect(page.locator('#buyout-progress-detail')).to_contain_text('Ожидаем ответ Ozon')
-                expect(page.locator('#buyout-progress-detail')).to_contain_text('01.09.2026')
-                page.locator('[data-econ-calculation="buyouts"]').click()
+                expect(page.locator('#buyout-progress-detail')).to_contain_text('20.08.2026')
                 expect(page.locator('#buyout-progress-detail')).to_contain_text('Прошло: 1 с', timeout=3000)
+                page.locator('[data-econ-calculation="orders"]').click()
+                expect(page.locator('#econ-target-form')).to_be_visible()
                 page.screenshot(path=str(ARTIFACTS/'slow-load.png'), full_page=True)
                 page.locator('#buyout-cancel').click()
                 expect(page.locator('#buyout-load')).to_be_enabled()
                 expect(page.locator('#buyout-error')).to_contain_text('отменена')
                 release_read.set()
                 page.locator('#buyout-load').click()
-                expect(page.locator('[data-buyout-row]')).to_have_count(2)
-                expect(page.locator('[data-buyout-final]')).to_have_text('1 250 ₽')
+                expect(page.locator('[data-buyout-final]')).to_have_text('1 276 ₽')
                 expect(page.locator('[data-buyout-ads]')).to_have_text('100 ₽')
-                expect(page.locator('[data-buyout-row="SKU-1"]')).to_contain_text('100 ₽')
+                # A failed mode refresh cannot turn retained orders into buyouts.
+                page.route('**/api/economics/period/workspace', lambda route: route.fulfill(
+                    status=500,content_type='application/json',body=json.dumps({'error':{'message':'Synthetic refresh failure'}})))
+                page.locator('[data-econ-calculation="buyouts"]').click()
+                expect(page.locator('#buyout-error')).to_contain_text('Synthetic refresh failure')
+                expect(page.locator('[data-econ-profit-stale]')).to_contain_text('По заказам')
+                expect(page.locator('[data-econ-profit] dl')).to_contain_text('Количество · заказы')
+                expect(page.locator('[data-buyout-final]')).to_have_count(0)
+                expect(page.locator('#buyout-export')).to_be_disabled()
+                expect(page.locator('[data-econ-row]')).to_have_count(3)
+                page.unroute('**/api/economics/period/workspace')
+                page.locator('[data-econ-calculation="orders"]').click()
+                expect(page.locator('[data-buyout-final]')).to_have_text('1 276 ₽')
+                # Only this panel changes; the SKU nodes, draft and focus survive.
+                page.locator('[data-econ-sku="SKU-1"]').click()
+                expect(page.locator('.econ-clusters')).to_be_visible()
+                draft = page.locator('[data-econ-drr="SKU-1"]')
+                draft.fill('7')
+                page.evaluate("()=>{window.__unitNode=document.querySelector('[data-econ-row]');document.querySelector('[data-econ-calculation=buyouts]').click();}")
+                expect(page.locator('[data-buyout-final]')).to_have_text('1 956 ₽')
+                expect(draft).to_have_value('7')
+                expect(draft).to_be_focused()
+                assert page.evaluate("window.__unitNode===document.querySelector('[data-econ-row]')")
+                expect(page.locator('.econ-clusters')).to_be_visible()
+                page.evaluate("document.querySelector('[data-econ-calculation=orders]').click()")
+                expect(page.locator('[data-buyout-final]')).to_have_text('1 276 ₽')
+                page.locator('[data-econ-close]').click()
+                expect(page.locator('[data-econ-row]')).to_have_count(3)
                 page.screenshot(path=str(ARTIFACTS/'desktop.png'), full_page=True)
-                page.locator('#buyout-search').fill('SKU-1')
-                expect(page.locator('[data-buyout-row]')).to_have_count(1)
-                expect(page.locator('[data-buyout-selected]')).to_have_text('1 000 ₽')
-                expect(page.locator('[data-buyout-final]')).to_have_text('1 250 ₽')
+                # Store expenses stay unchanged under the shared SKU filter.
+                page.locator('#econ-search').fill('SKU-1')
+                expect(page.locator('[data-econ-row]')).to_have_count(1)
+                expect(page.locator('[data-buyout-final]')).to_have_text('1 276 ₽')
                 with page.expect_download() as download:
                     page.locator('#buyout-export').click()
                 book = load_workbook(BytesIO(Path(download.value.path()).read_bytes()))
-                assert book.sheetnames == ['Выкупы', 'Итог периода', 'Расходы']
-                assert book['Выкупы'].max_row == 2 and book['Выкупы']['A2'].value == 'SKU-1'
-                page.locator('[data-econ-copy="SKU-1"]').click()
-                expect(page.locator('[data-econ-copy-status]')).to_contain_text('SKU скопирован')
-                assert page.evaluate('navigator.clipboard.readText()') == 'SKU-1'
-                page.locator('#buyout-search').fill('нет такого')
-                expect(page.locator('#buyout-export')).to_be_disabled()
-                page.locator('#buyout-clear').click(); expect(page.locator('[data-buyout-row]')).to_have_count(2)
-                page.route('**/api/economics/buyouts/workspace', lambda route: route.fulfill(status=503,
-                    json={'error': {'message': 'Временная ошибка расчёта'}}), times=1)
-                page.locator('#buyout-search').fill('SKU-1')
-                expect(page.locator('#buyout-error')).to_contain_text('Временная ошибка')
-                expect(page.locator('#buyout-export')).to_be_disabled()
-                page.locator('#buyout-retry').click()
-                expect(page.locator('[data-buyout-row]')).to_have_count(1)
+                assert book.sheetnames == ['Итог','Товары','Расходы']
+                assert book['Товары'].max_row == 2
+                assert book['Товары']['A2'].value == 'SKU-1'
                 expect(page.locator('#buyout-export')).to_be_enabled()
-                page.locator('#buyout-clear').click(); expect(page.locator('[data-buyout-row]')).to_have_count(2)
-                # Acquisition can succeed while final aggregation fails: preserve the prior pair.
-                page.route('**/api/economics/buyouts/workspace', lambda route: route.fulfill(status=503,
-                    json={'error': {'message': 'Временная ошибка итогового расчёта'}}), times=1)
-                page.locator('#buyout-to').fill('2026-09-01'); page.locator('#buyout-load').click()
-                expect(page.locator('#buyout-error')).to_contain_text('Временная ошибка итогового')
-                expect(page.locator('[data-buyout-final]')).to_have_text('1 250 ₽')
-                expect(page.locator('#buyout-progress')).to_contain_text('02.09.2026')
-                with page.expect_download() as previous:
-                    page.locator('#buyout-export').click()
-                previous_book = load_workbook(BytesIO(Path(previous.value.path()).read_bytes()))
-                previous_summary = {row[0].value: row[1].value for row in previous_book['Итог периода']}
-                assert previous_summary['Период по'] == '2026-09-02'
-                before_retry = len(calls)
-                page.locator('#buyout-retry').click()
-                expect(page.locator('[data-buyout-final]')).to_have_text('1 800 ₽')
-                assert len(calls) == before_retry  # Retry aggregation without reloading Seller accruals.
-                page.locator('#buyout-to').fill('2026-09-02'); page.locator('#buyout-load').click()
-                expect(page.locator('#buyout-load')).to_be_enabled()
+                page.locator('#econ-search-clear').click()
                 fail[0] = True
                 page.locator('#buyout-load').click()
                 expect(page.locator('#buyout-error')).to_contain_text('Некорректная')
-                expect(page.locator('[data-buyout-final]')).to_have_text('1 250 ₽')
-                expect(page.locator('#buyout-load')).to_be_enabled()
-                fail[0] = False
-                page.locator('#buyout-load').click(); expect(page.locator('#buyout-error')).to_be_hidden()
-                expect(page.locator('[data-buyout-row]')).to_have_count(2)
-                # Retain selected period and filters when switching calculation mode.
-                page.locator('[data-econ-calculation="orders"]').click()
+                expect(page.locator('[data-buyout-final]')).to_have_text('1 276 ₽')
                 expect(page.locator('#econ-target-form')).to_be_visible()
-                expect(page.locator('[data-econ-row]')).to_have_count(2)
-                page.locator('[data-econ-calculation="buyouts"]').click()
-                expect(page.locator('#buyout-from')).to_have_value('2026-09-01')
-                expect(page.locator('[data-buyout-row]')).to_have_count(2)
-                # Typed native dates validate accessibly and keep prior loaded period honest.
-                page.locator('#buyout-to').fill('2026-08-01'); page.locator('#buyout-load').click()
-                expect(page.locator('#buyout-period-error')).to_be_visible()
-                expect(page.locator('#buyout-from')).to_be_focused()
-                expect(page.locator('#buyout-progress')).to_contain_text('02.09.2026')
-                page.locator('#buyout-to').fill('2026-09-02')
+                fail[0] = False
+                page.locator('#buyout-load').click()
+                expect(page.locator('#buyout-error')).to_be_hidden()
                 page.locator('.buyout-expenses summary').click()
                 expect(page.locator('.buyout-expenses')).to_contain_text('Кросс-докинг')
-                page.set_viewport_size({'width': 760, 'height': 800})
-                page.evaluate('scrollTo(0,0)')
-                page.screenshot(path=str(ARTIFACTS/'narrow.png'), full_page=True)
-                assert page.evaluate('document.documentElement.scrollWidth<=innerWidth'), page.evaluate("[...document.querySelectorAll('*')].filter(n=>n.getBoundingClientRect().width>innerWidth).slice(0,15).map(n=>[n.tagName,n.className,getComputedStyle(n).minWidth,n.getBoundingClientRect().width])")
-                page.evaluate("document.documentElement.style.zoom='2'")
-                page.evaluate('scrollTo(0,0)')
-                page.screenshot(path=str(ARTIFACTS/'zoom-200.png'), full_page=True)
-                assert page.evaluate('document.documentElement.scrollWidth<=innerWidth'), page.evaluate("[...document.querySelectorAll('*')].filter(n=>n.getBoundingClientRect().width>innerWidth).slice(0,15).map(n=>[n.tagName,n.className,getComputedStyle(n).minWidth,n.getBoundingClientRect().width])")
+                for width, zoom, name in [(760,'1','narrow'),(760,'2','zoom-200')]:
+                    page.set_viewport_size({'width':width,'height':800})
+                    page.evaluate("z=>{document.documentElement.style.zoom=z;scrollTo(0,0)}", zoom)
+                    page.screenshot(path=str(ARTIFACTS/(name+'.png')),full_page=True)
+                    assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                 page.evaluate("document.documentElement.style.zoom='1'")
-                # Returning to the same FILES analysis while an export is pending revalidates.
-                pending = []
-                page.route('**/api/economics/buyouts/export', lambda route: pending.append(route), times=1)
-                page.locator('#buyout-export').click()
-                for _ in range(100):
-                    if pending: break
-                    page.wait_for_timeout(25)
-                assert pending
+                # Re-entering the same FILES analysis revalidates the cabinet.
                 api.OZON_VAULT.lock()
                 page.evaluate("()=>{const S=SkladOzon;S.__buyoutTest.setState({...S.AppState});}")
-                expect(page.locator('[data-buyout-final]')).to_have_count(0)
-                pending.pop().continue_()
                 expect(page.locator('#buyout-error')).to_contain_text('Разблокируйте')
+                expect(page.locator('[data-buyout-final]')).to_have_count(0)
+                expect(page.locator('#econ-target-form')).to_be_visible()
                 api.OZON_VAULT.unlock('test-password')
                 page.locator('#buyout-load').click()
-                expect(page.locator('[data-buyout-final]')).to_have_text('1 250 ₽')
-                expect(page.locator('#buyout-load')).to_be_enabled()
-                # Export alone handles a locked cabinet even without a navigation render.
-                api.OZON_VAULT.lock(); page.locator('#buyout-export').click()
+                expect(page.locator('[data-buyout-final]')).to_have_text('1 276 ₽')
+                api.OZON_VAULT.lock()
+                page.locator('#buyout-export').click()
                 expect(page.locator('#buyout-error')).to_contain_text('Разблокируйте')
                 expect(page.locator('[data-buyout-final]')).to_have_count(0)
-                api.OZON_VAULT.unlock('test-password'); page.locator('#buyout-load').click()
-                expect(page.locator('[data-buyout-final]')).to_have_text('1 250 ₽')
-                expect(page.locator('#buyout-load')).to_be_enabled()
-                # A cabinet change while syncing must not leave the old cabinet's profit on screen.
+                api.OZON_VAULT.unlock('test-password')
+                page.locator('#buyout-load').click()
+                expect(page.locator('[data-buyout-final]')).to_have_text('1 276 ₽')
                 switch_account[0] = True
                 page.locator('#buyout-load').click()
                 expect(page.locator('#buyout-error')).to_be_visible()
                 expect(page.locator('[data-buyout-final]')).to_have_count(0)
+                expect(page.locator('#econ-target-form')).to_be_visible()
                 assert not errors, errors
                 assert not external, external
                 browser.close()
