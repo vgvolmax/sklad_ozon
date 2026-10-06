@@ -10,9 +10,10 @@ from backend.analytics.clean_routes import CleanRouteResult
 from backend.analytics._weeks import AnalyticsWindow
 from backend.analytics.demand_estimate import DemandEstimate
 from backend.analytics.routes import RouteProfile
-from backend.domain.contracts import ReportMeta, SourceMode
+from backend.domain.contracts import ReportMeta, SourceMode, ProductEconomicsInput, ImportResult, TariffRow
 from backend.domain.advertising import OrderRevenueEvidence
 from backend.domain.economics_daily import DailyOrderEvidence, EconomicsPeriodEvidence
+from backend.analytics.daily import DailyDemandCell
 from backend.domain.signals import RecommendationDistortionSignal, SignalConfidence, StockoutSignal
 from backend.economics import RouteOpportunity, UnitEconomicsResult
 from backend.project import EconomicsSettings, OptimizerThresholds
@@ -360,3 +361,10 @@ class AnalysisSnapshot:
     order_revenue_evidence: OrderRevenueEvidence | None = None
     daily_order_evidence: DailyOrderEvidence | None = None
     economics_period_evidence: EconomicsPeriodEvidence | None = None
+    # Current uploaded SKU costs, before saved article overrides. Backend-only.
+    buyout_cost_inputs: tuple[ProductEconomicsInput, ...] = ()
+    economics_pricing_inputs: tuple[ProductEconomicsInput, ...] = ()
+    economics_tariffs: ImportResult[TariffRow] | None = None
+    economics_order_quantities: tuple[DailyDemandCell, ...] = ()
+    economics_order_quantities_complete: bool = True
+    economics_catalog_identities: tuple[tuple[str, str, str], ...] = ()

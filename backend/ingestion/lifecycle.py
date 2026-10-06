@@ -6,6 +6,7 @@ from .normalization import normalize_text
 _STATUS_MAP = {
     "доставлен": OrderLifecycle.FULFILLED,
     "доставляется": OrderLifecycle.IN_PROGRESS,
+    "в пути": OrderLifecycle.IN_PROGRESS,
     "ожидает отгрузки": OrderLifecycle.IN_PROGRESS,
     "ожидает сборки": OrderLifecycle.IN_PROGRESS,
     "отменён": OrderLifecycle.CANCELLED,

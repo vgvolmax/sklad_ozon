@@ -53,7 +53,8 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .pack-table th,.pack-table td{padding:.62rem .75rem}
 
 /* Economics: the SKU and all revealed cluster details form one selected surface. */
-.econ-page{--econ-fact:#0d6e60;--econ-plan:#7041a5;display:grid;gap:.85rem}
+.econ-page{--econ-fact:#0d6e60;--econ-plan:#7041a5;display:grid;grid-template-columns:minmax(0,1fr);gap:.85rem}
+.econ-page>*{min-width:0}
 .workspace-intro h2{font-size:1.45rem;letter-spacing:-.035em;margin:.2rem 0 .35rem}
 .workspace-intro p:last-child{margin:0;color:#60727a;font-size:.85rem;max-width:58rem}
 .econ-targets{padding:1rem 1.2rem}
@@ -75,16 +76,16 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .econ-summary strong{display:block;margin:.25rem 0;color:#1c343a;font-size:1.15rem;font-variant-numeric:tabular-nums}
 .econ-summary .econ-plan-key strong{color:var(--econ-plan)}
 .econ-main{padding:0;min-width:0}
-.econ-period-profit{display:grid;grid-template-columns:1fr 1.4fr;gap:.6rem 1.5rem}
+.econ-period-profit{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:.6rem 1.5rem}
 .econ-period-profit h3{font-size:.9rem;margin:0}
 .econ-period-profit p,.econ-period-profit small{font-size:.72rem;color:var(--color-text-muted)}
 .econ-period-profit>p{grid-column:1/-1;margin:0}
 .econ-period-profit dl{margin:0;font-size:.77rem}
-.econ-period-profit dl>div{display:flex;justify-content:space-between;gap:1rem;padding:.35rem 0;border-bottom:1px solid var(--color-border)}
-.econ-period-profit dd{margin:0;color:var(--econ-fact);font-weight:700;font-variant-numeric:tabular-nums}
+.econ-period-profit dl>div{display:flex;flex-wrap:wrap;justify-content:space-between;gap:1rem;padding:.35rem 0;border-bottom:1px solid var(--color-border)}
+.econ-period-profit dd{margin:0;min-width:0;overflow-wrap:anywhere;color:var(--econ-fact);font-weight:700;font-variant-numeric:tabular-nums}
 .econ-price-lower{color:var(--color-success)}
 @media(max-width:43rem){.econ-period-profit{grid-template-columns:1fr}.econ-period-profit dl>div{flex-wrap:wrap}}
-.econ-main-head{display:flex;justify-content:space-between;align-items:center;gap:1rem;padding:1rem 1.2rem .7rem}
+.econ-main-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:1rem;padding:1rem 1.2rem .7rem}
 .econ-main-head h2{font-size:1rem;letter-spacing:-.025em}
 .econ-main-head p{color:#697b80;font-size:.74rem;margin:.25rem 0 0}
 .econ-tools{display:flex;align-items:end;gap:.8rem;justify-content:space-between;flex-wrap:wrap;border-top:1px solid #e2eaea;padding:.75rem 1.2rem}
@@ -318,11 +319,12 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 
 /* Optional advertising evidence stays on Economics. */
 .econ-advertising{padding:1rem 1.2rem}
-.econ-advertising-head{display:flex;align-items:center;justify-content:space-between;gap:1rem}
+.econ-advertising-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:1rem}
+.econ-advertising-head>div{flex:1 1 18rem;min-width:0}
 .econ-advertising h3{font-size:1rem;margin:0}
 .econ-advertising h3 small{font-size:.75rem;font-weight:400;color:var(--color-text-muted)}
 .econ-advertising p{font-size:.8rem;color:var(--color-text-muted);margin:.4rem 0}
-.econ-advertising-picker{display:grid;gap:.35rem;flex:0 1 22rem;font-size:.8rem;font-weight:700}
+.econ-advertising-picker{display:grid;gap:.35rem;flex:0 1 22rem;min-width:0;font-size:.8rem;font-weight:700}
 .econ-advertising-picker input{max-width:100%;font-size:.8rem}
 .econ-advertising-list{list-style:none;padding:0;margin:.6rem 0;max-height:18rem;overflow:auto}
 .econ-advertising-list li{display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.6rem 0;border-bottom:1px solid var(--workspace-border)}
@@ -375,6 +377,9 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .econ-sku-row>td:last-child>.econ-plan{margin-top:3.6rem}
 .econ-table .econ-band-label{color:inherit;font-size:.6rem;font-weight:600;margin:0 0 .3rem;white-space:nowrap}
 .econ-table .econ-fact small,.econ-table .econ-plan small{color:inherit}
+.econ-client-price{margin-top:.45rem}
+.econ-client-price strong{display:block;font-size:.82rem;font-variant-numeric:tabular-nums}
+.econ-price-status{color:var(--color-text-muted);font-size:.8rem}
 .econ-table .field-error{color:var(--color-danger,#9e2525)}
 .econ-plan .econ-drr-cell{color:inherit;align-items:center}
 .econ-fact input{color:var(--econ-fact)}
@@ -401,3 +406,49 @@ main>section>h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:.
 .econ-period-controls input{min-width:9.2rem;max-width:100%}
 @media(max-width:600px){.econ-period-controls form>div{flex-basis:100%}.econ-period-controls label{flex:1 1 8rem;min-width:0}.econ-period-controls input{min-width:0;width:100%}}
 @media(forced-colors:active){.econ-daily-buyer-dot{fill:Canvas;stroke:CanvasText}}
+
+/* Explicit financial period, separate from the order pricing model. */
+.econ-calculation{margin-bottom:var(--space-md)}
+.buyout-page{grid-template-columns:minmax(0,1fr)}
+.buyout-page>*,.buyout-table-scroll{min-width:0}
+.buyout-totals{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-md)}
+.buyout-totals>div{display:grid;gap:var(--space-xs);padding:var(--space-md);border-left:3px solid var(--color-ozon);background:var(--color-surface-muted)}
+.buyout-totals strong{font-size:1.25rem;color:var(--color-ozon);font-variant-numeric:tabular-nums}
+.buyout-totals small{color:var(--color-text-muted)}
+.buyout-filters{display:flex;flex-wrap:wrap;align-items:end;gap:var(--space-sm);margin:var(--space-md) 0}
+.buyout-filters label{display:grid;gap:var(--space-xs)}
+.buyout-table-scroll{overflow:auto;max-height:36rem;border:1px solid var(--color-border);scrollbar-gutter:stable}
+.buyout-table{min-width:74rem}
+.buyout-table td:first-child{min-width:18rem;max-width:24rem;white-space:normal;overflow-wrap:anywhere}
+.buyout-table small{display:block;color:var(--color-text-muted)}
+.buyout-table td:last-child{color:var(--color-ozon)}
+.buyout-table tbody tr+tr{border-top:2px solid var(--color-border)}
+.buyout-expenses table{min-width:40rem}
+.buyout-page progress{width:100%;accent-color:var(--color-ozon)}
+@media(max-width:50rem){.buyout-totals{grid-template-columns:minmax(0,1fr)}.buyout-filters{align-items:stretch}.buyout-filters input{max-width:100%}}
+/* Period summary is a local island; its updates never replace SKU cards. */
+.econ-period-profit{display:block;min-width:0;overflow-anchor:none}
+.econ-profit-head,.econ-profit-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--space-sm)}
+.econ-profit-actions{justify-content:flex-start;margin:.7rem 0}
+.econ-profit-final{font-size:1rem;border-top:2px solid var(--econ-fact);margin-top:.4rem}
+.econ-period-profit progress{width:100%;accent-color:var(--econ-fact)}
+.econ-period-profit details{margin-top:.65rem;max-width:100%;min-width:0}
+.econ-period-profit table{min-width:36rem}
+.econ-period-profit .buyout-table-scroll{max-height:18rem}
+.econ-period-profit .buyout-table-scroll small{display:block;white-space:normal}
+.econ-targets .econ-drr-fallback{display:flex;align-items:center;gap:.4rem;max-width:20rem;white-space:normal}
+.econ-scenario{padding:.8rem;white-space:normal;min-width:0}
+.econ-scenario-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:.6rem}
+.econ-scenario-head p,.econ-scenario small{font-size:.74rem;color:var(--color-text-muted)}
+.econ-scenario-inputs,.econ-scenario-values{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1rem;margin:.8rem 0}
+.econ-scenario-inputs>div,.econ-scenario-inputs>label{display:grid;align-content:start;gap:.3rem}
+.econ-scenario-inputs select{max-width:100%;min-height:2.2rem}
+.econ-scenario-inputs fieldset{border:1px solid var(--color-border);padding:.5rem;min-width:0}
+.econ-scenario-inputs fieldset label{display:flex;gap:.4rem;align-items:center;white-space:normal}
+.econ-scenario-values strong{display:block;font-variant-numeric:tabular-nums}
+.econ-scenario-costs dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.4rem 1rem}
+.econ-scenario-costs dl>div{display:flex;justify-content:space-between;gap:.5rem}
+.econ-scenario-costs dd{margin:0;font-variant-numeric:tabular-nums}
+.econ-scenario-status{border-left:3px solid var(--econ-plan);padding-left:.6rem}
+@media(max-width:50rem){.econ-scenario-inputs,.econ-scenario-values,.econ-scenario-costs dl{grid-template-columns:repeat(2,minmax(0,1fr))}.econ-profit-head{align-items:flex-start}}
+@media(max-width:30rem){.econ-scenario-inputs,.econ-scenario-values,.econ-scenario-costs dl{grid-template-columns:1fr}}

@@ -109,7 +109,9 @@ def calculate_unit_economics(
     cost = None if product.cost is None else _decimal(product.cost, "cost")
     commission_rate = None if product.commission_rate is None else _rate(product.commission_rate, "commission_rate")
     acquiring_rate = _rate(settings.acquiring_rate, "acquiring_rate")
-    advertising_rate = _rate(settings.advertising_rate, "advertising_rate")
+    # Actual spend / revenue can exceed 100%; persisted plan rates retain their
+    # own upper bound. Do not reject a valid high-spend advertising report.
+    advertising_rate = _decimal(settings.advertising_rate, "advertising_rate")
     buyout_rate = _rate(settings.buyout_rate, "buyout_rate", positive=True)
     fixed_fbo_fee = _decimal(settings.fixed_fbo_fee, "fixed_fbo_fee")
     income_tax_rate = _rate(settings.income_tax_rate, "income_tax_rate")

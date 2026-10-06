@@ -6,10 +6,12 @@ The shortfall is a modeled comparison at current input rates, not an actual loss
 
 from collections import defaultdict
 from datetime import date
-from decimal import Decimal, localcontext
+from decimal import Decimal, ROUND_HALF_UP, localcontext
 
 from backend.project import EconomicsSettings
 from .period import resolve_period, route_quantities
+from .daily_series import period_price_means
+from .pricing import resolve_drr
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
@@ -93,20 +95,22 @@ def _aggregate(rows, margin_target, roi_target, goal):
         with localcontext() as context:
             context.prec = 40
             profit_sum = sum((row["profit"] * row["qty"] for row in known), ZERO)
-            before_ads = sum((row['profit_before_ads'] * row['qty'] for row in known), ZERO)
             price_sum = sum((row["price"] * row["qty"] for row in known), ZERO)
             cost_sum = sum((row["cost"] * row["qty"] for row in known), ZERO)
             profit = profit_sum / covered
             margin = profit_sum / price_sum if price_sum else None
             roi = profit_sum / cost_sum if cost_sum else None
     else:
-        profit = margin = roi = before_ads = None
+        profit = margin = roi = None
+    before_known = [row for row in rows if row['profit_before_ads'] is not None]
+    before_qty = sum(row['qty'] for row in before_known)
+    before_ads = sum((row['profit_before_ads'] * row['qty'] for row in before_known), ZERO) if before_qty else None
     gap = sum((row["gap"] for row in known), ZERO) if covered else None
     proposed = [row["target_price"] for row in rows]
     target_price = (max(proposed) if proposed and all(x is not None for x in proposed)
                     else None)
     return {"qty": qty, "covered_qty": covered, "profit_per_unit": profit,
-            "profit_before_ads_total": before_ads,
+            "profit_before_ads_total": before_ads, "before_ads_covered_qty": before_qty,
             "margin": margin, "roi": roi, "modeled_shortfall": gap,
             "target_price_all_routes": target_price,
             "partial": covered != qty, "no_observations": qty == 0,
@@ -119,8 +123,11 @@ def _aggregate(rows, margin_target, roi_target, goal):
 
 def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
                               per_sku_drr=None, real_drr=None, per_sku_cost=None,
-                              period_from=None, period_to=None):
+                              period_from=None, period_to=None, daily_evidence=None,
+                              use_planned_drr=False, reported_skus=(), extra_identities=()):
     margin, roi, goal, planned_drr = validate_targets(margin, roi, goal, planned_drr)
+    if not isinstance(use_planned_drr, bool):
+        raise ValueError('use_planned_drr must be boolean')
     settings: EconomicsSettings | None = snapshot.economics_settings
     if settings is None:
         raise ValueError("analysis has no economics settings")
@@ -136,6 +143,11 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
     for unit in snapshot.unit_economics:
         unit_by_sku.setdefault(unit.sku, unit)
     identity = {row.sku: (row.article, row.product_name) for row in snapshot.decision_rows}
+    for sku, article, name in getattr(snapshot, 'economics_catalog_identities', ()):
+        old = identity.get(sku, ('', ''))
+        identity[sku] = (article or old[0], name or old[1])
+    for sku, article, name in extra_identities:
+        identity.setdefault(sku, (article, name))
     evidence = getattr(snapshot, 'economics_period_evidence', None)
     period = resolve_period(evidence, period_from, period_to)
     selected = (route_quantities(evidence.daily_routes, period['from'], period['to'])
@@ -154,7 +166,8 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
         price = route.price_per_unit
         cost = costs.get(route.sku, unit.cost if unit else None)
         logistics = route.route_cost_rub
-        model_rate = rates.get(route.sku) or ZERO
+        model_rate, _ = resolve_drr(rates.get(route.sku), overrides.get(route.sku, planned_drr),
+            use_planned_drr, report_present=route.sku in reported_skus)
         profit = before_ads = None
         inputs_ready = (unit is not None and unit.price is not None and unit.price > 0
                         and unit.commission is not None and price is not None and price > 0
@@ -168,11 +181,11 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
                 not {'CURRENT_ROUTE_INCOMPLETE', 'MISSING_OR_ZERO_REALIZATION'} &
                     set(route.reason_codes))
             inputs_ready = inputs_ready and cost_repaired
-        if inputs_ready and model_rate is not None:
+        if inputs_ready:
             with localcontext() as context:
                 context.prec = 40
-                profit = _profit_at_price(price, cost, logistics,
-                    unit.commission / unit.price, settings, model_rate)
+                profit = (_profit_at_price(price, cost, logistics,
+                    unit.commission / unit.price, settings, model_rate) if model_rate is not None else None)
                 before_ads = _profit_at_price(price, cost, logistics,
                     unit.commission / unit.price, settings, ZERO)
         complete = inputs_ready and profit is not None
@@ -192,7 +205,7 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
             "origin": route.origin_cluster_id, "destination": route.destination_cluster_id,
             "qty": quantity, "price": price, "cost": cost,
             "profit": profit if complete else None,
-            "profit_before_ads": before_ads if complete else None,
+            "profit_before_ads": before_ads,
             "margin": profit / price if complete else None,
             "roi": profit / cost if complete and cost else None,
             "logistics": logistics, "gap": gap, "target_price": target_price,
@@ -217,13 +230,29 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
         })
     for sku in identity:
         by_sku.setdefault(sku, [])
+    if evidence is None:
+        weeks = snapshot.observed_routes.window.included_weeks
+        period = ({'from': date.fromisocalendar(*min(weeks), 1),
+                   'to': date.fromisocalendar(*max(weeks), 7)} if weeks else None)
+    price_summaries = period_price_means(
+        daily_evidence if daily_evidence is not None else getattr(snapshot, 'daily_order_evidence', None),
+        period, by_sku)
     products = []
     for sku in sorted(by_sku):
         routes = by_sku[sku]
         article, name = identity.get(sku, ("", ""))
         unit = unit_by_sku.get(sku)
         summary = _aggregate(routes, margin, roi, goal)
+        applied, source = resolve_drr(rates.get(sku), overrides.get(sku, planned_drr),
+            use_planned_drr, report_present=sku in reported_skus)
         target_price = summary['target_price_all_routes']
+        buyer_prices = price_summaries[sku]
+        with localcontext() as context:
+            context.prec = 40
+            buyer_prices['target_buyer_price'] = (
+                (target_price * (ONE - buyer_prices['spp_mean'])).quantize(
+                    Decimal('.01'), rounding=ROUND_HALF_UP)
+                if target_price is not None and buyer_prices['spp_mean'] is not None else None)
         current_price = unit.price if unit else None
         delta = target_price - current_price if target_price is not None and current_price else None
         action = ('lower' if delta < 0 else 'raise' if delta > 0 else 'keep') if delta is not None else None
@@ -241,17 +270,15 @@ def build_economics_workspace(snapshot, *, margin, roi, goal, planned_drr,
                                               unit.commission is not None and unit.price else None),
                          "commission_per_unit": unit.commission if unit else None,
                          "real_drr_rate": rates.get(sku),
-                         "applied_drr_rate": rates.get(sku) or ZERO,
-                         "drr_zero_assumed": rates.get(sku) is None,
-                         "assumed_drr_rate": rates.get(sku) or ZERO,
+                         "applied_drr_rate": applied,
+                         "applied_drr_source": source,
+                         "drr_zero_assumed": source == 'zero_assumption',
+                         "assumed_drr_rate": applied,
                          "planned_drr_rate": overrides.get(sku, planned_drr),
                          "price_action": action, "price_delta": delta,
                          "price_delta_rate": delta / current_price if delta is not None else None,
+                         "buyer_prices": buyer_prices,
                          **summary, "groups": groups})
-    weeks = snapshot.observed_routes.window.included_weeks
-    if evidence is None:
-        period = ({"from": date.fromisocalendar(*min(weeks), 1),
-                   "to": date.fromisocalendar(*max(weeks), 7)} if weeks else None)
     return {"period": period, "observation_period": resolve_period(evidence),
             "history_complete": evidence.complete if evidence is not None else True,
             "evidence": "fulfilled_selected_period" if evidence else "fulfilled_completed_weeks",

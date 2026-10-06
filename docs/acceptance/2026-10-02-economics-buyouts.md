@@ -1,0 +1,141 @@
+# Economics buyouts and known period expenses
+
+Approved scope: a new PR from main `b71b3a8`, unmerged and without auto-merge.
+
+## Delivered behavior
+
+- Explicit `По заказам / По выкупам` selector preserves the existing order model.
+- Current Seller `/v1/finance/accrual/types` and `/v1/finance/accrual/by-day`
+  load every selected inclusive day and cursor page. Both modern `accrual_id` and
+  previous top-level identifier are accepted. Deprecated transactions API is unused.
+- Financial sale/return quantities use exact unit-price evidence or positive-sale
+  posting details; unknown partial returns remain unknown. Free buyer-price sales
+  compensated by Ozon still consume stock/cost. Seller price revenue is distinct
+  from buyer revenue. Signed `total_amount` is authoritative; nested commission,
+  bonus, delivery, advertising, new/unknown fees never cause double subtraction.
+- Gross product profit uses current uploaded SKU cost before saved article overrides.
+  No cost history/schema or raw financial report storage. The normalized in-memory
+  source is account-scoped, bounded, and committed only after a complete valid load.
+- Whole-store product profit, common expenses and known-period profit are separate.
+  Advertising is displayed as an already-included expense. Uploaded order-model
+  advertising is not added again. Unknown/new accruals remain visible adjustments.
+- Filters affect only product subtotal and first Excel sheet; whole-store summary
+  and expense sheets explain their scope. Empty selections, fee-only months,
+  unknown costs, credits and late/failed refreshes have explicit behavior.
+- A reused native date range, segmented selector, clipboard feedback, money format,
+  load-more table, and natural-height panels preserve existing interaction owners.
+  No runtime dependencies, remote side effects, or shipment/forecast changes.
+
+## Verification
+
+- `PYTHONPATH=/tmp/econ-audit-deps python -m pytest -q`: 1962 passed,
+  one existing Starlette test-client deprecation warning.
+- New domain/adapter/API regressions cover multiunits, partial returns, fully
+  discounted sales, item/common advertising, credits, missing cost/quantity,
+  dates, pagination, duplicate/conflicting accruals, malformed currency/sums,
+  current-upload priority, private evidence, account/session changes, and XLSX
+  filtering/literal strings/fee-only periods.
+- The new browser test uses the production app, real ASGI/loopback API, real paced
+  Seller client with synthetic transport, real current-cost upload and actual XLSX
+  download. It covers totals, return reversal, search, whole-store scope, clipboard,
+  error/retry, mode-switch races, native validation/focus, narrow and 200% layout.
+  CI retains its desktop/narrow/zoom screenshots. No external browser requests.
+- Existing Economics advertising, periods and focused-article browser scenarios
+  pass. Plan browser smoke passes. All committed JS files pass Node syntax checks.
+- Premium strict static audit ran: 35 literal-button findings (31 baseline plus
+  calculation selector/new view). Its parser recognizes inline handlers only,
+  while this application binds programmatic handlers. Added controls are exercised
+  in the production browser; no claim that this static audit is clean.
+- Shared visual tokens unchanged. The financial table's dedicated grid/overflow
+  contract prevents its width from constraining sibling order-model forms.
+
+Live Ozon financial responses were not available in this session. Wire-shape
+fixtures follow the current published Seller API schema; no exact accounting
+reconciliation is promised. Taxes and expenses outside Ozon are not included.
+Final whole-branch review and exact-head CI results are recorded in the PR.
+
+## Loading and mode-switch regressions (2026-10-05)
+
+- A first order report interrupted by an early switch was marked as loaded,
+  leaving the product table absent on return. The pending key is now invalidated
+  and the report is requested again. Existing controls, applied goals, filters,
+  period and completed data remain owned by the existing order workspace.
+  Selecting the active mode does not cancel or reset the current operation.
+- A large day's page could require many paced posting-detail reads without a
+  progress event. The browser's 90-second inactivity timeout could abort valid
+  work. Progress now exposes type/day/posting stages, date, page, processed count
+  and elapsed seconds; one-second keep-alives preserve genuinely active streams
+  without inventing completed days. Per-row and per-read checkpoints cancel
+  processing. The shared client also cancels admission/pacing/retry waits; an
+  already in-flight socket read keeps the existing finite timeout.
+- Permission, rate-limit and unavailable responses have actionable safe messages.
+  Prior valid financial snapshots/results remain atomic; no finance math changed.
+- Regression-first checks observed missing progress/cancellation/heartbeat/error
+  behavior and the absent order table before implementation. The real loopback
+  browser verifies a deferred initial order response, completed mode roundtrips,
+  a slow first Seller day, active-mode clicks, cancel/reload, stale/error/locked
+  cabinet recovery, filtered XLSX, native dates, narrow width and 200% zoom.
+- Final local verification: **1972 pytest tests passed**, one existing Starlette
+  deprecation warning; all five production browser scenarios passed (buyouts,
+  advertising, periods, focused articles and Plan). All 9 JS syntax checks pass.
+  The strict premium audit reports **36 literal-button findings both before and
+  after this fix**: its inline-action detector misses programmatic event binding.
+  Actual changed controls are exercised in the browser; static-clean compliance
+  is not claimed. Live Seller-account response compatibility remains unverified.
+
+## Independent review corrections
+
+The fresh whole-branch reviewer found two Important asynchronous-state defects.
+Both were reproduced in the production browser before their corrections:
+
+1. A same-FILES-analysis navigation render during export could retain another
+   cabinet's cached total; export 409/423 also left that total visible. Outer
+   renders now supersede pending generations and hide cached finance before
+   revalidation, and credential errors in export clear the cached identity.
+2. A successful accrual load followed by failed aggregation discarded the prior
+   valid period. New finance identity is now staged and committed with its report.
+   Ordinary failures preserve the previous report/export pair and offer aggregation
+   retry without another Seller fetch, including when there was no prior report.
+
+The reviewer found no Critical issues and confirmed accounting, cost priority,
+quantity handling and scope separation. Live Seller response compatibility was
+set aside because no live account response was available; the implementation is
+verified against the published wire shape and synthetic transport, with the first
+live account load remaining the production compatibility check.
+
+## Client prices and merge-readiness audit (2026-10-05)
+
+- The existing SKU price column shows current seller price and the mean price
+  paid by clients in the fact band; target seller price and client price at that
+  target are in the plan band. Both means use the selected inclusive calendar
+  and known ordered-unit counts, consistent with the history plots. SPP is the
+  unit-weighted mean of per-order percentages, not a ratio of average prices.
+  The projection retains mean historical SPP and rounds half-kopeks up. Unknown
+  SPP/target remain unknown; 0%/100% discounts and free buyer prices remain real.
+- The API/export use the current immutable background price evidence. Card
+  updates patch price cells only, retaining unsaved input/focus/scroll. Local
+  failure/retry and request ownership cover superseded periods, modes and
+  overlapping same-key refreshes. A browser regression observed an older price
+  overwriting a newer one before the monotonic request guard was added.
+- XLSX retains the existing 15 columns and filtered SKU selection, appending
+  numeric buyer means, SPP, target client price and separate coverage/status.
+- Fresh review reproduced lost cost for an explicit uploaded old SKU absent
+  from the current Ozon catalog. Private finance cost capture now precedes catalog
+  projection and manual overrides. The regression proves cost 200 / net 600 gives
+  profit 400 while Plan and persistent cost-directory scoping remain unchanged.
+  Uploaded article identity is available for old-SKU search.
+- Extended 200% browser checks exposed min-content propagation from the order
+  workspace grid and overflow from its advertising/profit/header panels. Their
+  existing owners now shrink/wrap within the page; table overflow stays internal.
+  The sticky close strip uses header layout height, avoiding a double-scaled
+  screen-coordinate offset at 200%; its position below the header is asserted.
+- Local full pytest: **1984 passed**, one existing Starlette deprecation warning.
+  All five production browser scenarios passed, with additional period/client
+  price, input retention, failed refresh/retry, overlapping/stale responses and
+  narrow/200% checks. All nine JS files pass syntax checks. Strict static audit
+  still reports **36 literal-button findings** (same as before this change): its
+  inline-action detector misses programmatic binding; changed actions are tested
+  in the browser, and a static-clean result is not claimed.
+- Independent whole-branch review found no remaining Critical/Important/Minor
+  issues after the two reported defects were corrected. Final published-head
+  CI and merge readiness are recorded in PR #206; the PR stays unmerged.

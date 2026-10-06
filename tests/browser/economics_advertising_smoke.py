@@ -69,7 +69,7 @@ def main():
                 page.route('**/api/economics/daily-series',lambda route:pending_series.append(route),times=1)
                 page.evaluate("""snapshot=>{const S=SkladOzon,base=S.createInitialState();S.__browserEconomics.setState({...base,section:'economics',snapshot});}""", snapshot)
                 expect(page.locator('.econ-real-drr')).to_have_text('Реальный n/a')
-                expect(page.locator('.econ-drr-assumption')).to_have_text('В расчёте 0 %')
+                expect(page.locator('.econ-drr-assumption')).to_contain_text('В расчёте 0 %')
                 assert 'Не рассчитано' not in page.locator('.econ-sku-row td').nth(6).inner_text()
                 expect(page.locator('.econ-sku-row td').nth(4)).to_contain_text('₽ / шт.')
                 actual=page.locator('.econ-sku-row td').nth(7).locator('.econ-fact')
@@ -197,7 +197,7 @@ def main():
                 page.locator('[data-econ-ads-delete="123"]').click()
                 page.locator('[data-dialog-confirm]').click()
                 expect(page.locator('.econ-real-drr')).to_have_text('Реальный n/a')
-                expect(page.locator('.econ-drr-assumption')).to_have_text('В расчёте 0 %')
+                expect(page.locator('.econ-drr-assumption')).to_contain_text('В расчёте 0 %')
                 # Narrow window, horizontal table overflow stays local.
                 page.locator('#econ-ads-clear-completed').click()
                 assert page.locator('[data-econ-ads-remove-file]').count() == 0

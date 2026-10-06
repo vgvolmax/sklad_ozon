@@ -54,6 +54,64 @@ def test_post_json_uses_fixed_host_credentials_json_and_finite_timeout():
     assert timeout == 7.5 and 0 < timeout < 60
 
 
+@pytest.mark.parametrize('status', [429, 503])
+def test_cancel_during_retry_wait_prevents_another_read(status):
+    stopped = Event()
+    transport = FakeTransport([response(status), response()])
+    client = OzonClient(VaultStub(), transport=transport, sleeper=lambda _: stopped.set())
+    def checkpoint():
+        if stopped.is_set():
+            raise InterruptedError()
+    with pytest.raises(InterruptedError):
+        client.bind_context(VaultStub.context).post_json('/v1/test', {},
+            policy=OzonRequestPolicy(True), check_cancelled=checkpoint)
+    assert len(transport.calls) == 1
+
+
+def test_cancel_during_pacing_releases_admission_without_a_read():
+    stopped = Event()
+    transport = FakeTransport([response(), response()])
+    client = OzonClient(VaultStub(), transport=transport, sleeper=lambda _: stopped.set())
+    client.post_json('/v1/test', {}, policy=OzonRequestPolicy(False))
+    def checkpoint():
+        if stopped.is_set():
+            raise InterruptedError()
+    with pytest.raises(InterruptedError):
+        client.post_json('/v1/test', {}, policy=OzonRequestPolicy(True), check_cancelled=checkpoint)
+    assert len(transport.calls) == 1
+    assert client._request_lock.acquire(blocking=False)
+    client._request_lock.release()
+
+
+def test_cancel_while_waiting_for_another_request_does_not_wait_for_its_transport():
+    started, release, stopped, finished = Event(), Event(), Event(), Event()
+    transport_calls, errors = [], []
+    def transport(request, timeout):
+        transport_calls.append(request.full_url)
+        started.set(); release.wait(timeout=3)
+        return response()
+    client = OzonClient(VaultStub(), transport=transport)
+    owner = Thread(target=lambda: client.post_json('/v1/owner', {}, policy=OzonRequestPolicy(False)))
+    owner.start(); assert started.wait(timeout=1)
+    def checkpoint():
+        if stopped.is_set():
+            raise InterruptedError()
+    def waiting():
+        try:
+            client.post_json('/v1/cancelled', {}, policy=OzonRequestPolicy(True), check_cancelled=checkpoint)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+    waiter = Thread(target=waiting); waiter.start(); stopped.set()
+    try:
+        assert finished.wait(timeout=1), 'Cancellation must not wait for an unrelated transport.'
+        assert len(errors) == 1 and isinstance(errors[0], InterruptedError)
+        assert len(transport_calls) == 1
+    finally:
+        release.set(); owner.join(timeout=2); waiter.join(timeout=2)
+
+
 @pytest.mark.parametrize("path", [
     "https://evil.example/test", "//evil.example/test", "test", "/../test",
     "/v1/test?api_key=secret", "/v1/test#fragment",
