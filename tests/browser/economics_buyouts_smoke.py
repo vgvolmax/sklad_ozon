@@ -136,6 +136,9 @@ def main():
                 page.locator('[data-econ-calculation="buyouts"]').click()
                 expect(page.locator('#econ-target-form')).to_be_visible()
                 expect(page.locator('[data-econ-row]')).to_have_count(3)
+                expect(page.locator('[data-econ-profit-needs-finance]')).to_be_visible()
+                expect(page.locator('#buyout-export')).to_be_disabled()
+                expect(page.locator('[data-econ-profit]')).not_to_contain_text('Без полной юнитки: SKU-1')
                 slow_read[0] = True
                 page.locator('#buyout-load').click()
                 expect(page.locator('#buyout-progress-detail')).to_contain_text('Ожидаем ответ Ozon')
@@ -148,7 +151,7 @@ def main():
                 expect(page.locator('#buyout-load')).to_be_enabled()
                 expect(page.locator('#buyout-error')).to_contain_text('отменена')
                 release_read.set()
-                page.locator('#buyout-load').click()
+                page.locator('#buyout-retry').click()
                 expect(page.locator('[data-buyout-final]')).to_have_text('1 276 ₽')
                 expect(page.locator('[data-buyout-ads]')).to_have_text('100 ₽')
                 # A failed mode refresh cannot turn retained orders into buyouts.
@@ -184,8 +187,16 @@ def main():
                 page.locator('#econ-search').fill('SKU-1')
                 expect(page.locator('[data-econ-row]')).to_have_count(1)
                 expect(page.locator('[data-buyout-final]')).to_have_text('1 276 ₽')
+                page.route('**/api/economics/period/export', lambda route: route.fulfill(
+                    status=500, content_type='application/json',
+                    body=json.dumps({'error': {'message': 'Synthetic export failure'}})))
+                page.locator('#buyout-export').click()
+                expect(page.locator('#buyout-error')).to_contain_text('Synthetic export failure')
+                page.unroute('**/api/economics/period/export')
+                finance_reads = sum(path.endswith('/by-day') for path, _ in calls)
                 with page.expect_download() as download:
-                    page.locator('#buyout-export').click()
+                    page.locator('#buyout-retry').click()
+                assert sum(path.endswith('/by-day') for path, _ in calls) == finance_reads
                 book = load_workbook(BytesIO(Path(download.value.path()).read_bytes()))
                 assert book.sheetnames == ['Итог','Товары','Расходы']
                 assert book['Товары'].max_row == 2
@@ -198,8 +209,10 @@ def main():
                 expect(page.locator('[data-buyout-final]')).to_have_text('1 276 ₽')
                 expect(page.locator('#econ-target-form')).to_be_visible()
                 fail[0] = False
-                page.locator('#buyout-load').click()
+                before_retry = sum(path.endswith('/by-day') for path, _ in calls)
+                page.locator('#buyout-retry').click()
                 expect(page.locator('#buyout-error')).to_be_hidden()
+                assert sum(path.endswith('/by-day') for path, _ in calls) > before_retry
                 page.locator('.buyout-expenses summary').click()
                 expect(page.locator('.buyout-expenses')).to_contain_text('Кросс-докинг')
                 for width, zoom, name in [(760,'1','narrow'),(760,'2','zoom-200')]:

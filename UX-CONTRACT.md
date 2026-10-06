@@ -649,6 +649,18 @@ Source: `docs/superpowers/specs/2026-10-05-economics-unit-period-design.md`.
   Keep-alive events maintain a bounded stream. Cancel/retry affect the panel
   alone. A mode switch during finance sync changes the subsequent aggregate;
   it does not reload expenses or replace unit-card DOM.
+- Missing finance is a loading prerequisite, not missing unit economics.
+  Unit availability and quantity coverage have separate reasons. Whole-store
+  reason lists remain independent of filters, use articles first, and preserve
+  duplicate articles with SKU disambiguation across the whole store, including
+  covered siblings outside the current filter. Native disclosures and bounded
+  progressive lists keep long coverage reports compact. A failed/cancelled
+  finance load retries loading; a failed calculation retries calculation.
+  A failed download retries XLSX download, without reloading the finance ledger.
+  Advertising without a finance ledger says `Не загружена`. Unknown service
+  types explicitly qualify advertising coverage rather than certify a zero.
+  Buyout XLSX requires finance quantities; orders can export their known
+  before-expense model while clearly disclosing unloaded expenses.
 - XLSX is server-built, literal-string safe and retryable. Unit columns retain
   their original order and append basis/source/status. Period workbook has
   store summary, all filtered product rows and store expenses. Active drafts,

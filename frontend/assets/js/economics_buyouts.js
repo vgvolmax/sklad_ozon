@@ -5,7 +5,7 @@ const roles={advertising:'Общая реклама · вычтена',additiona
 let container,snapshot,apiFetch,options,active=false,analysisId=null,financeId=null,report=null;
 let mode='orders',limit=12,busy=false,exporting=false,error='',progress=null,operation='';
 let run=0,controller=null,scenarioKey=null,reportKey=null,pendingFinanceId=null,loadedPeriod=null;
-let elapsedSeconds=0,expensesOpen=false,productsOpen=false;
+let elapsedSeconds=0,expensesOpen=false,productsOpen=false,coverageOpen=false,coverageLimit=12,retryOperation='refresh';
 function deactivate(){active=false;run++;controller?.abort();busy=exporting=false;operation='';}
 function body(){return {...options.scenario,analysis_snapshot_id:snapshot.snapshot_id,mode,...(financeId?{finance_snapshot_id:financeId}:{})};}
 const selectionKey=()=>JSON.stringify([scenarioKey,mode]);
@@ -15,6 +15,23 @@ function progressDetail(){
   const phase=progress.stage==='types'?'Ожидаем ответ Ozon: справочник начислений':progress.stage==='posting'?'Ожидаем ответ Ozon: уточняем количество товаров':progress.stage==='day'?'Ожидаем ответ Ozon: начисления за день':progress.stage==='complete'?'Начисления загружены':'Обрабатываем начисления';
   const day=progress.stage==='types'?'':` · ${S.presentIsoDate(progress.day)} · страница ${progress.page}`;
   return `${phase}${day} · обработано начислений: ${progress.processed||0}${elapsedSeconds?` · Прошло: ${elapsedSeconds} с`:''}`;
+}
+const needsFinance=value=>value?.mode==='buyouts'&&!value.expenses_complete;
+function coverageMarkup(value){
+  const total=value.totals,coverage=value.coverage||{},waiting=needsFinance(value);
+  if(!total.partial)return '';
+  const units=coverage.missing_unit_products||[],quantities=waiting?[]:coverage.missing_quantity_products||[];
+  const ambiguousArticles=new Set(coverage.ambiguous_articles||[]);
+  const list=(items,label)=>{
+    if(!items.length)return '';
+    return `<p>${label} · ${items.length} товаров</p><ul>${items.slice(0,coverageLimit).map(p=>{
+      const identity=p.article?`${p.article}${ambiguousArticles.has(p.article)?` · SKU ${p.sku}`:''}`:`SKU ${p.sku}`;
+      return `<li>${e(identity)}${p.name?` · ${e(p.name)}`:''}</li>`;
+    }).join('')}</ul>`;
+  };
+  const summary=waiting?`Для расчёта по выкупам загрузите начисления Ozon за ${periodText(value.period)} кнопкой «Загрузить расходы и выкупы». Юнитка рассчитана для ${coverage.unit_available_count??'—'} из ${total.sku_count} товаров.`:
+    `Частичный итог. Вклад рассчитан для ${total.covered_sku_count} из ${total.sku_count} товаров · ${total.covered_qty} шт.${!value.quantity_complete||quantities.length?' Количество неполное.':''}${!value.expenses_complete?' Общие расходы не загружены.':''}${units.length?` Неполная юнитка: ${units.length} товаров.`:''}${value.expenses.some(x=>x.role==='unclassified')?' Есть не классифицированные расходы; сумма рекламы может быть неполной.':''}`;
+  return `<p class="notice notice-warning" role="status" ${waiting?'data-econ-profit-needs-finance':''}>${summary}</p>${units.length||quantities.length?`<details class="buyout-coverage" ${coverageOpen?'open':''}><summary>Что мешает полному расчёту · товары</summary><div class="buyout-table-scroll" tabindex="0" role="region" aria-label="Причины неполного расчёта">${list(units,'Неполная юнитка')}${list(quantities,'Неизвестно количество')}</div>${Math.max(units.length,quantities.length)>coverageLimit?'<button id="buyout-coverage-more" type="button">Показать ещё 12</button>':''}</details>`:''}`;
 }
 function draw(){
   if(!active||!container?.isConnected)return;
@@ -29,19 +46,19 @@ function draw(){
   container.innerHTML=`<div class="econ-profit-head"><div><h3>Прибыль за период · весь магазин</h3><p>${periodText(displayedDates)} · ${report&&!valid?'модель показанного расчёта':'модель по текущей юнитке'}</p></div>
     <div class="econ-segmented" role="group" aria-label="Количество для итога периода">${[['orders','По заказам'],['buyouts','По выкупам']].map(([key,label])=>`<button type="button" data-econ-calculation="${key}" aria-pressed="${mode===key}" ${exporting?'disabled':''}>${label}</button>`).join('')}</div></div>
     <p>${mode==='orders'?'Заказы в работе и доставленные, без отменённых · по дате принятия':'Выкупы минус возвраты · по дате начисления Ozon'}. Карточки товаров используют одну юнитку в обоих режимах.</p>
-    <div class="econ-profit-actions"><button id="buyout-load" type="button" ${busy||exporting||!options.ready?'disabled':''}>Загрузить расходы и выкупы</button>${busy?'<button id="buyout-cancel" type="button">Отменить</button>':''}<button id="buyout-export" type="button" ${busy||exporting||!total||!valid||!options.ready||options.blocked?.()?'disabled':''}>Скачать итог XLSX</button></div>
-    <p id="buyout-progress" role="status">${busy?(operation==='sync'?`Загружаем начисления${progress?`: ${progress.current} из ${progress.total} дней`:''}`:`Считаем итог…${report&&!valid?' Показана предыдущая версия расчёта.':''}`):loadedPeriod?`Начисления загружены: ${periodText(loadedPeriod)}${!valid&&report?' · показан предыдущий расчёт':''}`:'Расходы и выкупы доступны после загрузки начислений. Разблокируйте Ozon на экране Данные.'}</p>
+    <div class="econ-profit-actions"><button id="buyout-load" type="button" ${busy||exporting||!options.ready?'disabled':''}>Загрузить расходы и выкупы</button>${busy?'<button id="buyout-cancel" type="button">Отменить</button>':''}<button id="buyout-export" type="button" ${busy||exporting||!total||!valid||needsFinance(report)||!options.ready||options.blocked?.()?'disabled':''}>Скачать итог XLSX</button></div>
+    <p id="buyout-progress" role="status">${busy?(operation==='sync'?`Загружаем начисления${progress?`: ${progress.current} из ${progress.total} дней`:''}`:`Считаем итог…${report&&!valid?' Показана предыдущая версия расчёта.':''}`):loadedPeriod?`Начисления загружены: ${periodText(loadedPeriod)}${!valid&&report?' · показан предыдущий расчёт':''}`:'Начисления за выбранный период не загружены. Нажмите «Загрузить расходы и выкупы»; потребуется доступ к Ozon.'}</p>
     <p id="buyout-progress-detail" ${busy&&progress?'':'hidden'}>${e(progressDetail())}</p>
     ${busy&&progress?`<progress value="${Number(progress.current)}" max="${Number(progress.total)}" aria-label="Загрузка начислений"></progress>`:''}
-    <p id="buyout-error" class="field-error" role="alert" ${error?'':'hidden'}>${e(error)}</p>${error?'<button id="buyout-retry" type="button">Повторить расчёт</button>':''}
-    ${report?`<p class="notice ${valid?'':'notice-warning'}" role="status" ${valid?'':'data-econ-profit-stale'}>Показан ${valid?'актуальный':'предыдущий'} расчёт: ${displayedMode==='orders'?'По заказам':'По выкупам'} · ${periodText(displayedDates)}.</p>`:''}
-    ${total?`${total.partial?`<p class="notice notice-warning" role="status">Частичный итог. База рассчитана для ${total.covered_sku_count} из ${total.sku_count} SKU · ${total.covered_qty} шт.${!report.quantity_complete?' Количество неполное.':''}${!report.expenses_complete?' Расходы не загружены.':''}${total.uncovered_skus.length?` Без полной юнитки: ${e(total.uncovered_skus.join(', '))}.`:''}${report.expenses.some(x=>x.role==='unclassified')?' Есть не классифицированные расходы.':''}</p>`:''}
+    <p id="buyout-error" class="field-error" role="alert" ${error?'':'hidden'}>${e(error)}</p>${error?`<button id="buyout-retry" type="button" ${busy||exporting?'disabled':''}>${retryOperation==='sync'?'Повторить загрузку':retryOperation==='download'?'Повторить скачивание':'Повторить расчёт'}</button>`:''}
+    ${report?`<p class="notice ${valid?'':'notice-warning'}" role="status" ${valid?'':'data-econ-profit-stale'}>Показан ${valid?(needsFinance(report)?'расчёт без начислений':'актуальный расчёт'):'предыдущий расчёт'}: ${displayedMode==='orders'?'По заказам':'По выкупам'} · ${periodText(displayedDates)}.</p>`:''}
+    ${total?`${coverageMarkup(report)}
       <dl><div><dt>Количество · ${displayedMode==='orders'?'заказы':'выкупы минус возвраты'}</dt><dd>${total.qty==null?'Не рассчитано':total.qty+' шт.'}</dd></div><div><dt>Прибыль до общих расходов</dt><dd ${valid?'data-econ-profit-before':''}>${money(total.profit_before_common)}</dd></div>
-      <div><dt>Реклама за тот же период · весь магазин</dt><dd ${valid?'data-buyout-ads':''}>${money(total.advertising_total)}</dd></div><div><dt>Прочие общие расходы</dt><dd>${money(total.other_common_total)}</dd></div>
-      <div class="econ-profit-final"><dt>${total.partial?'Известная часть прибыли после расходов':'Прибыль после известных расходов'}</dt><dd ${valid?'data-buyout-final':''}>${money(total.profit_after_common)}</dd></div><div><dt>Маржа по модельной выручке</dt><dd>${total.margin==null?'Не рассчитано':new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(Number(total.margin)*100)+' %'}</dd></div></dl>
-      <p>Источник расходов: финансовые начисления Ozon${report.loaded_at?` · загружено ${e(report.loaded_at)}`:''}. Рекламные XLSX для ДРР повторно не вычитаются.</p>
+      <div><dt>Реклама за тот же период · весь магазин</dt><dd ${valid?'data-buyout-ads':''}>${report.expenses_complete?money(total.advertising_total):'Не загружена'}</dd></div><div><dt>Прочие общие расходы</dt><dd>${report.expenses_complete?money(total.other_common_total):'Не загружены'}</dd></div>
+      <div class="econ-profit-final"><dt>${total.partial?'Известная часть прибыли после расходов':'Прибыль после известных расходов'}</dt><dd ${valid&&total.profit_after_common!=null?'data-buyout-final':''}>${money(total.profit_after_common)}</dd></div><div><dt>Маржа по модельной выручке</dt><dd>${total.margin==null?'Не рассчитано':new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(Number(total.margin)*100)+' %'}</dd></div></dl>
+      <p>${report.expenses_complete?'Источник расходов: финансовые начисления Ozon':'Для общих расходов нужны финансовые начисления Ozon'}${report.loaded_at?` · загружено ${e(report.loaded_at)}`:''}. Рекламные XLSX для ДРР повторно не вычитаются.</p>
       <details class="buyout-products" ${productsOpen?'open':''}><summary>Вклад товаров · ${report.products.length} ${valid?'в текущем фильтре':'в предыдущем расчёте'}</summary><p>Прибыль выбранных SKU до общих расходов: <strong data-buyout-selected>${money(report.selected_profit_before_common)}</strong>. Итог выше и расходы относятся ко всему магазину.</p>
-      <div class="buyout-table-scroll" tabindex="0" role="region" aria-label="Вклад товаров в прибыль"><table><thead><tr><th>Артикул / SKU</th><th>Прибыль до рекламы / шт.</th><th>Количество</th><th>Вклад в прибыль</th></tr></thead><tbody>${report.products.slice(0,limit).map(p=>`<tr data-buyout-row="${e(p.sku)}"><td>${e(p.article||p.sku)}<small>SKU ${e(p.sku)}</small>${p.partial?'<small>Нет полной базы или количества</small>':''}</td><td>${money(p.profit_per_unit_before_ads)}</td><td>${p.qty??'Неизвестно'}</td><td>${money(p.profit)}</td></tr>`).join('')||'<tr><td colspan="4">Нет товаров по выбранным условиям</td></tr>'}</tbody></table></div>${report.products.length>limit?'<button id="buyout-more" type="button">Показать ещё 12</button>':''}</details>
+      <div class="buyout-table-scroll" tabindex="0" role="region" aria-label="Вклад товаров в прибыль"><table><thead><tr><th>Артикул / SKU</th><th>Прибыль до рекламы / шт.</th><th>Количество</th><th>Вклад в прибыль</th></tr></thead><tbody>${report.products.slice(0,limit).map(p=>`<tr data-buyout-row="${e(p.sku)}"><td>${e(p.article||p.sku)}<small>SKU ${e(p.sku)}</small>${p.partial?`<small>${!p.quantity_known?'Количество неизвестно':'Юнитка неполная'}</small>`:''}</td><td>${money(p.profit_per_unit_before_ads)}</td><td>${p.qty??'Неизвестно'}</td><td>${money(p.profit)}</td></tr>`).join('')||'<tr><td colspan="4">Нет товаров по выбранным условиям</td></tr>'}</tbody></table></div>${report.products.length>limit?'<button id="buyout-more" type="button">Показать ещё 12</button>':''}</details>
       <details class="buyout-expenses" ${expensesOpen?'open':''}><summary>Расходы магазина · расшифровка</summary><p>Комиссия, эквайринг и логистика уже входят в прибыль на штуку. Возврат расхода сохраняет отрицательный знак.</p><div class="buyout-table-scroll" tabindex="0" role="region" aria-label="Расходы магазина"><table><thead><tr><th>Категория</th><th>Сумма</th><th>Учёт</th></tr></thead><tbody>${report.expenses.map(x=>`<tr><td>${e(x.label)}</td><td>${money(x.amount)}</td><td>${roles[x.role]}</td></tr>`).join('')||`<tr><td colspan="3">${report.expenses_complete?'Известные расходы равны нулю':'Расходы не загружены'}</td></tr>`}</tbody></table></div></details>
       <details class="econ-method"><summary>Как рассчитан общий итог</summary><p>Прибыль на штуку без рекламы из текущей юнитки × количество каждого SKU, затем минус вся реклама и прочие известные общие расходы за те же даты. Только количество меняется между заказами и выкупами. Маржа считается по модельной выручке, а не по выплатам Ozon. База уже включает известные комиссии, логистику и модельные налоги; повторно они не вычитаются. Не классифицированные услуги показаны отдельно и делают итог частичным.</p></details>`:''}`;
   container.querySelectorAll('[data-econ-calculation]').forEach(button=>button.onclick=()=>{
@@ -53,8 +70,10 @@ function draw(){
   });
   container.querySelector('#buyout-load').onclick=sync;
   container.querySelector('#buyout-export').onclick=download;
-  container.querySelector('#buyout-retry')?.addEventListener('click',refresh);
-  container.querySelector('#buyout-cancel')?.addEventListener('click',()=>{run++;controller?.abort();busy=false;operation='';progress=null;error='Загрузка отменена. Можно повторить.';draw();});
+  container.querySelector('#buyout-retry')?.addEventListener('click',()=>retryOperation==='sync'?sync():retryOperation==='download'?download():refresh());
+  container.querySelector('#buyout-cancel')?.addEventListener('click',()=>{retryOperation=operation==='sync'?'sync':'refresh';run++;controller?.abort();busy=false;operation='';progress=null;error=retryOperation==='sync'?'Загрузка отменена. Можно повторить.':'Расчёт отменён. Можно повторить.';draw();});
+  container.querySelector('#buyout-coverage-more')?.addEventListener('click',()=>{coverageLimit+=12;draw();});
+  container.querySelector('.buyout-coverage')?.addEventListener('toggle',event=>{coverageOpen=event.target.open;});
   container.querySelector('#buyout-more')?.addEventListener('click',()=>{limit+=12;draw();});
   container.querySelector('.buyout-expenses')?.addEventListener('toggle',event=>{expensesOpen=event.target.open;});
   container.querySelector('.buyout-products')?.addEventListener('toggle',event=>{productsOpen=event.target.open;});
@@ -71,7 +90,7 @@ async function refresh(){
   const selected={...body(),...(pendingFinanceId?{finance_snapshot_id:pendingFinanceId}:{})},key=selectionKey();
   busy=true;operation='refresh';progress=null;error='';draw();const timeout=root.setTimeout(()=>abort.abort(),60000);
   try{const response=await apiFetch('/api/economics/period/workspace',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(selected),signal:abort.signal});const data=await response.json();if(request!==run||!active)return;if(!response.ok){invalidate(response);throw Error(data.error?.message||'Не удалось рассчитать прибыль.');}report=data.workspace;reportKey=key;financeId=selected.finance_snapshot_id||null;if(pendingFinanceId===financeId)pendingFinanceId=null;
-  }catch(exc){if(request===run&&active)error=exc.name==='AbortError'?'Расчёт прерван. Повторите.':exc.message;}
+  }catch(exc){if(request===run&&active){retryOperation='refresh';error=exc.name==='AbortError'?'Расчёт прерван. Повторите.':exc.message;}}
   finally{root.clearTimeout(timeout);if(request===run&&active){busy=false;operation='';draw();}}
 }
 async function sync(){
@@ -85,14 +104,14 @@ async function sync(){
     const reader=response.body.getReader(),decoder=new TextDecoder(),parser=S.createNdjsonParser(item=>{if(request!==run||!active)return;touch();if(item.type==='progress'){progress=item;elapsedSeconds=Number(item.elapsed_seconds)||0;draw();}else if(item.type==='heartbeat'){elapsedSeconds=Number(item.elapsed_seconds)||0;const detail=container.querySelector('#buyout-progress-detail');if(detail)detail.textContent=progressDetail();}else if(item.type==='result')result=item.data;else if(item.type==='error'){if(['OZON_CREDENTIAL_CONTEXT_CHANGED','OZON_VAULT_LOCKED'].includes(item.error?.code)){report=null;financeId=pendingFinanceId=null;loadedPeriod=null;}throw Error(item.error?.message||'Не удалось загрузить начисления.');}});
     try{while(true){const {value,done}=await reader.read();if(request!==run||!active)return;parser.push(decoder.decode(value||new Uint8Array(),{stream:!done}),done);if(done)break;}}finally{await reader.cancel().catch(()=>{});}
     if(request!==run||!active)return;if(!result)throw Error('Загрузка не завершена. Повторите.');pendingFinanceId=result.finance_snapshot_id;loadedPeriod=dates;progress=null;busy=false;operation='';await refresh();
-  }catch(exc){if(request===run&&active)error=exc.name==='AbortError'?'Загрузка прервана. Повторите.':exc.message;}
+  }catch(exc){if(request===run&&active){retryOperation='sync';error=exc.name==='AbortError'?'Загрузка прервана. Повторите.':exc.message;}}
   finally{root.clearTimeout(timer);if(request===run&&active){busy=false;operation='';progress=null;draw();}}
 }
 async function download(){
-  if(busy||exporting||reportKey!==selectionKey()||options.blocked?.())return;
+  if(busy||exporting||!report||needsFinance(report)||reportKey!==selectionKey()||options.blocked?.())return;
   const selected=body(),key=selectionKey(),request=run;exporting=true;error='';draw();
   try{const response=await apiFetch('/api/economics/period/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(selected)});if(!response.ok){const data=await response.json();if(request!==run||!active)return;invalidate(response);throw Error(data.error?.message||'Не удалось скачать отчёт.');}const blob=await response.blob();if(request!==run||!active||key!==selectionKey())return;const url=root.URL.createObjectURL(blob),a=root.document.createElement('a');a.href=url;a.download='Прибыль-периода.xlsx';root.document.body.append(a);a.click();root.setTimeout(()=>{a.remove();root.URL.revokeObjectURL(url);},1000);
-  }catch(exc){if(request===run&&active)error=exc.message;}
+  }catch(exc){if(request===run&&active){retryOperation=report&&reportKey===selectionKey()?'download':selected.finance_snapshot_id?'sync':'refresh';error=exc.message;}}
   finally{if(request===run&&active){exporting=false;draw();}}
 }
 function render(element,analysis,fetch,settings){

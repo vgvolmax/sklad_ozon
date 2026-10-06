@@ -76,6 +76,68 @@ def test_missing_expenses_differs_from_complete_zero():
     assert report(finance=finance(expenses=[]))['totals']['profit_after_common'] == D('19000')
 
 
+def test_missing_finance_does_not_mean_missing_unit_economics():
+    r = report('buyouts', finance=None)
+    assert r['totals']['profit_before_common'] is None
+    assert r['coverage']['unit_available_count'] == 2
+    assert r['coverage']['missing_unit_products'] == []
+    assert [p['sku'] for p in r['coverage']['missing_quantity_products']] == ['A', 'B']
+    assert all(p['unit_complete'] for p in r['products'])
+
+
+def test_store_coverage_separates_quantity_from_unit_inputs_outside_filter():
+    b = basis(); b[1].update(profit_per_unit_before_ads=None, pricing_complete=False, article='ART-B')
+    f = finance([FinanceProductLine(date(2026, 9, 1), 'A', None, None, D('1')),
+                 FinanceProductLine(date(2026, 9, 1), 'B', 3, D('1500'), D('2'))], [])
+    r = report('buyouts', basis=b, finance=f, selected_skus={'A'})
+    assert [p['sku'] for p in r['products']] == ['A']
+    assert r['coverage']['missing_unit_products'] == [dict(sku='B', article='ART-B', name='Two')]
+    assert r['coverage']['missing_quantity_products'] == [dict(sku='A', article='A', name='One')]
+    assert r['coverage']['unit_available_count'] == 1
+    assert r['totals']['profit_before_common'] is None
+
+
+def test_known_zero_quantity_needs_no_unit_but_does_not_claim_a_unit_exists():
+    b = basis(); b[1].update(profit_per_unit_before_ads=None, pricing_complete=False)
+    r = report('buyouts', basis=b, finance=finance(lines=[], expenses=[]))
+    assert r['totals']['profit_after_common'] == 0
+    assert not r['totals']['partial']
+    assert r['coverage']['missing_unit_products'] == []
+    assert r['coverage']['missing_quantity_products'] == []
+    assert r['coverage']['unit_available_count'] == 1
+
+
+@pytest.mark.parametrize('shared_article', [False, True])
+def test_export_distinguishes_unit_from_quantity_coverage_using_articles(shared_article):
+    from io import BytesIO
+    from openpyxl import load_workbook
+    from backend.economics.export import export_period_profit
+    b = basis(); b[0]['article'] = 'ART-A'; b[1].update(
+        profit_per_unit_before_ads=None, pricing_complete=False, article='ART-B')
+    if shared_article:
+        b[0]['article'] = b[1]['article'] = 'SHARED'
+    f = finance([FinanceProductLine(date(2026, 9, 1), 'A', None, None, D('1')),
+                 FinanceProductLine(date(2026, 9, 1), 'B', 3, D('1500'), D('2'))], [])
+    book = load_workbook(BytesIO(export_period_profit(report('buyouts', basis=b, finance=f))))
+    summary = dict(book['Итог'].values)
+    assert summary['Товары без полной юнитки'] == ('SHARED · SKU B' if shared_article else 'ART-B')
+    assert summary['Товары с неизвестным количеством'] == ('SHARED · SKU A' if shared_article else 'ART-A')
+    assert book['Товары']['I2'].value == 'Количество неизвестно'
+    assert book['Товары']['I3'].value == 'Юнитка неполная'
+
+
+def test_covered_duplicate_article_still_disambiguates_filtered_out_missing_unit():
+    from io import BytesIO
+    from openpyxl import load_workbook
+    from backend.economics.export import export_period_profit
+    b = basis(); b[0].update(profit_per_unit_before_ads=None, pricing_complete=False)
+    b[0]['article'] = b[1]['article'] = 'SHARED'
+    r = report(basis=b, selected_skus={'B'})
+    assert r['coverage']['ambiguous_articles'] == ['SHARED']
+    summary = dict(load_workbook(BytesIO(export_period_profit(r)))['Итог'].values)
+    assert summary['Товары без полной юнитки'] == 'SHARED · SKU A'
+
+
 def test_unknown_fee_and_negative_expense_credit_preserve_partial_provenance():
     f = finance(expenses=[FinanceExpense(date(2026, 9, 3), 'storage', 'Credit', D('-200')),
                          FinanceExpense(date(2026, 9, 3), 'other', 'Unknown', D('500'))])

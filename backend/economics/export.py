@@ -60,6 +60,11 @@ def _number(value):
 def export_period_profit(report):
     book = Workbook(); book.remove(book.active)
     t = report['totals']
+    coverage = report['coverage']
+    ambiguous_articles = set(coverage['ambiguous_articles'])
+    def labels(products):
+        return ', '.join((p['article'] + (f" · SKU {p['sku']}" if p['article'] in ambiguous_articles else ''))
+                        if p['article'] else f"SKU {p['sku']}" for p in products)
     _sheet(book, 'Итог', ['Показатель', 'Значение'], [
         ['Охват', 'Весь магазин · модель по текущей юнитке'],
         ['Период с', report['period']['from'].isoformat()],
@@ -73,14 +78,18 @@ def export_period_profit(report):
         ['Маржа', _number(t['margin'])], ['Полнота', 'Частичный' if t['partial'] else 'Полный по известным данным'],
         ['Источник расходов', 'Финансовые начисления Ozon' if report['expenses_complete'] else 'Не загружены'], ['Загружено', report['loaded_at']],
         ['База юнитки', report.get('pricing_basis_id')], ['Снимок начислений', report.get('finance_snapshot_id')],
-        ['SKU с полной базой', t['covered_sku_count']], ['SKU всего', t['sku_count']],
-        ['Количество с полной базой', t['covered_qty']], ['SKU без полной базы', ', '.join(t['uncovered_skus'])],
+        ['Товаров с рассчитанным вкладом', t['covered_sku_count']], ['Товаров всего', t['sku_count']],
+        ['Товаров с рассчитанной юниткой', coverage['unit_available_count']],
+        ['Количество с рассчитанным вкладом', t['covered_qty']],
+        ['Товары без полной юнитки', labels(coverage['missing_unit_products'])],
+        ['Товары с неизвестным количеством', labels(coverage['missing_quantity_products'])],
         ['Прибыль выбранных SKU до общих расходов, ₽', _number(report['selected_profit_before_common'])]], [54, 66])
     _sheet(book, 'Товары', ['SKU', 'Артикул', 'Товар', 'Прибыль до рекламы, ₽ / шт.',
         'Количество, шт.', 'Вклад в прибыль, ₽', 'Цена продавца, ₽', 'Модельная выручка, ₽', 'Статус', 'Выкуплено, шт.', 'Возвращено, шт.'],
         [[p['sku'], p['article'], p['name'], _number(p['profit_per_unit_before_ads']), p['qty'],
           _number(p['profit']), _number(p['price']), _number(p['revenue']),
-          'Неполный' if p['partial'] else 'Известен', p['purchased_qty'], p['returned_qty']] for p in report['products']], [24,22,50,28,22,26,26,28,22,22,22])
+          'Количество неизвестно' if not p['quantity_known'] else 'Юнитка неполная' if p['partial'] else 'Известен',
+          p['purchased_qty'], p['returned_qty']] for p in report['products']], [24,22,50,28,22,26,26,28,22,22,22])
     _sheet(book, 'Расходы', ['Категория', 'Сумма всего магазина, ₽', 'Роль'],
         [[e['label'], _number(e['amount']), {'advertising':'Реклама · вычтена','additional_period_expense':'Общий расход · вычтен','already_in_unit_model':'Уже в юнитке','unclassified':'Не классифицирован · не вычтен'}[e['role']]] for e in report['expenses']], [60,30,38])
     stream = BytesIO(); book.save(stream); return stream.getvalue()

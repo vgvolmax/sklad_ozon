@@ -1,5 +1,5 @@
 """One unit-profit basis, two quantities, and one store expense ledger."""
-from collections import defaultdict
+from collections import Counter, defaultdict
 from decimal import Decimal, localcontext
 
 ZERO = Decimal('0')
@@ -53,12 +53,13 @@ def build_period_profit(basis, period, quantities, finance, mode, *,
             q = c['qty'] if quantity_known else None
             u = p.get('profit_per_unit_before_ads')
             price = p.get('price')
-            ready = quantity_known and (q == 0 or u is not None and p.get('pricing_complete', True))
+            unit_complete = u is not None and p.get('pricing_complete', True)
+            ready = quantity_known and (q == 0 or unit_complete)
             profit = (ZERO if q == 0 else u * q) if ready else None
             revenue = (ZERO if q == 0 else price * q) if q is not None and (q == 0 or price is not None) else None
             rows.append(dict(sku=sku, article=p.get('article', ''), name=p.get('name', 'Товар без текущей юнитки'),
                 qty=q, purchased_qty=c['purchased'], returned_qty=c['returned'],
-                quantity_known=quantity_known, profit_per_unit_before_ads=u,
+                quantity_known=quantity_known, unit_complete=unit_complete, profit_per_unit_before_ads=u,
                 price=price, revenue=revenue, profit=profit, partial=not ready))
         grouped = defaultdict(lambda: ZERO)
         if finances_cover:
@@ -80,11 +81,17 @@ def build_period_profit(basis, period, quantities, finance, mode, *,
                    any(e['role'] == 'unclassified' for e in expenses))
         selected = rows if selected_skus is None else [p for p in rows if p['sku'] in selected_skus]
         selected_known = [p for p in selected if p['profit'] is not None]
+        identity = lambda p: {key: p[key] for key in ('sku', 'article', 'name')}
+        articles = Counter(p['article'] for p in rows if p['article'])
+        coverage = dict(unit_available_count=sum(p['unit_complete'] for p in rows),
+            ambiguous_articles=sorted(article for article, count in articles.items() if count > 1),
+            missing_unit_products=[identity(p) for p in rows if not p['unit_complete'] and p['qty'] != 0],
+            missing_quantity_products=[identity(p) for p in rows if not p['quantity_known']])
         return dict(mode=mode, period=period, products=selected,
             finance_snapshot_id=finance.snapshot_id if finances_cover else None,
             loaded_at=finance.loaded_at if finances_cover else None,
             expense_source='finance', quantity_complete=quantity_complete, expenses_complete=finances_cover,
-            expenses=expenses, catalog_product_count=len(rows),
+            expenses=expenses, coverage=coverage, catalog_product_count=len(rows),
             selected_profit_before_common=sum((p['profit'] for p in selected_known), ZERO) if selected_known else None,
             totals=dict(qty=sum(p['qty'] or 0 for p in rows) if quantity_complete and all(p['quantity_known'] for p in rows) else None,
                 covered_qty=sum(p['qty'] for p in known),

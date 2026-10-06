@@ -377,6 +377,13 @@ services are explicit. The store result stays fixed under SKU filters; the
 filtered product contribution is shown separately. Bounded native tables own
 horizontal overflow; summaries remain in document flow at narrow/200% widths.
 
+Before finance loading, the buyout panel names the missing quantities/expenses
+and the load action instead of treating complete unit inputs as missing.
+Coverage uses article-first bounded native disclosures with separate unit and
+quantity reasons. Shared articles retain distinct SKU labels; missing articles
+fall back to SKU. Existing warning/status/table tokens own this state. Retry
+names and repeats the failed load or calculation, without replacing SKU cards.
+
 Historical cards keep actual/model values above plan in the existing two colors.
 Target prices identify planned DRR and the limiting route. A high weighted mean
 margin can coexist with an increased universal route target; the copy explains
